@@ -1,0 +1,11 @@
+.pio
+.vscode
+.cache
+**/.DS_Store
+.idea
+
+# Személyes adatok védelme!
+data/wifi.txt
+src/Config_Secret.h 
+# (Ha a Config.h-ban vannak jelszavak, akkor azt is vedd fel ide, 
+# és csinálj egy Config_example.h-t mintaadatokkal!)
