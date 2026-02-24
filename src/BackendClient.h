@@ -12,6 +12,11 @@ struct PolledCommand {
 
 class BackendClient {
 public:
+  // Provisioning confirm (deviceKey nélkül)
+  bool confirmProvisioning(const String& provisioningToken,
+                           String& outDeviceKey,
+                           String& outWifiSsid,
+                           String& outWifiPass);
   void begin(const String& baseUrl);
   void setDeviceKey(const String& deviceKey);
   bool isReady() const;
@@ -26,4 +31,5 @@ private:
 
   bool postJson(const String& path, const JsonDocument& req, JsonDocument& resp, int& httpCode);
   void addCommonHeaders(HTTPClient& http);
+  bool postJsonUnauthed(const String& path, const JsonDocument& req, JsonDocument& resp, int& httpCode);
 };

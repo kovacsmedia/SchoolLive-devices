@@ -5,7 +5,11 @@
 class PersistStore {
 public:
   bool begin();
-
+  // provisioning token (csak átmenetileg)
+  bool hasProvisionToken() const;
+  String getProvisionToken() const;
+  bool setProvisionToken(const String& token);
+  void clearProvisionToken();
   // deviceKey
   bool hasDeviceKey() const;
   String getDeviceKey() const;
@@ -25,4 +29,5 @@ public:
 private:
   mutable Preferences _prefs;
   static constexpr const char* NS = "schoollive";
+
 };

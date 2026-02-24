@@ -48,3 +48,19 @@ void PersistStore::clearWifi() {
 void PersistStore::factoryReset() {
   _prefs.clear();
 }
+bool PersistStore::hasProvisionToken() const {
+  return _prefs.isKey("provToken") && _prefs.getString("provToken", "").length() > 0;
+}
+
+String PersistStore::getProvisionToken() const {
+  return _prefs.getString("provToken", "");
+}
+
+bool PersistStore::setProvisionToken(const String& token) {
+  if (token.length() == 0) return false;
+  return _prefs.putString("provToken", token) > 0;
+}
+
+void PersistStore::clearProvisionToken() {
+  _prefs.remove("provToken");
+}

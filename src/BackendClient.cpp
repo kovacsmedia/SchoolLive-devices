@@ -132,3 +132,59 @@ bool BackendClient::ack(const String& commandId,
 
   return postJson("/devices/ack", req, resp, code);
 }
+bool BackendClient::postJsonUnauthed(const String& path,
+                                    const JsonDocument& req,
+                                    JsonDocument& resp,
+                                    int& httpCode) {
+  if (_baseUrl.length() == 0) return false;
+
+  WiFiClientSecure client;
+  client.setInsecure();
+
+  HTTPClient http;
+  http.setTimeout(7000);
+
+  const String url = _baseUrl + path;
+  if (!http.begin(client, url)) return false;
+
+  http.addHeader("Content-Type", "application/json");
+
+  String body;
+  serializeJson(req, body);
+
+  httpCode = http.POST(body);
+  if (httpCode <= 0) { http.end(); return false; }
+
+  String responseStr = http.getString();
+  http.end();
+
+  DeserializationError err = deserializeJson(resp, responseStr);
+  if (err) return false;
+
+  return (httpCode >= 200 && httpCode < 300);
+}
+
+bool BackendClient::confirmProvisioning(const String& provisioningToken,
+                                       String& outDeviceKey,
+                                       String& outWifiSsid,
+                                       String& outWifiPass) {
+  outDeviceKey = "";
+  outWifiSsid = "";
+  outWifiPass = "";
+
+  JsonDocument req;
+  req["provisioningToken"] = provisioningToken;
+
+  JsonDocument resp;
+  int code = 0;
+
+  bool ok = postJsonUnauthed("/provision/provision/confirm", req, resp, code);
+  if (!ok) return false;
+
+  // várható: { ok, deviceKey, wifi: { ssid, password }, device: {...} }
+  if (resp["deviceKey"].is<const char*>()) outDeviceKey = resp["deviceKey"].as<String>();
+  if (resp["wifi"]["ssid"].is<const char*>()) outWifiSsid = resp["wifi"]["ssid"].as<String>();
+  if (resp["wifi"]["password"].is<const char*>()) outWifiPass = resp["wifi"]["password"].as<String>();
+
+  return outDeviceKey.length() > 0;
+}

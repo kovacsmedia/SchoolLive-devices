@@ -10,6 +10,8 @@
 #include "AudioManager.h"
 #include "NetworkManager.h"
 #include "BellManager.h"
+#include "DeviceTelemetry.h"
+
 
 enum UIState { STATE_NORMAL, STATE_MENU, STATE_NETRADIO };
 enum MenuPage { MENU_MAIN, MENU_SUB };
@@ -33,7 +35,7 @@ public:
     UIManager(AudioManager &audioMgr, NetworkManager &netMgr, BellManager &bellMgr);
     void begin();
     void loop();
-    
+    void setTelemetry(DeviceTelemetry* tel);
     void drawBootStatus(String status, String details);
 
 private:
@@ -45,6 +47,7 @@ private:
     UIState uiState = STATE_NORMAL;
     MenuPage menuPage = MENU_MAIN;
     Settings settings;
+    DeviceTelemetry* _tel = nullptr;
 
     int8_t mainMenuIndex = 0; 
     int8_t subMenuIndex = 0;
@@ -101,6 +104,7 @@ private:
     void drawSplashScreen();
     
     void applyDimming();
+    
 };
 
 #endif

@@ -379,7 +379,7 @@ void UIManager::drawNetRadioScreen() {
 }
 
 void UIManager::drawVolumeScreen() { display.setTextSize(1); display.setCursor(0,0); display.print("VOLUME"); display.setTextSize(4); uint8_t vol = audio.getVolume(); int x = (vol == 10) ? 40 : 52; display.setCursor(x, 4); display.print(vol); }
-void UIManager::drawSplashScreen() { display.clearDisplay(); display.setTextSize(2); display.setCursor(0,0); display.println("SchoolLive!"); display.setTextSize(1); display.setCursor(0,20); display.println("SmartSpeaker V3.4"); display.display(); }
+void UIManager::drawSplashScreen() { display.clearDisplay(); display.setTextSize(2); display.setCursor(0,0); display.println("SchoolLive!"); display.setTextSize(1); display.setCursor(0,20); display.println("SmartSpeaker,  V3.5"); display.display(); }
 void UIManager::applyDimming() { uint8_t contrast = 255; if (settings.dimmLevel > 0) { contrast = 255 - (settings.dimmLevel * 50); if (contrast < 5) contrast = 5; } display.ssd1306_command(SSD1306_SETCONTRAST); display.ssd1306_command(contrast); }
 
 void UIManager::drawBootStatus(String status, String details) {
@@ -387,4 +387,7 @@ void UIManager::drawBootStatus(String status, String details) {
     display.setCursor(0, 12); display.print(status);
     display.setCursor(0, 24); display.print(details);
     display.display();
+}
+void UIManager::setTelemetry(DeviceTelemetry* tel) {
+  _tel = tel;
 }
