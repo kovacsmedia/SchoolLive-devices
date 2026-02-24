@@ -48,4 +48,12 @@
 #define VOLUME_DISPLAY_TIME 2000 // Hány ms-ig mutassa a hangerőt
 // --- NetRadio ---
 #define RADIOLIST_URL "https://schoollive.hu/radiolist.txt"
+// --- BACKEND ---
+// Példa: "https://api.schoollive.hu" vagy "https://schoollive.hu/api" attól függ, nálad hol fut.
+// (A backend route-ok rooton vannak: /devices, /provision, /health) :contentReference[oaicite:3]{index=3}
+#define BACKEND_BASE_URL "https://schoollive.hu"
+
+// DEV teszthez (később NVS-ből jön, provisioning adja)
+#define DEVICE_KEY_DEFAULT ""
+#define FW_VERSION "3.15"
 #endif
