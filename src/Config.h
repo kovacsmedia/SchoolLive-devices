@@ -55,8 +55,5 @@
 
 // DEV teszthez (később NVS-ből jön, provisioning adja)
 #define DEVICE_KEY_DEFAULT ""
-#define FW_VERSION "3.15"
-#endif
-#ifndef FW_VERSION
-#define FW_VERSION "dev"
+#define FW_VERSION "3.5"
 #endif
