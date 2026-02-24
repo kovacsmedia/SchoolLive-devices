@@ -57,3 +57,6 @@
 #define DEVICE_KEY_DEFAULT ""
 #define FW_VERSION "3.15"
 #endif
+#ifndef FW_VERSION
+#define FW_VERSION "dev"
+#endif

@@ -7,3 +7,6 @@
 # Személyes adatok védelme!
 data/wifi.txt
 src/Config_Secret.h 
+node_modules/
+.env
+npm-debug.log*
