@@ -53,7 +53,8 @@ void setup() {
   audioManager.begin();
   uiManager.begin();
   bellManager.begin();
-
+  uiManager.drawBootStatus("SchoolLive", FW_VERSION);
+  delay(1000);
   uiManager.drawBootStatus("Config Check", "Reading config file");
   delay(500);
 

@@ -54,7 +54,7 @@ void UIManager::loop() {
         if (uiState == STATE_NORMAL) {
             // Frissítés logika: Ha hangerőt állítunk, akkor gyorsan, amúgy mp-enként (óra miatt)
             // Vagy ha az animációt akarjuk (kettőspont), akkor gyakrabban (500ms)
-            unsigned long refresh = (now < volumeDisplayUntil) ? 250 : 500;
+            unsigned long refresh = (now < volumeDisplayUntil) ? 100 : 500;
             
             if (now - lastUiUpdate > refresh) {
                 updateDisplay(); lastUiUpdate = now;
