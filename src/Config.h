@@ -1,6 +1,6 @@
 #ifndef CONFIG_H
 #define CONFIG_H
-
+#define ENABLE_PROVISIONING 0
 #include <Arduino.h>
 
 // --- ESZKÖZ AZONOSÍTÁS ---
