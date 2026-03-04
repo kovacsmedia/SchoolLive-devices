@@ -94,7 +94,7 @@ void startProvisioningMode() {
   xTaskCreatePinnedToCore(
     TaskProvisioning,
     "ProvTask",
-    8192,
+    16384,
     NULL,
     1,
     NULL,
@@ -145,9 +145,12 @@ void startNormalMode() {
   );
 }
 
+// --- SETUP ---
 void setup() {
   Serial.begin(115200);
-  delay(200);
+  delay(500);
+  Serial.println("=== SETUP START ===");
+  Serial.printf("Free heap: %d\n", ESP.getFreeHeap());
   Serial.printf("Reset reason: %d\n", (int)esp_reset_reason());
 
   btStop();
@@ -160,10 +163,9 @@ void setup() {
   uiManager.setTelemetry(&telemetry);
   bellManager.begin();
 
-  // Döntés: provisioning vagy normál mód?
-  bool hasWifi    = store.hasWifi();
-  bool hasKey     = store.hasDeviceKey();
-  bool needsProv  = !hasWifi || !hasKey;
+  bool hasWifi   = store.hasWifi();
+  bool hasKey    = store.hasDeviceKey();
+  bool needsProv = !hasWifi || !hasKey;
 
   Serial.printf("[MAIN] hasWifi=%d hasKey=%d needsProv=%d\n", hasWifi, hasKey, needsProv);
 
@@ -174,13 +176,13 @@ void setup() {
   }
 }
 
+// --- LOOP ---
 void loop() {
   if (!inProvisioningMode) {
     audioManager.loop();
     uiManager.loop();
     bellManager.loop();
   } else {
-    // Provisioning módban csak az UI fut a loop-ban
     uiManager.loop();
     delay(50);
   }
