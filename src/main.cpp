@@ -14,27 +14,27 @@
 #include "DeviceAgent.h"
 #include "DeviceTelemetry.h"
 
-// --- Singletons ---
-AudioManager audioManager;
-NetworkManager networkManager;
-BellManager bellManager(audioManager, networkManager);
-UIManager uiManager(audioManager, networkManager, bellManager);
-
-PersistStore store;
-BackendClient backend;
-DeviceAgent agent;
+// --- Globális objektumok ---
+NetworkManager  networkManager;
+AudioManager    audioManager;
+BellManager     bellManager(audioManager, networkManager);
+PersistStore    store;
+BackendClient   backend;
+DeviceAgent     agent;
 DeviceTelemetry telemetry;
 
+// --- Pointerek – setup()-ban példányosítjuk ---
+UIManager*           uiManager   = nullptr;
 ProvisioningManager* provManager = nullptr;
-bool inProvisioningMode = false;
 
+bool inProvisioningMode = false;
 TaskHandle_t TaskNetworkHandle = nullptr;
 
 // --- Provisioning task (core 0) ---
 void TaskProvisioning(void* pvParameters) {
   (void)pvParameters;
 
-  uiManager.enterProvisioningMode();
+  uiManager->enterProvisioningMode();
 
   for (;;) {
     provManager->loop();
@@ -45,22 +45,22 @@ void TaskProvisioning(void* pvParameters) {
 
     switch (state) {
       case ProvState::CONNECTING_WIFI:
-        uiManager.updateProvisioningDisplay(mac, "", "WiFi csatlakozas...");
+        uiManager->updateProvisioningDisplay(mac, "", "WiFi csatlakozas...");
         break;
       case ProvState::WIFI_CONNECTED:
       case ProvState::REGISTERING:
-        uiManager.updateProvisioningDisplay(mac, ip, "Regisztracio...");
+        uiManager->updateProvisioningDisplay(mac, ip, "Regisztracio...");
         break;
       case ProvState::WAITING_ACTIVATION:
-        uiManager.updateProvisioningDisplay(mac, ip, "Var aktivalasra...");
+        uiManager->updateProvisioningDisplay(mac, ip, "Var aktivalasra...");
         break;
       case ProvState::ACTIVATED:
-        uiManager.updateProvisioningDisplay(mac, ip, "Aktivalva! Indul...");
+        uiManager->updateProvisioningDisplay(mac, ip, "Aktivalva! Indul...");
         delay(2000);
         provManager->applyAndReboot();
         break;
       case ProvState::FAILED:
-        uiManager.updateProvisioningDisplay(mac, ip, "HIBA! Ujraindul...");
+        uiManager->updateProvisioningDisplay(mac, ip, "HIBA! Ujraindul...");
         delay(5000);
         ESP.restart();
         break;
@@ -83,7 +83,7 @@ void TaskNetwork(void* pvParameters) {
   }
 }
 
-// --- Provisioning mód indítása ---
+// --- Provisioning mód ---
 void startProvisioningMode() {
   inProvisioningMode = true;
   Serial.println("[MAIN] Starting PROVISIONING mode");
@@ -102,20 +102,20 @@ void startProvisioningMode() {
   );
 }
 
-// --- Normál mód indítása ---
+// --- Normál mód ---
 void startNormalMode() {
   inProvisioningMode = false;
   Serial.println("[MAIN] Starting NORMAL mode");
 
-  uiManager.drawBootStatus("System check", "WiFi + time sync");
+  uiManager->drawBootStatus("System check", "WiFi + time sync");
   delay(300);
 
   bool wifiOk = networkManager.syncTimeBlocking();
   if (!wifiOk) {
-    uiManager.drawBootStatus("WIFI FAILED!", "Check wifi config");
+    uiManager->drawBootStatus("WIFI FAILED!", "Check wifi config");
     delay(3000);
   } else {
-    uiManager.drawBootStatus("WIFI OK!", networkManager.getIP().c_str());
+    uiManager->drawBootStatus("WIFI OK!", networkManager.getIP().c_str());
     delay(1000);
   }
 
@@ -131,7 +131,7 @@ void startNormalMode() {
   telemetry.firmwareVersion = String(FW_VERSION);
   telemetry.deviceId = WiFi.macAddress();
 
-  agent.begin(networkManager, audioManager, uiManager, backend, telemetry);
+  agent.begin(networkManager, audioManager, *uiManager, backend, telemetry);
   agent.setFirmwareVersion(String(FW_VERSION));
 
   xTaskCreatePinnedToCore(
@@ -159,8 +159,11 @@ void setup() {
   store.begin();
 
   audioManager.begin();
-  uiManager.begin();
-  uiManager.setTelemetry(&telemetry);
+
+  uiManager = new UIManager(audioManager, networkManager, bellManager, store);
+  uiManager->begin();
+  uiManager->setTelemetry(&telemetry);
+
   bellManager.begin();
 
   bool hasWifi   = store.hasWifi();
@@ -180,10 +183,10 @@ void setup() {
 void loop() {
   if (!inProvisioningMode) {
     audioManager.loop();
-    uiManager.loop();
+    uiManager->loop();
     bellManager.loop();
   } else {
-    uiManager.loop();
+    uiManager->loop();
     delay(50);
   }
 }

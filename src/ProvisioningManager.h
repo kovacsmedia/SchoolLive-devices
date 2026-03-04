@@ -6,6 +6,7 @@
 #include <ArduinoJson.h>
 #include "PersistStore.h"
 #include "Config.h"
+#include <LittleFS.h>
 
 // Provisioning állapotok
 enum class ProvState {

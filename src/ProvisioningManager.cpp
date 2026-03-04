@@ -1,4 +1,5 @@
 #include "ProvisioningManager.h"
+#include <LittleFS.h>
 
 ProvisioningManager::ProvisioningManager(PersistStore& store)
   : _store(store) {}
@@ -14,7 +15,6 @@ void ProvisioningManager::begin() {
 }
 
 void ProvisioningManager::loop() {
-  // Timeout: 10 perc után reboot
   if (millis() - _startTime > PROV_POLL_TIMEOUT) {
     Serial.println("[PROV] Timeout, restarting...");
     delay(1000);
@@ -61,11 +61,9 @@ void ProvisioningManager::loop() {
       break;
 
     case ProvState::ACTIVATED:
-      // Főloop kezeli – applyAndReboot() hívandó
       break;
 
     case ProvState::FAILED:
-      // Főloop kezeli – pl. hibaüzenet + reboot
       break;
 
     default:
@@ -96,7 +94,6 @@ bool ProvisioningManager::doRegister() {
 
   JsonDocument respDoc;
   if (deserializeJson(respDoc, resp) != DeserializationError::Ok) return false;
-
   if (respDoc["ok"].as<bool>() != true) return false;
 
   _pendingId = respDoc["pendingId"].as<String>();
@@ -123,16 +120,31 @@ bool ProvisioningManager::doPollStatus() {
   _activatedConfig.deviceName   = cfg["deviceName"].as<String>();
   _activatedConfig.wifiSsid     = cfg["wifiSsid"].as<String>();
   _activatedConfig.wifiPassword = cfg["wifiPassword"].as<String>();
-  _activatedConfig.deviceKey    = cfg["deviceKey"].as<String>();  // ← ÚJ
+  _activatedConfig.deviceKey    = cfg["deviceKey"].as<String>();
 
   return _activatedConfig.deviceKey.length() > 0;
 }
 
 void ProvisioningManager::applyAndReboot() {
+  // NVS mentés
   _store.setWifi(_activatedConfig.wifiSsid, _activatedConfig.wifiPassword);
-  _store.setDeviceKey(_activatedConfig.deviceKey);  // ← most már megvan
+  _store.setDeviceKey(_activatedConfig.deviceKey);
 
-  Serial.println("[PROV] WiFi + deviceKey saved, rebooting...");
+  // wifi.txt írása – NetworkManager ebből olvas
+  File f = LittleFS.open("/wifi.txt", "w");
+  if (f) {
+    f.print("\"");
+    f.print(_activatedConfig.wifiSsid);
+    f.print("\",\"");
+    f.print(_activatedConfig.wifiPassword);
+    f.println("\"");
+    f.close();
+    Serial.println("[PROV] wifi.txt saved");
+  } else {
+    Serial.println("[PROV] wifi.txt write FAILED");
+  }
+
+  Serial.println("[PROV] Rebooting...");
   delay(500);
   ESP.restart();
 }

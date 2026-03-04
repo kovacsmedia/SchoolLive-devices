@@ -9,7 +9,6 @@
 
 class DeviceAgent {
 public:
-  void begin(NetworkManager& net, AudioManager& audio, UIManager& ui, BackendClient& backend);
   void loop();
   DeviceTelemetry* _tel = nullptr;
   void begin(NetworkManager& net, AudioManager& audio, UIManager& ui, BackendClient& backend, DeviceTelemetry& tel);
