@@ -2,13 +2,6 @@
 
 NetworkManager::NetworkManager() {}
 
-void NetworkManager::begin() {
-    WiFi.mode(WIFI_STA);
-    WiFi.setSleep(false); 
-    if (String(DEVICE_ID).length() > 0) WiFi.setHostname(DEVICE_ID);
-    loadWifiTxt();
-}
-
 void NetworkManager::loadWifiTxt() {
     knownNetworks.clear();
     
@@ -174,7 +167,16 @@ void NetworkManager::handleNTP() {
         }
     }
 }
-
+void NetworkManager::begin() {
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+    // DEVICE_ID helyett MAC alapú hostname
+    String hostname = "schoollive-" + WiFi.macAddress();
+    hostname.replace(":", "");
+    hostname.toLowerCase();
+    WiFi.setHostname(hostname.c_str());
+    loadWifiTxt();
+}
 void NetworkManager::updateFirmware(const char* firmwareUrl) {
     if (WiFi.status() != WL_CONNECTED) return;
     WiFiClientSecure client;
@@ -213,4 +215,6 @@ struct tm NetworkManager::getTimeInfo() {
 
 String NetworkManager::getStoredSSID() { return WiFi.SSID(); }
 String NetworkManager::getStoredUser() { return ""; } 
-String NetworkManager::getStoredDeviceID() { return DEVICE_ID; }
+String NetworkManager::getStoredDeviceID() { 
+    return WiFi.macAddress(); 
+}

@@ -54,7 +54,8 @@ void UIManager::loop() {
             unsigned long refresh = (now < volumeDisplayUntil) ? 100 : 500;
 
             if (now - lastUiUpdate > refresh) {
-                updateDisplay(); lastUiUpdate = now;
+            if (uiState != STATE_PROVISIONING) updateDisplay();
+            lastUiUpdate = now;
             }
         } else {
             // Menü gyorsabb
@@ -470,4 +471,39 @@ void UIManager::drawBootStatus(String status, String details) {
 
 void UIManager::setTelemetry(DeviceTelemetry* tel) {
   _tel = tel;
+}
+void UIManager::enterProvisioningMode() {
+    uiState = STATE_PROVISIONING;
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.print("** PROVISIONING **");
+    display.setCursor(0, 12);
+    display.print("Var aktivalasra...");
+    display.display();
+}
+
+void UIManager::updateProvisioningDisplay(const String& mac, const String& ip, const String& status) {
+    display.clearDisplay();
+
+    // 1. sor: fejléc
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.print("** PROVISIONING **");
+
+    // 2. sor: MAC cím
+    display.setCursor(0, 10);
+    display.print("MAC:");
+    display.print(mac);
+
+    // 3. sor: IP
+    display.setCursor(0, 20);
+    display.print("IP: ");
+    display.print(ip.length() > 0 ? ip : "...");
+
+    // 4. sor: státusz
+    display.setCursor(0, 30);
+    display.print(status);
+
+    display.display();
 }

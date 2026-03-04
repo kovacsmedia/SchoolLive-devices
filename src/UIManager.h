@@ -13,7 +13,7 @@
 #include "DeviceTelemetry.h"
 
 
-enum UIState { STATE_NORMAL, STATE_MENU, STATE_NETRADIO };
+enum UIState { STATE_NORMAL, STATE_MENU, STATE_NETRADIO, STATE_PROVISIONING };
 enum MenuPage { MENU_MAIN, MENU_SUB };
 
 struct Settings {
@@ -37,6 +37,8 @@ public:
     void loop();
     void setTelemetry(DeviceTelemetry* tel);
     void drawBootStatus(String status, String details);
+    void enterProvisioningMode();
+    void updateProvisioningDisplay(const String& mac, const String& ip, const String& status);
 
 private:
     AudioManager &audio;

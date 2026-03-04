@@ -33,23 +33,42 @@ TaskHandle_t TaskNetworkHandle = nullptr;
 // --- Provisioning task (core 0) ---
 void TaskProvisioning(void* pvParameters) {
   (void)pvParameters;
+
+  uiManager.enterProvisioningMode();
+
   for (;;) {
     provManager->loop();
 
-    if (provManager->getState() == ProvState::ACTIVATED) {
-      // Kiírjuk a kijelzőre és alkalmazzuk
-      uiManager.drawBootStatus("Aktivalva!", provManager->getPendingId().substring(0, 8).c_str());
-      delay(2000);
-      provManager->applyAndReboot();
+    ProvState state = provManager->getState();
+    String mac = provManager->getMac();
+    String ip  = provManager->getIP();
+
+    switch (state) {
+      case ProvState::CONNECTING_WIFI:
+        uiManager.updateProvisioningDisplay(mac, "", "WiFi csatlakozas...");
+        break;
+      case ProvState::WIFI_CONNECTED:
+      case ProvState::REGISTERING:
+        uiManager.updateProvisioningDisplay(mac, ip, "Regisztracio...");
+        break;
+      case ProvState::WAITING_ACTIVATION:
+        uiManager.updateProvisioningDisplay(mac, ip, "Var aktivalasra...");
+        break;
+      case ProvState::ACTIVATED:
+        uiManager.updateProvisioningDisplay(mac, ip, "Aktivalva! Indul...");
+        delay(2000);
+        provManager->applyAndReboot();
+        break;
+      case ProvState::FAILED:
+        uiManager.updateProvisioningDisplay(mac, ip, "HIBA! Ujraindul...");
+        delay(5000);
+        ESP.restart();
+        break;
+      default:
+        break;
     }
 
-    if (provManager->isFailed()) {
-      uiManager.drawBootStatus("PROV HIBA", "Ujraindul 5s...");
-      delay(5000);
-      ESP.restart();
-    }
-
-    vTaskDelay(200 / portTICK_PERIOD_MS);
+    vTaskDelay(500 / portTICK_PERIOD_MS);
   }
 }
 
@@ -69,17 +88,8 @@ void startProvisioningMode() {
   inProvisioningMode = true;
   Serial.println("[MAIN] Starting PROVISIONING mode");
 
-  uiManager.drawBootStatus("PROVISIONING", WiFi.macAddress().c_str());
-  delay(1000);
-
   provManager = new ProvisioningManager(store);
   provManager->begin();
-
-  // Kijelzőn mutatjuk a MAC és IP-t
-  uiManager.drawBootStatus(
-    ("MAC: " + WiFi.macAddress()).c_str(),
-    "Var aktivalasra..."
-  );
 
   xTaskCreatePinnedToCore(
     TaskProvisioning,
