@@ -5,9 +5,9 @@
 
 // A library callback-jei globális függvényeket keresnek.
 // Üresen hagyjuk őket, hogy ne termeljenek logot (és ne nőjön a bináris).
-void audio_info(const char *info) { (void)info; }
-void audio_eof_mp3(const char *info) { (void)info; }
 
+void audio_info(const char *info) { Serial.printf("[AUDIO] %s\n", info); }
+void audio_eof_mp3(const char *info) { Serial.printf("[AUDIO] EOF: %s\n", info); }
 AudioManager::AudioManager() {
   currentVolume = 5;
 }
