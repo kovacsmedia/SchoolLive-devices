@@ -135,7 +135,63 @@ bool DeviceAgent::handleShowMessage(JsonVariantConst payload, String& err) {
     err = "Missing title/text";
     return false;
   }
+bool DeviceAgent::executeAndAck(const PolledCommand& cmd) {
+  JsonVariantConst p = cmd.payload;  // ← közvetlenül a payload, nem payload["payload"]
 
+  String err;
+  bool ok = false;
+
+  // "action" mező (backend messages.routes) VAGY "type" mező (régi parancsok)
+  String action = "";
+  if (p["action"].is<const char*>()) action = p["action"].as<String>();
+  else if (p["type"].is<const char*>()) action = p["type"].as<String>();
+
+  if (action == "PLAY_URL") {
+    ok = handlePlayUrl(p, err);
+  } else if (action == "SET_VOLUME") {
+    ok = handleSetVolume(p, err);
+  } else if (action == "SHOW_MESSAGE") {
+    ok = handleShowMessage(p, err);
+  } else {
+    ok = false;
+    err = "Unknown action: " + action;
+  }
+
+  _tel->lastCommandId = cmd.id;
+  _tel->lastCommandOk = ok;
+
+  bool ackOk = _backend->ack(cmd.id, ok, err);
+  if (ackOk) { _tel->ackOk++; _tel->markServerOk(); }
+  else        { _tel->ackErr++; _tel->markServerErr("ack failed"); }
+
+  return ok;
+}
+
+bool DeviceAgent::handlePlayUrl(JsonVariantConst payload, String& err) {
+  if (!payload["url"].is<const char*>()) {
+    err = "Missing url";
+    return false;
+  }
+
+  String url = payload["url"].as<String>();
+  if (url.length() == 0) {
+    err = "Empty url";
+    return false;
+  }
+
+  // Opcionális: scheduledAt kezelés (ha van, várunk az időpontig)
+  if (payload["scheduledAt"].is<const char*>()) {
+    String scheduledAt = payload["scheduledAt"].as<String>();
+    if (scheduledAt.length() > 0 && scheduledAt != "null") {
+      // TODO: időzített lejátszás – most egyszerűen azonnal játsszuk
+      Serial.printf("[AGENT] Scheduled at: %s (playing immediately for now)\n", scheduledAt.c_str());
+    }
+  }
+
+  Serial.printf("[AGENT] PLAY_URL: %s\n", url.c_str());
+  _audio->playUrl(url.c_str());
+  return true;
+}
   // Kijelzés a meglévő UI metódussal
   _ui->drawBootStatus(title, text);
   return true;

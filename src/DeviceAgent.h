@@ -19,7 +19,7 @@ private:
   AudioManager* _audio = nullptr;
   UIManager* _ui = nullptr;          // <-- új
   BackendClient* _backend = nullptr;
-
+  bool handlePlayUrl(JsonVariantConst payload, String& err);
   String _fw = "dev";
 
   unsigned long _lastBeaconMs = 0;

@@ -110,6 +110,28 @@ void startNormalMode() {
   uiManager->drawBootStatus("System check", "WiFi + time sync");
   delay(300);
 
+  // NVS-ből WiFi csatlakozás ha nincs wifi.txt
+  if (store.hasWifi() && !LittleFS.exists("/wifi.txt")) {
+    Serial.println("[MAIN] No wifi.txt, using NVS credentials");
+    String ssid = store.getWifiSsid();
+    String pass = store.getWifiPass();
+    Serial.println("[MAIN] SSID: " + ssid);
+
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid.c_str(), pass.c_str());
+
+    // wifi.txt létrehozása a jövőre
+    if (LittleFS.begin(false)) {
+      File f = LittleFS.open("/wifi.txt", "w");
+      if (f) {
+        f.print("\""); f.print(ssid); f.print("\",\"");
+        f.print(pass); f.println("\"");
+        f.close();
+        Serial.println("[MAIN] wifi.txt created from NVS");
+      }
+    }
+  }
+
   bool wifiOk = networkManager.syncTimeBlocking();
   if (!wifiOk) {
     uiManager->drawBootStatus("WIFI FAILED!", "Check wifi config");
@@ -118,6 +140,8 @@ void startNormalMode() {
     uiManager->drawBootStatus("WIFI OK!", networkManager.getIP().c_str());
     delay(1000);
   }
+
+  // ... többi kód változatlan
 
   backend.begin(String(BACKEND_BASE_URL));
 
