@@ -1,5 +1,6 @@
 #include "AudioManager.h"
 #include <LittleFS.h>
+#include <WiFi.h>
 #include "Audio.h"
 
 // Globális pointer az EOF callback-hez
@@ -8,7 +9,11 @@ static AudioManager* _instance = nullptr;
 void audio_info(const char *info) { Serial.printf("[AUDIO] %s\n", info); }
 
 void audio_eof_mp3(const char *info) {
-  Serial.printf("[AUDIO] EOF: %s\n", info);
+  Serial.printf("[AUDIO] EOF mp3: %s\n", info);
+}
+
+void audio_eof_stream(const char *info) {
+  Serial.printf("[AUDIO] EOF stream: %s\n", info);
   if (_instance) _instance->notifyEof();
 }
 
@@ -68,10 +73,12 @@ void AudioManager::playUrl(const char* url) {
 }
 
 void AudioManager::notifyEof() {
-  Serial.println("[AUDIO] notifyEof – stopping stream");
+  Serial.println("[AUDIO] notifyEof – restarting in 2s...");
   _eofReceived = true;
   _streamMode = false;
   if (audio) audio->stopSong();
+  delay(2000);
+  ESP.restart();
 }
 
 void AudioManager::stop() {

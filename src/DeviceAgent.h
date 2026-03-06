@@ -34,7 +34,7 @@ private:
   bool _pendingAckOk = false;
   String _pendingAckErr;
   unsigned long _ackReadyMs = 0;
-  const unsigned long ACK_DELAY_MS = 3000;
+  const unsigned long ACK_DELAY_MS = 8000;
 
   void sendBeaconIfDue();
   void pollIfDue();

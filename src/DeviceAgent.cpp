@@ -28,36 +28,21 @@ void DeviceAgent::loop() {
   if (!_net->isConnected()) return;
   if (!_backend->isReady()) return;
 
-  // Pending ACK kezelése
+  // Pending ACK kezelése (fallback ha az előzetes ACK sikertelen volt)
   if (_pendingAck && !_audio->isPlaying()) {
     if (_ackReadyMs == 0) {
       _ackReadyMs = millis();
-      Serial.printf("[AGENT] Playback done, waiting %lums for recovery...\n", ACK_DELAY_MS);
-
-      // WiFi reconnect ha szükséges
-      if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("[AGENT] WiFi lost after stream, reconnecting...");
-        WiFi.reconnect();
-      }
+      Serial.printf("[AGENT] Pending ACK, waiting %lums for recovery...\n", ACK_DELAY_MS);
       return;
     }
 
-    // Várakozás közben figyeljük a WiFi-t
-    if (millis() - _ackReadyMs < ACK_DELAY_MS) {
-      if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("[AGENT] WiFi reconnecting...");
-        WiFi.reconnect();
-      }
-      return;
-    }
-
-    // Ha még mindig nincs WiFi, reseteljük a timert és várunk tovább
     if (WiFi.status() != WL_CONNECTED) {
-      Serial.println("[AGENT] WiFi still down, extending wait...");
+      Serial.printf("[AGENT] WiFi status: %d, waiting...\n", WiFi.status());
       _ackReadyMs = millis();
-      WiFi.reconnect();
       return;
     }
+
+    if (millis() - _ackReadyMs < ACK_DELAY_MS) return;
 
     Serial.printf("[AGENT] Free heap before ACK: %d\n", ESP.getFreeHeap());
     Serial.printf("[AGENT] Sending pending ACK for: %s\n", _pendingAckId.c_str());
@@ -73,7 +58,7 @@ void DeviceAgent::loop() {
       _tel->ackErr++;
       _tel->markServerErr("ack failed");
       _ackReadyMs = millis();
-      Serial.println("[AGENT] ACK failed, will retry in 3s");
+      Serial.println("[AGENT] ACK failed, will retry");
     }
   }
 
@@ -144,14 +129,28 @@ bool DeviceAgent::executeAndAck(const PolledCommand& cmd) {
   Serial.printf("[AGENT] action: %s\n", action.c_str());
 
   if (action == "PLAY_URL") {
-    ok = handlePlayUrl(p, err);
-    _pendingAck    = true;
-    _pendingAckId  = cmd.id;
-    _pendingAckOk  = ok;
-    _pendingAckErr = err;
-    _ackReadyMs    = 0;
+    // 1. Először ACK – még nincs audio kapcsolat
+    Serial.println("[AGENT] Sending ACK before playback");
+    bool ackOk = _backend->ack(cmd.id, true, "");
+    if (ackOk) {
+      _tel->ackOk++;
+      _tel->markServerOk();
+      Serial.println("[AGENT] ACK sent OK");
+    } else {
+      // Fallback: pending ACK lejátszás után
+      Serial.println("[AGENT] Pre-play ACK failed, storing as pending");
+      _pendingAck    = true;
+      _pendingAckId  = cmd.id;
+      _pendingAckOk  = true;
+      _pendingAckErr = "";
+      _ackReadyMs    = 0;
+      _tel->ackErr++;
+    }
     _tel->lastCommandId = cmd.id;
-    _tel->lastCommandOk = ok;
+    _tel->lastCommandOk = true;
+
+    // 2. Majd lejátszás
+    ok = handlePlayUrl(p, err);
     return ok;
   }
 

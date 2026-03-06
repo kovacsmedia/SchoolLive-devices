@@ -78,13 +78,18 @@ void NetworkManager::loop() {
 
 void NetworkManager::handleWiFi() {
     if (knownNetworks.empty()) return;
+
     if (WiFi.status() != WL_CONNECTED) {
-        if (millis() - _lastWifiCheck > 30000) {
+        const unsigned long now = millis();
+        if (now - _lastWifiCheck > 10000) {
+            Serial.println("[WIFI] Disconnected, reconnecting...");
             WiFiCreds& c = knownNetworks[0];
             if (c.user.length() > 0) connectEnterprise(c.ssid, c.user, c.pass);
             else connectPersonal(c.ssid, c.pass);
-            _lastWifiCheck = millis();
+            _lastWifiCheck = now;
         }
+    } else {
+        _lastWifiCheck = 0; // reset hogy lecsatlakozás után azonnal próbáljon
     }
 }
 
