@@ -155,7 +155,7 @@ void setup() {
 
   btStop();
   Wire.begin(I2C_SDA, I2C_SCL);
-  LittleFS.begin(true);
+  LittleFS.begin(true, "/littlefs", 10, "littlefs");
   store.begin();
 
   audioManager.begin();

@@ -62,7 +62,7 @@ void DeviceAgent::loop() {
     }
   }
 
-  // Beacon mindig mehet
+  // Beacon – lejátszás közben ne
   sendBeaconIfDue();
 
   // Ne pollozzunk amíg stream folyik vagy pending ACK van
@@ -73,6 +73,9 @@ void DeviceAgent::loop() {
 }
 
 void DeviceAgent::sendBeaconIfDue() {
+  // Ne küldjünk beaconot lejátszás közben – heap védelme
+  if (_audio->isPlaying() && _audio->isStreamMode()) return;
+
   const unsigned long now = millis();
   if (_lastBeaconMs != 0 && (now - _lastBeaconMs) < BEACON_INTERVAL_MS) return;
 
@@ -137,7 +140,6 @@ bool DeviceAgent::executeAndAck(const PolledCommand& cmd) {
       _tel->markServerOk();
       Serial.println("[AGENT] ACK sent OK");
     } else {
-      // Fallback: pending ACK lejátszás után
       Serial.println("[AGENT] Pre-play ACK failed, storing as pending");
       _pendingAck    = true;
       _pendingAckId  = cmd.id;
