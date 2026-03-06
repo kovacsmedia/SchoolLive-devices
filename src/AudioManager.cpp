@@ -1,18 +1,24 @@
 #include "AudioManager.h"
-
 #include <LittleFS.h>
 #include "Audio.h"
 
-// A library callback-jei globális függvényeket keresnek.
-// Üresen hagyjuk őket, hogy ne termeljenek logot (és ne nőjön a bináris).
+// Globális pointer az EOF callback-hez
+static AudioManager* _instance = nullptr;
 
 void audio_info(const char *info) { Serial.printf("[AUDIO] %s\n", info); }
-void audio_eof_mp3(const char *info) { Serial.printf("[AUDIO] EOF: %s\n", info); }
+
+void audio_eof_mp3(const char *info) {
+  Serial.printf("[AUDIO] EOF: %s\n", info);
+  if (_instance) _instance->notifyEof();
+}
+
 AudioManager::AudioManager() {
   currentVolume = 5;
 }
 
 void AudioManager::begin() {
+  _instance = this;
+
   if (!audio) {
     audio = new Audio();
   }
@@ -34,7 +40,6 @@ void AudioManager::setVolume(uint8_t vol) {
 
   currentVolume = vol;
 
-  // ESP32-audioI2S belső volume skála (0..21 körül)
   uint8_t internalVolume = map(currentVolume, 1, 10, 2, 21);
 
   if (audio) {
@@ -48,25 +53,32 @@ uint8_t AudioManager::getVolume() const {
 
 void AudioManager::playFile(const char* filename) {
   if (!audio || !filename) return;
-
+  _eofReceived = false;
   if (LittleFS.exists(filename)) {
-    _streamMode = false; // helyi lejátszás
+    _streamMode = false;
     audio->connecttoFS(LittleFS, filename);
   }
 }
 
 void AudioManager::playUrl(const char* url) {
   if (!audio || !url) return;
-
-  _streamMode = true; // URL/stream lejátszás
+  _eofReceived = false;
+  _streamMode = true;
   audio->connecttohost(url);
+}
+
+void AudioManager::notifyEof() {
+  Serial.println("[AUDIO] notifyEof – stopping stream");
+  _eofReceived = true;
+  _streamMode = false;
+  if (audio) audio->stopSong();
 }
 
 void AudioManager::stop() {
   if (!audio) return;
-
   audio->stopSong();
   _streamMode = false;
+  _eofReceived = false;
 }
 
 bool AudioManager::isPlaying() const {

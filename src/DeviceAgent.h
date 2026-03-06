@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <WiFi.h>
 #include "DeviceTelemetry.h"
 #include "AudioManager.h"
 #include "NetworkManager.h"
@@ -28,11 +29,12 @@ private:
   const unsigned long BEACON_INTERVAL_MS = 30000;
   const unsigned long POLL_INTERVAL_MS   = 1500;
 
-  // Pending ACK – lejátszás után küldjük
   bool _pendingAck = false;
   String _pendingAckId;
   bool _pendingAckOk = false;
   String _pendingAckErr;
+  unsigned long _ackReadyMs = 0;
+  const unsigned long ACK_DELAY_MS = 3000;
 
   void sendBeaconIfDue();
   void pollIfDue();

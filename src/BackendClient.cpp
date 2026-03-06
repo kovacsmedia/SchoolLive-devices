@@ -2,8 +2,6 @@
 
 void BackendClient::begin(const String& baseUrl) {
   _baseUrl = baseUrl;
-
-  // trailing slash eltávolítás
   if (_baseUrl.endsWith("/")) {
     _baseUrl.remove(_baseUrl.length() - 1);
   }
@@ -29,14 +27,16 @@ bool BackendClient::postJson(const String& path,
   if (!isReady()) return false;
 
   WiFiClientSecure client;
-  client.setInsecure();   // később CA/pinning javasolt
+  client.setInsecure();
 
   HTTPClient http;
-  http.setTimeout(5000);
+  http.setTimeout(8000);
 
   const String url = _baseUrl + path;
+  Serial.printf("[HTTP] POST %s\n", url.c_str());
 
   if (!http.begin(client, url)) {
+    Serial.println("[HTTP] begin() failed");
     return false;
   }
 
@@ -46,17 +46,21 @@ bool BackendClient::postJson(const String& path,
   serializeJson(req, body);
 
   httpCode = http.POST(body);
+  Serial.printf("[HTTP] httpCode: %d\n", httpCode);
 
   if (httpCode <= 0) {
+    Serial.printf("[HTTP] Error: %s\n", http.errorToString(httpCode).c_str());
     http.end();
     return false;
   }
 
   String responseStr = http.getString();
+  Serial.printf("[HTTP] Response: %.200s\n", responseStr.c_str());
   http.end();
 
   DeserializationError err = deserializeJson(resp, responseStr);
   if (err) {
+    Serial.printf("[HTTP] JSON parse error: %s\n", err.c_str());
     return false;
   }
 
@@ -71,8 +75,6 @@ bool BackendClient::sendBeacon(uint8_t volume,
   req["volume"] = volume;
   req["muted"] = muted;
   req["firmwareVersion"] = firmwareVersion;
-
-  // ArduinoJson 7 kompatibilis const másolás
   req["statusPayload"].set(statusPayload.as<JsonVariantConst>());
 
   JsonDocument resp;
@@ -93,8 +95,6 @@ bool BackendClient::poll(PolledCommand& outCmd) {
   bool ok = postJson("/devices/poll", req, resp, code);
   if (!ok) return false;
 
-  // backend válasz:
-  // { ok: true, command: null | { id, payload } }
   if (!resp["ok"].is<bool>() || !resp["ok"].as<bool>()) {
     return false;
   }
@@ -105,11 +105,8 @@ bool BackendClient::poll(PolledCommand& outCmd) {
   }
 
   JsonObject cmd = resp["command"].as<JsonObject>();
-
   outCmd.hasCommand = true;
   outCmd.id = cmd["id"].as<String>();
-
-  // payload teljes másolása
   outCmd.payload.clear();
   outCmd.payload.set(cmd["payload"].as<JsonVariantConst>());
 
@@ -132,6 +129,7 @@ bool BackendClient::ack(const String& commandId,
 
   return postJson("/devices/ack", req, resp, code);
 }
+
 bool BackendClient::postJsonUnauthed(const String& path,
                                     const JsonDocument& req,
                                     JsonDocument& resp,
@@ -181,7 +179,6 @@ bool BackendClient::confirmProvisioning(const String& provisioningToken,
   bool ok = postJsonUnauthed("/provision/provision/confirm", req, resp, code);
   if (!ok) return false;
 
-  // várható: { ok, deviceKey, wifi: { ssid, password }, device: {...} }
   if (resp["deviceKey"].is<const char*>()) outDeviceKey = resp["deviceKey"].as<String>();
   if (resp["wifi"]["ssid"].is<const char*>()) outWifiSsid = resp["wifi"]["ssid"].as<String>();
   if (resp["wifi"]["password"].is<const char*>()) outWifiPass = resp["wifi"]["password"].as<String>();

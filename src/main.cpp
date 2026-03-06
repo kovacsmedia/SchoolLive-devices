@@ -145,43 +145,6 @@ void startNormalMode() {
   );
 }
 
-  bool wifiOk = networkManager.syncTimeBlocking();
-  if (!wifiOk) {
-    uiManager->drawBootStatus("WIFI FAILED!", "Check wifi config");
-    delay(3000);
-  } else {
-    uiManager->drawBootStatus("WIFI OK!", networkManager.getIP().c_str());
-    delay(1000);
-  }
-
-  // ... többi kód változatlan
-
-  backend.begin(String(BACKEND_BASE_URL));
-
-  String dk = store.getDeviceKey();
-  if (dk.length() == 0 && String(DEVICE_KEY_DEFAULT).length() > 0) {
-    dk = String(DEVICE_KEY_DEFAULT);
-    store.setDeviceKey(dk);
-  }
-  backend.setDeviceKey(dk);
-
-  telemetry.firmwareVersion = String(FW_VERSION);
-  telemetry.deviceId = WiFi.macAddress();
-
-  agent.begin(networkManager, audioManager, *uiManager, backend, telemetry);
-  agent.setFirmwareVersion(String(FW_VERSION));
-
-  xTaskCreatePinnedToCore(
-    TaskNetwork,
-    "NetworkTask",
-    12000,
-    NULL,
-    1,
-    &TaskNetworkHandle,
-    0
-  );
-}
-
 // --- SETUP ---
 void setup() {
   Serial.begin(115200);

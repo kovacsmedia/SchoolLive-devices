@@ -14,6 +14,7 @@ void DeviceAgent::begin(NetworkManager& net,
   _lastBeaconMs = 0;
   _lastPollMs = 0;
   _pendingAck = false;
+  _ackReadyMs = 0;
 }
 
 void DeviceAgent::loop() {
@@ -27,23 +28,56 @@ void DeviceAgent::loop() {
   if (!_net->isConnected()) return;
   if (!_backend->isReady()) return;
 
-  // Pending ACK küldése ha lejátszás befejeződött
+  // Pending ACK kezelése
   if (_pendingAck && !_audio->isPlaying()) {
+    if (_ackReadyMs == 0) {
+      _ackReadyMs = millis();
+      Serial.printf("[AGENT] Playback done, waiting %lums for recovery...\n", ACK_DELAY_MS);
+
+      // WiFi reconnect ha szükséges
+      if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("[AGENT] WiFi lost after stream, reconnecting...");
+        WiFi.reconnect();
+      }
+      return;
+    }
+
+    // Várakozás közben figyeljük a WiFi-t
+    if (millis() - _ackReadyMs < ACK_DELAY_MS) {
+      if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("[AGENT] WiFi reconnecting...");
+        WiFi.reconnect();
+      }
+      return;
+    }
+
+    // Ha még mindig nincs WiFi, reseteljük a timert és várunk tovább
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("[AGENT] WiFi still down, extending wait...");
+      _ackReadyMs = millis();
+      WiFi.reconnect();
+      return;
+    }
+
+    Serial.printf("[AGENT] Free heap before ACK: %d\n", ESP.getFreeHeap());
     Serial.printf("[AGENT] Sending pending ACK for: %s\n", _pendingAckId.c_str());
+
     bool ackOk = _backend->ack(_pendingAckId, _pendingAckOk, _pendingAckErr);
     if (ackOk) {
       _tel->ackOk++;
       _tel->markServerOk();
       _pendingAck = false;
+      _ackReadyMs = 0;
       Serial.println("[AGENT] ACK sent OK");
     } else {
       _tel->ackErr++;
       _tel->markServerErr("ack failed");
-      Serial.println("[AGENT] ACK failed, will retry");
+      _ackReadyMs = millis();
+      Serial.println("[AGENT] ACK failed, will retry in 3s");
     }
   }
 
-  // Beacon mindig mehet (online státusz megőrzése)
+  // Beacon mindig mehet
   sendBeaconIfDue();
 
   // Ne pollozzunk amíg stream folyik vagy pending ACK van
@@ -111,24 +145,14 @@ bool DeviceAgent::executeAndAck(const PolledCommand& cmd) {
 
   if (action == "PLAY_URL") {
     ok = handlePlayUrl(p, err);
-    if (ok) {
-      // ACK-ot a lejátszás befejezése után küldjük
-      _pendingAck    = true;
-      _pendingAckId  = cmd.id;
-      _pendingAckOk  = true;
-      _pendingAckErr = "";
-      _tel->lastCommandId = cmd.id;
-      _tel->lastCommandOk = true;
-      return true;
-    }
-    // Ha handlePlayUrl false-t adott vissza, azonnal hibás ACK
     _pendingAck    = true;
     _pendingAckId  = cmd.id;
-    _pendingAckOk  = false;
+    _pendingAckOk  = ok;
     _pendingAckErr = err;
+    _ackReadyMs    = 0;
     _tel->lastCommandId = cmd.id;
-    _tel->lastCommandOk = false;
-    return false;
+    _tel->lastCommandOk = ok;
+    return ok;
   }
 
   if (action == "SET_VOLUME") {
@@ -144,7 +168,6 @@ bool DeviceAgent::executeAndAck(const PolledCommand& cmd) {
   _tel->lastCommandId = cmd.id;
   _tel->lastCommandOk = ok;
 
-  // Nem PLAY_URL esetén azonnal ackolunk
   bool ackOk = _backend->ack(cmd.id, ok, err);
   if (ackOk) { _tel->ackOk++; _tel->markServerOk(); }
   else        { _tel->ackErr++; _tel->markServerErr("ack failed"); }
