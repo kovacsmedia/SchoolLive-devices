@@ -192,4 +192,13 @@ bool DeviceAgent::handleSetVolume(JsonVariantConst payload, String& err) {
 
 bool DeviceAgent::handleShowMessage(JsonVariantConst payload, String& err) {
   String title = payload["title"].is<const char*>() ? payload["title"].as<String>() : String("MESSAGE");
-  String text  = payloa
+  String text  = payload["text"].is<const char*>()  ? payload["text"].as<String>()  : String("");
+
+  if (title.length() == 0 && text.length() == 0) {
+    err = "Missing title/text";
+    return false;
+  }
+
+  _ui->drawBootStatus(title, text);
+  return true;
+}
