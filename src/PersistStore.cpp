@@ -33,6 +33,10 @@ String PersistStore::getWifiPass() const {
   return _prefs.getString("wifiPass", "");
 }
 
+String PersistStore::getWifiUser() const {
+  return _prefs.getString("wifiUser", "");
+}
+
 bool PersistStore::setWifi(const String& ssid, const String& pass) {
   if (ssid.length() == 0) return false;
   _prefs.putString("wifiSsid", ssid);
@@ -40,14 +44,21 @@ bool PersistStore::setWifi(const String& ssid, const String& pass) {
   return true;
 }
 
+bool PersistStore::setWifiUser(const String& user) {
+  _prefs.putString("wifiUser", user);
+  return true;
+}
+
 void PersistStore::clearWifi() {
   _prefs.remove("wifiSsid");
   _prefs.remove("wifiPass");
+  _prefs.remove("wifiUser");
 }
 
 void PersistStore::factoryReset() {
   _prefs.clear();
 }
+
 bool PersistStore::hasProvisionToken() const {
   return _prefs.isKey("provToken") && _prefs.getString("provToken", "").length() > 0;
 }

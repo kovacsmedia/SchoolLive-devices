@@ -500,8 +500,6 @@ void UIManager::enterProvisioningMode() {
     display.clearDisplay();
     display.setTextSize(1);
     display.setCursor(0, 0);
-    display.print("** PROVISIONING **");
-    display.setCursor(0, 12);
     display.print("Var aktivalasra...");
     display.display();
 }
@@ -510,14 +508,12 @@ void UIManager::updateProvisioningDisplay(const String& mac, const String& ip, c
     display.clearDisplay();
     display.setTextSize(1);
     display.setCursor(0, 0);
-    display.print("** PROVISIONING **");
-    display.setCursor(0, 10);
     display.print("MAC:");
     display.print(mac);
-    display.setCursor(0, 20);
+    display.setCursor(0, 11);
     display.print("IP: ");
     display.print(ip.length() > 0 ? ip : "...");
-    display.setCursor(0, 30);
+    display.setCursor(0, 22);
     display.print(status);
     display.display();
 }

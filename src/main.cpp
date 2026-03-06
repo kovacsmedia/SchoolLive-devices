@@ -110,27 +110,40 @@ void startNormalMode() {
   uiManager->drawBootStatus("System check", "WiFi + time sync");
   delay(300);
 
-  // NVS-ből WiFi csatlakozás ha nincs wifi.txt
-  if (store.hasWifi() && !LittleFS.exists("/wifi.txt")) {
-    Serial.println("[MAIN] No wifi.txt, using NVS credentials");
-    String ssid = store.getWifiSsid();
-    String pass = store.getWifiPass();
-    Serial.println("[MAIN] SSID: " + ssid);
-
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(ssid.c_str(), pass.c_str());
-
-    // wifi.txt létrehozása a jövőre
-    if (LittleFS.begin(false)) {
-      File f = LittleFS.open("/wifi.txt", "w");
-      if (f) {
-        f.print("\""); f.print(ssid); f.print("\",\"");
-        f.print(pass); f.println("\"");
-        f.close();
-        Serial.println("[MAIN] wifi.txt created from NVS");
-      }
-    }
+  bool wifiOk = networkManager.syncTimeBlocking();
+  if (!wifiOk) {
+    uiManager->drawBootStatus("WIFI FAILED!", "Check wifi config");
+    delay(3000);
+  } else {
+    uiManager->drawBootStatus("WIFI OK!", networkManager.getIP().c_str());
+    delay(1000);
   }
+
+  backend.begin(String(BACKEND_BASE_URL));
+
+  String dk = store.getDeviceKey();
+  if (dk.length() == 0 && String(DEVICE_KEY_DEFAULT).length() > 0) {
+    dk = String(DEVICE_KEY_DEFAULT);
+    store.setDeviceKey(dk);
+  }
+  backend.setDeviceKey(dk);
+
+  telemetry.firmwareVersion = String(FW_VERSION);
+  telemetry.deviceId = WiFi.macAddress();
+
+  agent.begin(networkManager, audioManager, *uiManager, backend, telemetry);
+  agent.setFirmwareVersion(String(FW_VERSION));
+
+  xTaskCreatePinnedToCore(
+    TaskNetwork,
+    "NetworkTask",
+    12000,
+    NULL,
+    1,
+    &TaskNetworkHandle,
+    0
+  );
+}
 
   bool wifiOk = networkManager.syncTimeBlocking();
   if (!wifiOk) {

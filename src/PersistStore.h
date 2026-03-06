@@ -5,29 +5,28 @@
 class PersistStore {
 public:
   bool begin();
-  // provisioning token (csak átmenetileg)
+
   bool hasProvisionToken() const;
   String getProvisionToken() const;
   bool setProvisionToken(const String& token);
   void clearProvisionToken();
-  // deviceKey
+
   bool hasDeviceKey() const;
   String getDeviceKey() const;
   bool setDeviceKey(const String& key);
   void clearDeviceKey();
 
-  // (előre készítjük a provisioninghez)
   bool hasWifi() const;
   String getWifiSsid() const;
   String getWifiPass() const;
+  String getWifiUser() const;           // ÚJ: WPA2 Enterprise user
   bool setWifi(const String& ssid, const String& pass);
+  bool setWifiUser(const String& user); // ÚJ
   void clearWifi();
 
-  // “factory reset to provision”
   void factoryReset();
 
 private:
   mutable Preferences _prefs;
   static constexpr const char* NS = "schoollive";
-
 };
