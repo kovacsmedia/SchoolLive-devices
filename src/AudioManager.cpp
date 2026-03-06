@@ -18,7 +18,7 @@ void audio_eof_stream(const char *info) {
 }
 
 AudioManager::AudioManager() {
-  currentVolume = 5;
+  currentVolume = 10;
 }
 
 void AudioManager::begin() {
