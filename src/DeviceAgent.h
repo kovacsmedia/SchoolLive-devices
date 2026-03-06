@@ -5,7 +5,7 @@
 #include "AudioManager.h"
 #include "NetworkManager.h"
 #include "BackendClient.h"
-#include "UIManager.h"   // <-- új
+#include "UIManager.h"
 
 class DeviceAgent {
 public:
@@ -17,9 +17,9 @@ public:
 private:
   NetworkManager* _net = nullptr;
   AudioManager* _audio = nullptr;
-  UIManager* _ui = nullptr;          // <-- új
+  UIManager* _ui = nullptr;
   BackendClient* _backend = nullptr;
-  bool handlePlayUrl(JsonVariantConst payload, String& err);
+
   String _fw = "dev";
 
   unsigned long _lastBeaconMs = 0;
@@ -28,10 +28,17 @@ private:
   const unsigned long BEACON_INTERVAL_MS = 30000;
   const unsigned long POLL_INTERVAL_MS   = 1500;
 
+  // Pending ACK – lejátszás után küldjük
+  bool _pendingAck = false;
+  String _pendingAckId;
+  bool _pendingAckOk = false;
+  String _pendingAckErr;
+
   void sendBeaconIfDue();
   void pollIfDue();
   bool executeAndAck(const PolledCommand& cmd);
 
+  bool handlePlayUrl(JsonVariantConst payload, String& err);
   bool handleSetVolume(JsonVariantConst payload, String& err);
-  bool handleShowMessage(JsonVariantConst payload, String& err);  // <-- új
+  bool handleShowMessage(JsonVariantConst payload, String& err);
 };

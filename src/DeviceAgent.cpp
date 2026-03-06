@@ -13,6 +13,7 @@ void DeviceAgent::begin(NetworkManager& net,
 
   _lastBeaconMs = 0;
   _lastPollMs = 0;
+  _pendingAck = false;
 }
 
 void DeviceAgent::loop() {
@@ -26,14 +27,33 @@ void DeviceAgent::loop() {
   if (!_net->isConnected()) return;
   if (!_backend->isReady()) return;
 
+  // Pending ACK küldése ha lejátszás befejeződött
+  if (_pendingAck && !_audio->isPlaying()) {
+    Serial.printf("[AGENT] Sending pending ACK for: %s\n", _pendingAckId.c_str());
+    bool ackOk = _backend->ack(_pendingAckId, _pendingAckOk, _pendingAckErr);
+    if (ackOk) {
+      _tel->ackOk++;
+      _tel->markServerOk();
+      _pendingAck = false;
+      Serial.println("[AGENT] ACK sent OK");
+    } else {
+      _tel->ackErr++;
+      _tel->markServerErr("ack failed");
+      Serial.println("[AGENT] ACK failed, will retry");
+    }
+  }
+
+  // Beacon mindig mehet (online státusz megőrzése)
   sendBeaconIfDue();
+
+  // Ne pollozzunk amíg stream folyik vagy pending ACK van
+  if (_audio->isPlaying() && _audio->isStreamMode()) return;
+  if (_pendingAck) return;
+
   pollIfDue();
 }
 
 void DeviceAgent::sendBeaconIfDue() {
-  // Ne küldjünk beacon-t amíg stream lejátszás folyik (heap védelem)
-  if (_audio->isPlaying() && _audio->isStreamMode()) return;
-
   const unsigned long now = millis();
   if (_lastBeaconMs != 0 && (now - _lastBeaconMs) < BEACON_INTERVAL_MS) return;
 
@@ -55,9 +75,6 @@ void DeviceAgent::sendBeaconIfDue() {
 }
 
 void DeviceAgent::pollIfDue() {
-  // Ne pollozzunk amíg stream lejátszás folyik (heap védelem)
-  if (_audio->isPlaying() && _audio->isStreamMode()) return;
-
   const unsigned long now = millis();
   if (_lastPollMs != 0 && (now - _lastPollMs) < POLL_INTERVAL_MS) return;
 
@@ -94,7 +111,27 @@ bool DeviceAgent::executeAndAck(const PolledCommand& cmd) {
 
   if (action == "PLAY_URL") {
     ok = handlePlayUrl(p, err);
-  } else if (action == "SET_VOLUME") {
+    if (ok) {
+      // ACK-ot a lejátszás befejezése után küldjük
+      _pendingAck    = true;
+      _pendingAckId  = cmd.id;
+      _pendingAckOk  = true;
+      _pendingAckErr = "";
+      _tel->lastCommandId = cmd.id;
+      _tel->lastCommandOk = true;
+      return true;
+    }
+    // Ha handlePlayUrl false-t adott vissza, azonnal hibás ACK
+    _pendingAck    = true;
+    _pendingAckId  = cmd.id;
+    _pendingAckOk  = false;
+    _pendingAckErr = err;
+    _tel->lastCommandId = cmd.id;
+    _tel->lastCommandOk = false;
+    return false;
+  }
+
+  if (action == "SET_VOLUME") {
     ok = handleSetVolume(p, err);
   } else if (action == "SHOW_MESSAGE") {
     ok = handleShowMessage(p, err);
@@ -107,6 +144,7 @@ bool DeviceAgent::executeAndAck(const PolledCommand& cmd) {
   _tel->lastCommandId = cmd.id;
   _tel->lastCommandOk = ok;
 
+  // Nem PLAY_URL esetén azonnal ackolunk
   bool ackOk = _backend->ack(cmd.id, ok, err);
   if (ackOk) { _tel->ackOk++; _tel->markServerOk(); }
   else        { _tel->ackErr++; _tel->markServerErr("ack failed"); }
@@ -154,13 +192,4 @@ bool DeviceAgent::handleSetVolume(JsonVariantConst payload, String& err) {
 
 bool DeviceAgent::handleShowMessage(JsonVariantConst payload, String& err) {
   String title = payload["title"].is<const char*>() ? payload["title"].as<String>() : String("MESSAGE");
-  String text  = payload["text"].is<const char*>()  ? payload["text"].as<String>()  : String("");
-
-  if (title.length() == 0 && text.length() == 0) {
-    err = "Missing title/text";
-    return false;
-  }
-
-  _ui->drawBootStatus(title, text);
-  return true;
-}
+  String text  = payloa
