@@ -17,9 +17,9 @@
 // --- Globális objektumok ---
 NetworkManager  networkManager;
 AudioManager    audioManager;
-BellManager     bellManager(audioManager, networkManager);
 PersistStore    store;
 BackendClient   backend;
+BellManager     bellManager(audioManager, networkManager, backend);
 DeviceAgent     agent;
 DeviceTelemetry telemetry;
 
