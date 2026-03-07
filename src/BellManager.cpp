@@ -301,9 +301,9 @@ bool BellManager::loadTodayFromNVS(const String& dateStr, const String& version)
 
     // 0 = ünnepnap volt cache-elve → érvényes
     if (count == 0) {
+        _todayVersionKnown = prefs.getString(NVS_BELL_TODAY_VER, "");
         prefs.end();
         _entryCount = 0;
-        _todayVersionKnown = prefs.getString(NVS_BELL_TODAY_VER, "");
         return true;
     }
     if (count > MAX_BELL_ENTRIES) { prefs.end(); return false; }
