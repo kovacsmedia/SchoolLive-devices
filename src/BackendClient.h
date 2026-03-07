@@ -21,8 +21,16 @@ public:
     bool poll(PolledCommand& outCmd);
     bool ack(const String& commandId, bool ok, const String& errorMsg);
 
-    // GET kérés – BellManager /bells/sync hívásához
+    // GET kérés JSON válasszal
     bool getJson(const String& path, JsonDocument& resp, int& httpCode);
+
+    // Hangfájl letöltése LittleFS-re
+    // url: teljes URL (pl. https://api.../audio/bells/hang.mp3)
+    // localPath: LittleFS elérési út (pl. /hang.mp3)
+    // expectedBytes: ha > 0, méret-ellenőrzés; 0 = skip
+    // Visszatér true ha sikeres vagy már létezik megfelelő méretű fájl
+    bool downloadFile(const String& url, const String& localPath,
+                      size_t expectedBytes = 0);
 
     // Provisioning (deviceKey nélkül)
     bool confirmProvisioning(const String& provisioningToken,
@@ -35,11 +43,11 @@ private:
     static const unsigned long HTTP_COOLDOWN_MS = 2500UL;
     String _baseUrl;
     String _deviceKey;
+
     void waitCooldown();
     bool postJson(const String& path, const JsonDocument& req,
                   JsonDocument& resp, int& httpCode);
     bool postJsonUnauthed(const String& path, const JsonDocument& req,
                           JsonDocument& resp, int& httpCode);
     void addCommonHeaders(HTTPClient& http);
-    
 };

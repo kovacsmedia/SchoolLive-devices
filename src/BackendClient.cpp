@@ -1,4 +1,5 @@
 #include "BackendClient.h"
+#include <LittleFS.h>
 
 void BackendClient::begin(const String& baseUrl) {
     _baseUrl = baseUrl;
@@ -36,12 +37,10 @@ bool BackendClient::postJson(const String& path,
                              JsonDocument& resp,
                              int& httpCode) {
     if (!isReady()) return false;
-
     waitCooldown();
 
     WiFiClientSecure client;
     client.setInsecure();
-
     HTTPClient http;
     http.setTimeout(8000);
 
@@ -52,12 +51,10 @@ bool BackendClient::postJson(const String& path,
         Serial.println("[HTTP] begin() failed");
         return false;
     }
-
     addCommonHeaders(http);
 
     String body;
     serializeJson(req, body);
-
     httpCode = http.POST(body);
     Serial.printf("[HTTP] httpCode: %d\n", httpCode);
 
@@ -78,23 +75,20 @@ bool BackendClient::postJson(const String& path,
         Serial.printf("[HTTP] JSON parse error: %s\n", err.c_str());
         return false;
     }
-
     return (httpCode >= 200 && httpCode < 300);
 }
 
 // ---------------------------------------------------------------------------
-// GET
+// GET JSON
 // ---------------------------------------------------------------------------
 bool BackendClient::getJson(const String& path,
                             JsonDocument& resp,
                             int& httpCode) {
     if (!isReady()) return false;
-
     waitCooldown();
 
     WiFiClientSecure client;
     client.setInsecure();
-
     HTTPClient http;
     http.setTimeout(8000);
 
@@ -105,7 +99,6 @@ bool BackendClient::getJson(const String& path,
         Serial.println("[HTTP] GET begin() failed");
         return false;
     }
-
     addCommonHeaders(http);
 
     httpCode = http.GET();
@@ -127,8 +120,120 @@ bool BackendClient::getJson(const String& path,
         Serial.printf("[HTTP] GET JSON parse error: %s\n", err.c_str());
         return false;
     }
-
     return (httpCode >= 200 && httpCode < 300);
+}
+
+// ---------------------------------------------------------------------------
+// downloadFile – hangfájl letöltése LittleFS-re
+// ---------------------------------------------------------------------------
+bool BackendClient::downloadFile(const String& url,
+                                 const String& localPath,
+                                 size_t expectedBytes) {
+    // Ha már létezik és mérete egyezik → skip
+    if (LittleFS.exists(localPath)) {
+        if (expectedBytes == 0) {
+            Serial.printf("[DL] Already exists: %s (skip)\n", localPath.c_str());
+            return true;
+        }
+        File f = LittleFS.open(localPath, "r");
+        if (f) {
+            size_t existingSize = f.size();
+            f.close();
+            if (existingSize == expectedBytes) {
+                Serial.printf("[DL] Already exists: %s (%d bytes, skip)\n",
+                              localPath.c_str(), existingSize);
+                return true;
+            }
+            Serial.printf("[DL] Size mismatch %s: local=%d expected=%d, re-downloading\n",
+                          localPath.c_str(), existingSize, expectedBytes);
+        }
+    }
+
+    waitCooldown();
+
+    WiFiClientSecure client;
+    client.setInsecure();
+    HTTPClient http;
+    http.setTimeout(15000);  // fájlletöltéshez több idő kell
+
+    Serial.printf("[DL] Downloading %s → %s\n", url.c_str(), localPath.c_str());
+
+    if (!http.begin(client, url)) {
+        Serial.println("[DL] begin() failed");
+        return false;
+    }
+    // Device key küldése (a szerver authorizálja az audio endpoint-ot is)
+    if (_deviceKey.length() > 0) {
+        http.addHeader("x-device-key", _deviceKey);
+    }
+
+    int httpCode = http.GET();
+    Serial.printf("[DL] httpCode: %d\n", httpCode);
+
+    if (httpCode != 200) {
+        Serial.printf("[DL] Error: %s\n", http.errorToString(httpCode).c_str());
+        _lastHttpEndMs = millis();
+        http.end();
+        return false;
+    }
+
+    // Stream-elve írjuk LittleFS-re, hogy ne kelljen az egész fájl RAM-ba
+    WiFiClient* stream = http.getStreamPtr();
+    if (!stream) {
+        Serial.println("[DL] No stream");
+        _lastHttpEndMs = millis();
+        http.end();
+        return false;
+    }
+
+    File file = LittleFS.open(localPath, "w");
+    if (!file) {
+        Serial.printf("[DL] Cannot open for write: %s\n", localPath.c_str());
+        _lastHttpEndMs = millis();
+        http.end();
+        return false;
+    }
+
+    uint8_t buf[512];
+    size_t totalWritten = 0;
+    int contentLength = http.getSize();
+    unsigned long dlStart = millis();
+
+    while (http.connected() && (contentLength > 0 || contentLength == -1)) {
+        size_t avail = stream->available();
+        if (avail == 0) {
+            if (millis() - dlStart > 15000) {
+                Serial.println("[DL] Timeout");
+                break;
+            }
+            delay(1);
+            continue;
+        }
+        size_t toRead = min(avail, sizeof(buf));
+        size_t read   = stream->readBytes(buf, toRead);
+        if (read > 0) {
+            file.write(buf, read);
+            totalWritten += read;
+            dlStart = millis();  // reset timeout
+        }
+        if (contentLength > 0 && (int)totalWritten >= contentLength) break;
+    }
+
+    file.close();
+    _lastHttpEndMs = millis();
+    http.end();
+
+    Serial.printf("[DL] Done: %s (%d bytes)\n", localPath.c_str(), totalWritten);
+
+    // Ellenőrzés
+    if (expectedBytes > 0 && totalWritten != expectedBytes) {
+        Serial.printf("[DL] Size mismatch after download: got=%d expected=%d\n",
+                      totalWritten, expectedBytes);
+        LittleFS.remove(localPath);  // hibás fájl törlése
+        return false;
+    }
+
+    return totalWritten > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -163,7 +268,6 @@ bool BackendClient::poll(PolledCommand& outCmd) {
 
     bool ok = postJson("/devices/poll", req, resp, code);
     if (!ok) return false;
-
     if (!resp["ok"].is<bool>() || !resp["ok"].as<bool>()) return false;
 
     if (resp["command"].isNull()) {
@@ -176,7 +280,6 @@ bool BackendClient::poll(PolledCommand& outCmd) {
     outCmd.id         = cmd["id"].as<String>();
     outCmd.payload.clear();
     outCmd.payload.set(cmd["payload"].as<JsonVariantConst>());
-
     return true;
 }
 
@@ -204,24 +307,21 @@ bool BackendClient::postJsonUnauthed(const String& path,
                                      JsonDocument& resp,
                                      int& httpCode) {
     if (_baseUrl.length() == 0) return false;
-
     waitCooldown();
 
     WiFiClientSecure client;
     client.setInsecure();
-
     HTTPClient http;
     http.setTimeout(7000);
 
     const String url = _baseUrl + path;
     if (!http.begin(client, url)) return false;
-
     http.addHeader("Content-Type", "application/json");
 
     String body;
     serializeJson(req, body);
-
     httpCode = http.POST(body);
+
     if (httpCode <= 0) {
         _lastHttpEndMs = millis();
         http.end();
@@ -234,7 +334,6 @@ bool BackendClient::postJsonUnauthed(const String& path,
 
     DeserializationError err = deserializeJson(resp, responseStr);
     if (err) return false;
-
     return (httpCode >= 200 && httpCode < 300);
 }
 

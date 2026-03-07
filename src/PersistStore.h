@@ -24,7 +24,10 @@ public:
   bool setWifiUser(const String& user); // ÚJ
   void clearWifi();
 
-  void factoryReset();
+  void factoryReset(); 
+  uint8_t getVolume(uint8_t defaultVal = 9) const;
+  bool    setVolume(uint8_t vol);
+
 
 private:
   mutable Preferences _prefs;

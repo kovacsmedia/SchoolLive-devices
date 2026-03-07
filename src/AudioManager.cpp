@@ -1,4 +1,5 @@
 #include "AudioManager.h"
+#include "PersistStore.h"
 #include <LittleFS.h>
 #include <WiFi.h>
 #include "Audio.h"
@@ -19,11 +20,18 @@ void audio_eof_stream(const char* info) {
 }
 
 AudioManager::AudioManager() {
-    currentVolume = 10;
+    currentVolume = 9;  // default, begin()-ben felülírja a store ha van
 }
 
-void AudioManager::begin() {
+void AudioManager::begin(PersistStore* store) {
     _instance = this;
+    _store    = store;
+
+    // Legutóbbi hangerő visszaállítása, ha van store
+    if (_store) {
+        currentVolume = _store->getVolume(9);
+        Serial.printf("[AUDIO] Restored volume: %d\n", currentVolume);
+    }
 
     if (!audio) {
         audio = new Audio();
@@ -45,6 +53,7 @@ void AudioManager::setVolume(uint8_t vol) {
     currentVolume = vol;
     uint8_t internalVolume = map(currentVolume, 1, 10, 2, 21);
     if (audio) audio->setVolume(internalVolume);
+    if (_store) _store->setVolume(vol);  // mentés NVS-be
 }
 
 uint8_t AudioManager::getVolume() const {

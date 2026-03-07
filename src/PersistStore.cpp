@@ -75,3 +75,11 @@ bool PersistStore::setProvisionToken(const String& token) {
 void PersistStore::clearProvisionToken() {
   _prefs.remove("provToken");
 }
+
+uint8_t PersistStore::getVolume(uint8_t defaultVal) const {
+  return _prefs.getUChar("volume", defaultVal);
+}
+
+bool PersistStore::setVolume(uint8_t vol) {
+  return _prefs.putUChar("volume", vol) > 0;
+}

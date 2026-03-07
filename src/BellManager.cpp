@@ -1,11 +1,11 @@
 #include "BellManager.h"
 #include "Config.h"
 #include <Preferences.h>
+#include <LittleFS.h>
 #include <string.h>
 
 // ---------------------------------------------------------------------------
-// Hardcoded fallback – csak akkor aktív, ha a szerverről soha nem érkezett
-// default schedule, és az NVS-ben sincs mentve semmi.
+// Hardcoded fallback
 // ---------------------------------------------------------------------------
 const BellEntry BellManager::HARDCODED_DEFAULT[] = {
     { 7, 30, BellType::SIGNAL, "jelzocsengo.mp3" },
@@ -46,14 +46,14 @@ BellManager::BellManager(AudioManager& audioMgr,
     : audio(audioMgr), network(netMgr), backend(be) {}
 
 void BellManager::begin() {
-    _entryCount           = 0;
-    _syncedToday          = false;
-    _syncedFromServer     = false;
-    _lastVersionCheckMs = millis();  // ne azonnal szinkronizáljon induláskor
-    _scheduleSource       = "";
-    _loadedDate           = "";
-    _todayVersionKnown    = "";
-    _defaultVersionKnown  = "";
+    _entryCount          = 0;
+    _syncedToday         = false;
+    _syncedFromServer    = false;
+    _lastVersionCheckMs  = millis();  // ne azonnal szinkronizáljon
+    _scheduleSource      = "";
+    _loadedDate          = "";
+    _todayVersionKnown   = "";
+    _defaultVersionKnown = "";
 }
 
 // ---------------------------------------------------------------------------
@@ -70,33 +70,23 @@ void BellManager::loop() {
 
 // ---------------------------------------------------------------------------
 // maybeSyncSchedule
-// Logika:
-//   1. Percenként: GET /bells/version (gyors)
-//   2. Ha todayVersion vagy defaultVersion változott → GET /bells/sync (teljes)
-//   3. Ha szerver nem elérhető:
-//      a. Napi NVS cache (ha dátum + verzió egyezik)
-//      b. NVS default schedule
-//      c. Hardcoded default
 // ---------------------------------------------------------------------------
 void BellManager::maybeSyncSchedule() {
     String today = getTodayDateStr();
 
-    // Dátum változott (éjfél) → reset, azonnal szinkronizál
     if (_loadedDate != today) {
-        _syncedToday      = false;
-        _syncedFromServer = false;
-        _entryCount       = 0;
-        _todayVersionKnown = "";
-        _lastVersionCheckMs = 0;
+        _syncedToday         = false;
+        _syncedFromServer    = false;
+        _entryCount          = 0;
+        _todayVersionKnown   = "";
+        _lastVersionCheckMs  = 0;
     }
 
-    // Verzió check throttle
     if (_lastVersionCheckMs != 0 &&
         (millis() - _lastVersionCheckMs) < VERSION_CHECK_MS) return;
 
     _lastVersionCheckMs = millis();
 
-    // ── Online ág ──
     if (network.isConnected()) {
         String serverTodayVer, serverDefaultVer;
         bool   serverIsHoliday = false;
@@ -109,28 +99,24 @@ void BellManager::maybeSyncSchedule() {
             bool defaultChanged = (serverDefaultVer != _defaultVersionKnown);
 
             if (todayChanged || defaultChanged || !_syncedToday) {
-                // Teljes szinkron szükséges
                 if (fetchFullSync()) {
-                    _loadedDate        = today;
-                    _syncedToday       = true;
-                    _syncedFromServer  = true;
+                    _loadedDate       = today;
+                    _syncedToday      = true;
+                    _syncedFromServer = true;
                     return;
                 }
             } else {
-                // Verzió egyezik – nincs letöltés, de az _entries már be van töltve
                 Serial.printf("[BELL] Version match (%s), no sync needed\n",
                               serverTodayVer.c_str());
                 if (!_syncedToday) {
-                    // Eszköz indult fel, nincs még _entries – NVS-ből töltjük
                     if (loadTodayFromNVS(today, serverTodayVer)) {
-                        _loadedDate        = today;
-                        _syncedToday       = true;
-                        _syncedFromServer  = true;
-                        _scheduleSource    = "nvs";
+                        _loadedDate       = today;
+                        _syncedToday      = true;
+                        _syncedFromServer = true;
+                        _scheduleSource   = "nvs";
                         Serial.printf("[BELL] Loaded from NVS cache (%d entries)\n",
                                       _entryCount);
                     } else {
-                        // NVS cache nem egyezik → teljes szinkron
                         if (fetchFullSync()) {
                             _loadedDate       = today;
                             _syncedToday      = true;
@@ -141,39 +127,32 @@ void BellManager::maybeSyncSchedule() {
                 return;
             }
         }
-        // Ha versionOk == false: offline ágba esünk
     }
 
     // ── Offline ág ──
-    if (_syncedToday) return;  // már be van töltve valami, ne csináljunk semmit
+    if (_syncedToday) return;
 
-    // a) Napi NVS cache (bármilyen verziójú, ha dátum egyezik)
     if (loadTodayFromNVS(today, "")) {
-        _loadedDate       = today;
-        _syncedToday      = true;
-        _scheduleSource   = "nvs";
-        Serial.printf("[BELL] Offline: loaded NVS cache (%d entries)\n",
-                      _entryCount);
+        _loadedDate     = today;
+        _syncedToday    = true;
+        _scheduleSource = "nvs";
+        Serial.printf("[BELL] Offline: loaded NVS cache (%d entries)\n", _entryCount);
         return;
     }
 
-    // b) NVS default schedule
     if (loadDefaultFromNVS("")) {
-        _loadedDate       = today;
-        _syncedToday      = true;
-        _scheduleSource   = "nvs-default";
-        Serial.printf("[BELL] Offline: loaded NVS default (%d entries)\n",
-                      _entryCount);
+        _loadedDate     = today;
+        _syncedToday    = true;
+        _scheduleSource = "nvs-default";
+        Serial.printf("[BELL] Offline: loaded NVS default (%d entries)\n", _entryCount);
         return;
     }
 
-    // c) Hardcoded fallback
     loadHardcodedDefault();
-    _loadedDate       = today;
-    _syncedToday      = true;
-    _scheduleSource   = "hardcoded";
-    Serial.printf("[BELL] Offline: using hardcoded default (%d entries)\n",
-                  _entryCount);
+    _loadedDate     = today;
+    _syncedToday    = true;
+    _scheduleSource = "hardcoded";
+    Serial.printf("[BELL] Offline: using hardcoded default (%d entries)\n", _entryCount);
 }
 
 // ---------------------------------------------------------------------------
@@ -196,7 +175,7 @@ bool BellManager::fetchVersion(String& outTodayVer,
 }
 
 // ---------------------------------------------------------------------------
-// fetchFullSync – GET /bells/sync
+// fetchFullSync – GET /bells/sync + hangfájlok letöltése
 // ---------------------------------------------------------------------------
 bool BellManager::fetchFullSync() {
     if (!backend.isReady()) return false;
@@ -239,11 +218,10 @@ bool BellManager::fetchFullSync() {
                       _entryCount, todayVer.c_str());
     }
 
-    // NVS napi cache mentése
     saveTodayToNVS(getTodayDateStr(), todayVer);
     _todayVersionKnown = todayVer;
 
-    // ── Default schedule mentése NVS-be (ha változott) ──
+    // ── Default schedule ──
     JsonArray defaultBells = resp["defaultBells"].as<JsonArray>();
     if (!defaultBells.isNull() && defaultVer != _defaultVersionKnown) {
         BellEntry defEntries[MAX_BELL_ENTRIES];
@@ -266,6 +244,97 @@ bool BellManager::fetchFullSync() {
                       defCount, defaultVer.c_str());
     }
 
+    // ── Hangfájlok szinkronizálása LittleFS-re ──
+    // Lépések:
+    //   1. Összeállítjuk a szerver által ismert fájlnévlistát
+    //   2. LittleFS-en lévő .mp3 fájlok közül töröljük azokat,
+    //      amelyek NEM szerepelnek a szerver listájában
+    //      (= felhasználó törölte a frontenden)
+    //   3. Letöltjük a hiányzó / megváltozott fájlokat
+    JsonArray sounds = resp["sounds"].as<JsonArray>();
+    if (!sounds.isNull()) {
+
+        // 1. Szerver által ismert fájlnevek összegyűjtése
+        //    (max MAX_BELL_ENTRIES elemet tárolunk, ami bőven elég)
+        String serverFiles[MAX_BELL_ENTRIES];
+        uint8_t serverFileCount = 0;
+        for (JsonObject s : sounds) {
+            String fn = s["filename"] | "";
+            if (fn.isEmpty()) continue;
+            if (fn[0] != '/') fn = "/" + fn;
+            if (serverFileCount < MAX_BELL_ENTRIES) {
+                serverFiles[serverFileCount++] = fn;
+            }
+        }
+
+        // 2. LittleFS cleanup – töröljük a szerver listájából hiányzó .mp3 fájlokat
+        int dlRemoved = 0;
+        File root = LittleFS.open("/");
+        if (root && root.isDirectory()) {
+            File entry = root.openNextFile();
+            while (entry) {
+                String entryName = "/" + String(entry.name());
+                entry.close();
+
+                // Csak .mp3 fájlokat kezeljük
+                if (entryName.endsWith(".mp3")) {
+                    bool found = false;
+                    for (uint8_t i = 0; i < serverFileCount; i++) {
+                        if (serverFiles[i] == entryName) { found = true; break; }
+                    }
+                    if (!found) {
+                        Serial.printf("[BELL] Sound removed (not on server): %s\n",
+                                      entryName.c_str());
+                        LittleFS.remove(entryName);
+                        dlRemoved++;
+                    }
+                }
+                entry = root.openNextFile();
+            }
+            root.close();
+        }
+
+        // 3. Letöltés / frissítés
+        int dlOk   = 0;
+        int dlSkip = 0;
+        int dlFail = 0;
+        for (JsonObject s : sounds) {
+            String filename  = s["filename"]  | "";
+            String url       = s["url"]       | "";
+            size_t sizeBytes = s["sizeBytes"] | 0;
+
+            if (filename.isEmpty() || url.isEmpty()) continue;
+
+            String localPath = filename.startsWith("/") ? filename : "/" + filename;
+
+            // Már létezik és mérete egyezik → skip
+            if (sizeBytes > 0 && LittleFS.exists(localPath)) {
+                File f = LittleFS.open(localPath, "r");
+                if (f && (size_t)f.size() == sizeBytes) {
+                    f.close();
+                    Serial.printf("[BELL] Sound OK (exists): %s\n", filename.c_str());
+                    dlSkip++;
+                    continue;
+                }
+                if (f) f.close();
+            }
+
+            Serial.printf("[BELL] Downloading sound: %s (%d bytes)\n",
+                          filename.c_str(), sizeBytes);
+
+            bool ok = backend.downloadFile(url, localPath, sizeBytes);
+            if (ok) {
+                Serial.printf("[BELL] Sound downloaded: %s\n", filename.c_str());
+                dlOk++;
+            } else {
+                Serial.printf("[BELL] Sound FAILED: %s\n", filename.c_str());
+                dlFail++;
+            }
+        }
+        Serial.printf("[BELL] Sounds: %d ok, %d skip, %d fail, %d removed\n",
+                      dlOk, dlSkip, dlFail, dlRemoved);
+    }
+
     return true;
 }
 
@@ -284,7 +353,6 @@ void BellManager::saveTodayToNVS(const String& dateStr, const String& version) {
     prefs.end();
 }
 
-// version == "" → elfogad bármilyen verziójú cache-t (offline mód)
 bool BellManager::loadTodayFromNVS(const String& dateStr, const String& version) {
     Preferences prefs;
     if (!prefs.begin(NVS_BELL_NS, true)) return false;
@@ -299,7 +367,6 @@ bool BellManager::loadTodayFromNVS(const String& dateStr, const String& version)
 
     uint8_t count = prefs.getUChar(NVS_BELL_COUNT, 0);
 
-    // 0 = ünnepnap volt cache-elve → érvényes
     if (count == 0) {
         _todayVersionKnown = prefs.getString(NVS_BELL_TODAY_VER, "");
         prefs.end();
@@ -314,7 +381,7 @@ bool BellManager::loadTodayFromNVS(const String& dateStr, const String& version)
     prefs.end();
 
     if (bytes != count * sizeof(BellEntry)) return false;
-    _entryCount = count;
+    _entryCount        = count;
     _todayVersionKnown = ver;
     return true;
 }
@@ -327,15 +394,14 @@ void BellManager::saveDefaultToNVS(const String& version,
                                     uint8_t count) {
     Preferences prefs;
     if (!prefs.begin(NVS_BELL_DEF_NS, false)) return;
-    prefs.putString(NVS_BELL_DEF_VER,   version);
-    prefs.putUChar(NVS_BELL_DEF_COUNT,  count);
+    prefs.putString(NVS_BELL_DEF_VER,  version);
+    prefs.putUChar(NVS_BELL_DEF_COUNT, count);
     if (count > 0) {
         prefs.putBytes(NVS_BELL_DEF_DATA, entries, count * sizeof(BellEntry));
     }
     prefs.end();
 }
 
-// version == "" → elfogad bármilyen verziót
 bool BellManager::loadDefaultFromNVS(const String& version) {
     Preferences prefs;
     if (!prefs.begin(NVS_BELL_DEF_NS, true)) return false;
@@ -390,14 +456,12 @@ void BellManager::checkSchedule() {
                           _entries[i].type == BellType::SIGNAL ? "SIGNAL" : "MAIN",
                           t.tm_hour, t.tm_min, sf, _scheduleSource.c_str());
 
-            // Fájlnév / előtag kezelés
             String path = sf[0] == '/' ? String(sf) : "/" + String(sf);
             audio.playFile(path.c_str());
 
             _lastDay    = t.tm_yday;
             _lastMinute = curMin;
 
-            // BELL_MODE_TODAY: utolsó csengetés után visszavált ON-ra
             if (_mode == BELL_MODE_TODAY) {
                 bool isLast = true;
                 for (uint8_t j = 0; j < _entryCount; j++) {

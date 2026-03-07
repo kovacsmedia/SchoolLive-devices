@@ -73,12 +73,15 @@ void TaskProvisioning(void* pvParameters) {
 }
 
 // --- Normál network task (core 0) ---
+// beacon, poll, bell szinkron – mind egymás után, ugyanazon a core-on
+// így a BackendClient cooldown hatékonyan véd az SSL socket ütközések ellen
 void TaskNetwork(void* pvParameters) {
   (void)pvParameters;
   networkManager.begin();
   for (;;) {
     networkManager.loop();
     agent.loop();
+    bellManager.loop();
     vTaskDelay(100 / portTICK_PERIOD_MS);
   }
 }
@@ -158,7 +161,7 @@ void setup() {
   LittleFS.begin(true, "/littlefs", 10, "littlefs");
   store.begin();
 
-  audioManager.begin();
+  audioManager.begin(&store);
 
   uiManager = new UIManager(audioManager, networkManager, bellManager, store);
   uiManager->begin();
@@ -179,12 +182,13 @@ void setup() {
   }
 }
 
-// --- LOOP ---
+// --- LOOP (core 1) ---
+// Csak audio és UI – HTTP hívás nincs itt, az mind a TaskNetwork-ben van
 void loop() {
   if (!inProvisioningMode) {
     audioManager.loop();
     uiManager->loop();
-    bellManager.loop();
+    // bellManager.loop() → TaskNetwork-be költözött (core 0)
   } else {
     uiManager->loop();
     delay(50);
