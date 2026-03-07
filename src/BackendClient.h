@@ -5,31 +5,38 @@
 #include <WiFiClientSecure.h>
 
 struct PolledCommand {
-  bool hasCommand = false;
-  String id;
-  JsonDocument payload;   // teljes payload objektum
+    bool        hasCommand = false;
+    String      id;
+    JsonDocument payload;
 };
 
 class BackendClient {
 public:
-  // Provisioning confirm (deviceKey nélkül)
-  bool confirmProvisioning(const String& provisioningToken,
-                           String& outDeviceKey,
-                           String& outWifiSsid,
-                           String& outWifiPass);
-  void begin(const String& baseUrl);
-  void setDeviceKey(const String& deviceKey);
-  bool isReady() const;
+    void begin(const String& baseUrl);
+    void setDeviceKey(const String& deviceKey);
+    bool isReady() const;
 
-  bool sendBeacon(uint8_t volume, bool muted, const String& firmwareVersion, const JsonDocument& statusPayload);
-  bool poll(PolledCommand& outCmd);
-  bool ack(const String& commandId, bool ok, const String& errorMsg);
+    bool sendBeacon(uint8_t volume, bool muted, const String& firmwareVersion,
+                    const JsonDocument& statusPayload);
+    bool poll(PolledCommand& outCmd);
+    bool ack(const String& commandId, bool ok, const String& errorMsg);
+
+    // GET kérés – BellManager /bells/sync hívásához
+    bool getJson(const String& path, JsonDocument& resp, int& httpCode);
+
+    // Provisioning (deviceKey nélkül)
+    bool confirmProvisioning(const String& provisioningToken,
+                             String& outDeviceKey,
+                             String& outWifiSsid,
+                             String& outWifiPass);
 
 private:
-  String _baseUrl;
-  String _deviceKey;
+    String _baseUrl;
+    String _deviceKey;
 
-  bool postJson(const String& path, const JsonDocument& req, JsonDocument& resp, int& httpCode);
-  void addCommonHeaders(HTTPClient& http);
-  bool postJsonUnauthed(const String& path, const JsonDocument& req, JsonDocument& resp, int& httpCode);
+    bool postJson(const String& path, const JsonDocument& req,
+                  JsonDocument& resp, int& httpCode);
+    bool postJsonUnauthed(const String& path, const JsonDocument& req,
+                          JsonDocument& resp, int& httpCode);
+    void addCommonHeaders(HTTPClient& http);
 };

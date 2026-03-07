@@ -50,7 +50,7 @@ public:
     // Szinkronizáció státusza
     bool   isScheduleLoaded() const { return _entryCount > 0; }
     String getScheduleSource() const { return _scheduleSource; }
-
+    bool   isSyncedFromServer() const { return _syncedFromServer; }
 private:
     AudioManager&  audio;
     NetworkManager& network;
@@ -69,6 +69,7 @@ private:
     // Szinkronizáció időzítése
     unsigned long _lastSyncAttemptMs = 0;
     bool          _syncedToday       = false;
+    bool          _syncedFromServer  = false;
     const unsigned long SYNC_RETRY_MS = 60000UL;  // 1 perc újrapróbálás ha sikertelen
 
     // --- Default hardcoded csengetési rend (normál) ---
