@@ -20,6 +20,14 @@ void BackendClient::addCommonHeaders(HTTPClient& http) {
     http.addHeader("x-device-key", _deviceKey);
 }
 
+void BackendClient::waitCooldown() {
+    if (_lastHttpEndMs == 0) return;
+    unsigned long elapsed = millis() - _lastHttpEndMs;
+    if (elapsed < HTTP_COOLDOWN_MS) {
+        delay(HTTP_COOLDOWN_MS - elapsed);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // POST
 // ---------------------------------------------------------------------------
@@ -28,6 +36,8 @@ bool BackendClient::postJson(const String& path,
                              JsonDocument& resp,
                              int& httpCode) {
     if (!isReady()) return false;
+
+    waitCooldown();
 
     WiFiClientSecure client;
     client.setInsecure();
@@ -53,12 +63,14 @@ bool BackendClient::postJson(const String& path,
 
     if (httpCode <= 0) {
         Serial.printf("[HTTP] Error: %s\n", http.errorToString(httpCode).c_str());
+        _lastHttpEndMs = millis();
         http.end();
         return false;
     }
 
     String responseStr = http.getString();
     Serial.printf("[HTTP] Response: %.200s\n", responseStr.c_str());
+    _lastHttpEndMs = millis();
     http.end();
 
     DeserializationError err = deserializeJson(resp, responseStr);
@@ -71,12 +83,14 @@ bool BackendClient::postJson(const String& path,
 }
 
 // ---------------------------------------------------------------------------
-// GET – BellManager /bells/sync hívásához
+// GET
 // ---------------------------------------------------------------------------
 bool BackendClient::getJson(const String& path,
                             JsonDocument& resp,
                             int& httpCode) {
     if (!isReady()) return false;
+
+    waitCooldown();
 
     WiFiClientSecure client;
     client.setInsecure();
@@ -99,11 +113,13 @@ bool BackendClient::getJson(const String& path,
 
     if (httpCode <= 0) {
         Serial.printf("[HTTP] Error: %s\n", http.errorToString(httpCode).c_str());
+        _lastHttpEndMs = millis();
         http.end();
         return false;
     }
 
     String responseStr = http.getString();
+    _lastHttpEndMs = millis();
     http.end();
 
     DeserializationError err = deserializeJson(resp, responseStr);
@@ -189,6 +205,8 @@ bool BackendClient::postJsonUnauthed(const String& path,
                                      int& httpCode) {
     if (_baseUrl.length() == 0) return false;
 
+    waitCooldown();
+
     WiFiClientSecure client;
     client.setInsecure();
 
@@ -204,9 +222,14 @@ bool BackendClient::postJsonUnauthed(const String& path,
     serializeJson(req, body);
 
     httpCode = http.POST(body);
-    if (httpCode <= 0) { http.end(); return false; }
+    if (httpCode <= 0) {
+        _lastHttpEndMs = millis();
+        http.end();
+        return false;
+    }
 
     String responseStr = http.getString();
+    _lastHttpEndMs = millis();
     http.end();
 
     DeserializationError err = deserializeJson(resp, responseStr);

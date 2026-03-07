@@ -49,7 +49,7 @@ void BellManager::begin() {
     _entryCount           = 0;
     _syncedToday          = false;
     _syncedFromServer     = false;
-    _lastVersionCheckMs   = 0;
+    _lastVersionCheckMs = millis();  // ne azonnal szinkronizáljon induláskor
     _scheduleSource       = "";
     _loadedDate           = "";
     _todayVersionKnown    = "";

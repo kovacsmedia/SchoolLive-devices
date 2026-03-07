@@ -31,12 +31,15 @@ public:
                              String& outWifiPass);
 
 private:
+    unsigned long _lastHttpEndMs = 0;
+    static const unsigned long HTTP_COOLDOWN_MS = 2500UL;
     String _baseUrl;
     String _deviceKey;
-
+    void waitCooldown();
     bool postJson(const String& path, const JsonDocument& req,
                   JsonDocument& resp, int& httpCode);
     bool postJsonUnauthed(const String& path, const JsonDocument& req,
                           JsonDocument& resp, int& httpCode);
     void addCommonHeaders(HTTPClient& http);
+    
 };
