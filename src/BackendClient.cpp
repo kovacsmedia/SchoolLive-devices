@@ -151,14 +151,22 @@ bool BackendClient::downloadFile(const String& url,
 
     waitCooldown();
 
+    // Ha relatív URL érkezik ("/audio/bells/hang.mp3"), egészítjük ki a baseUrl-lel
+    String fullUrl = url;
+    if (!fullUrl.startsWith("http://") && !fullUrl.startsWith("https://")) {
+        if (!fullUrl.startsWith("/")) fullUrl = "/" + fullUrl;
+        fullUrl = _baseUrl + fullUrl;
+        Serial.printf("[DL] Resolved relative URL → %s\n", fullUrl.c_str());
+    }
+
     WiFiClientSecure client;
     client.setInsecure();
     HTTPClient http;
-    http.setTimeout(15000);  // fájlletöltéshez több idő kell
+    http.setTimeout(15000);
 
-    Serial.printf("[DL] Downloading %s → %s\n", url.c_str(), localPath.c_str());
+    Serial.printf("[DL] Downloading %s → %s\n", fullUrl.c_str(), localPath.c_str());
 
-    if (!http.begin(client, url)) {
+    if (!http.begin(client, fullUrl)) {
         Serial.println("[DL] begin() failed");
         return false;
     }
