@@ -81,7 +81,10 @@ void TaskNetwork(void* pvParameters) {
   for (;;) {
     networkManager.loop();
     agent.loop();
-    bellManager.loop();
+    // BellManager HTTP hívásai ne ütközzenek az audio SSL sockettel
+    if (!audioManager.isBusy() && !audioManager.isInCooldown()) {
+      bellManager.loop();
+    }
     vTaskDelay(100 / portTICK_PERIOD_MS);
   }
 }

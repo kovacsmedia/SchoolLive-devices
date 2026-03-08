@@ -11,21 +11,15 @@ void DeviceAgent::begin(NetworkManager& net, AudioManager& audio,
 }
 
 void DeviceAgent::loop() {
-    // 1. Cooldown alatt (audio EOF után) – ne nyissunk HTTP kapcsolatot
     if (_audio && _audio->isInCooldown()) return;
 
-    // 2. Lejátszás közben csak beacon mehet, poll nem
-    bool playing = _audio && _audio->isPlaying();
+    bool audioBusy = _audio && _audio->isBusy();
 
-    // 3. Beacon
-    sendBeaconIfDue();
-
-    // 4. Poll (csak ha nem játszik és nincs cooldown)
-    if (!playing) {
+    if (!audioBusy) {
+        sendBeaconIfDue();
         pollIfDue();
     }
 }
-
 void DeviceAgent::sendBeaconIfDue() {
     unsigned long now = millis();
     if ((now - _lastBeaconMs) < BEACON_INTERVAL_MS) return;
@@ -60,7 +54,7 @@ void DeviceAgent::pollIfDue() {
 
 bool DeviceAgent::executeAndAck(const PolledCommand& cmd) {
     String action = cmd.payload["action"] | "";
-    JsonVariantConst payload = cmd.payload["payload"];
+    JsonVariantConst payload = cmd.payload; 
 
     String err;
     bool ok = false;
