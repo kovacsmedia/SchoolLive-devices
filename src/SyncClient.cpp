@@ -291,21 +291,12 @@ void SyncClient::handlePlay(const JsonDocument& doc) {
     //   TTS PSRAM: ~350ms (LittleFS írás + decoder init)
     //   BELL fájl: ~120ms (fájl megnyitás + decoder init)
     //   Stream:    ~200ms (HTTP kapcsolat felépítés)
-    // Indítási overhead mérve logból:
-    //   playFile() → connecttoFS() → decoder init → stream ready → első hang
-    //   ESP32-S3 + Audio.h: ~950ms konstans (fájlmérettől független!)
-    //   PLAY_URL (stream): ~300ms (HTTP + decoder)
-    int64_t startupMs = 0;
-    if (_prep.action == "TTS")           startupMs = 950;
-    else if (_prep.action == "BELL")     startupMs = 950;
-    else if (_prep.action == "PLAY_URL") startupMs = 300;
-
-    int64_t adjustedDelay = delayMs - startupMs;
-    if (adjustedDelay > 0 && adjustedDelay < 5000) {
-        vTaskDelay(pdMS_TO_TICKS((uint32_t)adjustedDelay));
-    } else if (adjustedDelay <= 0) {
-        // Már késtünk – azonnal indítunk
-        Serial.printf("[SYNC] ⚠️ Késés: %lld ms – azonnali lejátszás\n", adjustedDelay);
+    // Startup overhead: a READY_ACK-ban bejelentett bufferMs tartalmazza
+    // a tényleges letöltési időt. A playFile() startup konstans ~1000ms.
+    // A szerver MIN_LEAD_MS=2000ms garantálja hogy ez belefér.
+    // Nincs kompenzáció szükséges – a szerver már beleszámolta.
+    if (delayMs > 0 && delayMs < 10000) {
+        vTaskDelay(pdMS_TO_TICKS((uint32_t)delayMs));
     }
 
     // Lejátszás
