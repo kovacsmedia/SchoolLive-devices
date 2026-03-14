@@ -59,10 +59,7 @@ bool NetworkManager::syncTimeBlocking() {
 
     if (WiFi.status() == WL_CONNECTED) {
         // SNTP inicializálás
-        // Budapest POSIX timezone: CET-1CEST,M3.5.0,M10.5.0/3
-setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
-tzset();
-configTime(0, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
+        configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "pool.ntp.org", "time.google.com", "time.cloudflare.com");
         struct tm t;
         for (int i = 0; i < 20; i++) {
             if (getLocalTime(&t)) {
@@ -120,8 +117,7 @@ void NetworkManager::handleNTP() {
     // Az SNTP callback automatikusan frissíti _timeSynced-et
     // Óránkénti re-szinkron ha szükséges
     if (_timeSynced && (millis() - _lastTimeSync > 3600000UL)) {
-        setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1); tzset();
-configTime(0, 0, "pool.ntp.org", "time.google.com");
+        configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "pool.ntp.org", "time.google.com");
     }
 }
 

@@ -163,6 +163,8 @@ void SyncClient::handleHello(const JsonDocument& doc) {
     _ws.sendTXT(out);
 
 // ── handlePrepare ─────────────────────────────────────────────────────────────
+}
+
 void SyncClient::handlePrepare(const JsonDocument& doc) {
     String commandId = doc["commandId"] | "";
     String action    = doc["action"]    | "";
