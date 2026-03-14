@@ -124,33 +124,43 @@ void SyncClient::onMessage(const String& msg) {
 
 // ── handleHello ──────────────────────────────────────────────────────────────
 void SyncClient::handleHello(const JsonDocument& doc) {
-    const char* serverNowStr = doc["serverNow"] | "";
-    if (!serverNowStr || !*serverNowStr) return;
+    // Numerikus ms preferencia – timezone parsing nélkül
+    int64_t serverMs = 0;
+    if (doc["serverNowMs"].is<long long>() || doc["serverNowMs"].is<unsigned long>()) {
+        serverMs = (int64_t)doc["serverNowMs"].as<long long>();
+    } else {
+        // Fallback: ISO parsing
+        const char* s = doc["serverNow"] | "";
+        if (!s || !*s) return;
+        struct tm tm = {}; int ms = 0;
+        if (sscanf(s, "%4d-%2d-%2dT%2d:%2d:%2d.%dZ",
+                   &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
+                   &tm.tm_hour, &tm.tm_min, &tm.tm_sec, &ms) >= 6) {
+            tm.tm_year -= 1900; tm.tm_mon -= 1; tm.tm_isdst = 0;
+            serverMs = (int64_t)utcmktime(&tm) * 1000 + ms;
+        }
+    }
+    if (serverMs == 0) return;
 
-    // ISO → Unix ms
-    struct tm tm = {};
-    int ms = 0;
-    if (sscanf(serverNowStr, "%4d-%2d-%2dT%2d:%2d:%2d.%dZ",
-               &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
-               &tm.tm_hour, &tm.tm_min, &tm.tm_sec, &ms) >= 6) {
-        tm.tm_year -= 1900;
-        tm.tm_mon  -= 1;
-        tm.tm_isdst = 0;
-        // timegm() = mktime() UTC verzió, nem alkalmaz timezone konverziót
-        time_t serverSec = utcmktime(&tm);
-        int64_t serverMs = (int64_t)serverSec * 1000 + ms;
-        _serverOffsetMs = serverMs - nowMs();
-        Serial.printf("[SYNC] Szerver offset: %lld ms\n", _serverOffsetMs);
+    _serverOffsetMs = serverMs - nowMs();
+    Serial.printf("[SYNC] Szerver offset: %lld ms\n", _serverOffsetMs);
+
+    // Ha az eltérés > 2s → korrigáljuk a rendszerórát
+    if (llabs(_serverOffsetMs) > 2000) {
+        struct timeval tv;
+        tv.tv_sec  = (time_t)(serverMs / 1000);
+        tv.tv_usec = (suseconds_t)((serverMs % 1000) * 1000);
+        settimeofday(&tv, nullptr);
+        _serverOffsetMs = 0;
+        Serial.println("[SYNC] Rendszeróra korrigálva szerver időre");
     }
 
     // Időszinkron visszaigazolás
     JsonDocument resp;
     resp["type"] = "TIME_SYNC";
     resp["seq"]  = (uint32_t)millis();
-    String out;
-    serializeJson(resp, out);
+    String out; serializeJson(resp, out);
     _ws.sendTXT(out);
-}
 
 // ── handlePrepare ─────────────────────────────────────────────────────────────
 void SyncClient::handlePrepare(const JsonDocument& doc) {
@@ -239,17 +249,18 @@ void SyncClient::handlePlay(const JsonDocument& doc) {
         return;
     }
 
-    // playAt → Unix ms
+    // playAt → Unix ms (numerikus preferencia)
     int64_t playAtMs = 0;
-    {
+    if (doc["playAtMs"].is<int64_t>() || doc["playAtMs"].is<uint32_t>()) {
+        playAtMs = doc["playAtMs"].as<int64_t>();
+    } else {
+        // Fallback: ISO parsing
         struct tm tm = {};
         int ms = 0;
         if (sscanf(playAtStr.c_str(), "%4d-%2d-%2dT%2d:%2d:%2d.%dZ",
                    &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
                    &tm.tm_hour, &tm.tm_min, &tm.tm_sec, &ms) >= 6) {
-            tm.tm_year -= 1900;
-            tm.tm_mon  -= 1;
-            tm.tm_isdst = 0;
+            tm.tm_year -= 1900; tm.tm_mon -= 1; tm.tm_isdst = 0;
             playAtMs = (int64_t)utcmktime(&tm) * 1000 + ms;
         }
     }
