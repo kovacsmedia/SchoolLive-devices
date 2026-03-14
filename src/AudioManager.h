@@ -1,17 +1,20 @@
-#ifndef AUDIOMANAGER_H
-#define AUDIOMANAGER_H
-
+#pragma once
+// ─────────────────────────────────────────────────────────────────────────────
+// AudioManager.h – ESP32-S3-N16R8 verzió
+// Újítások:
+//   • playPsram() – PSRAM-ból közvetlen lejátszás (TTS pre-fetch)
+//   • PSRAM stream buffer (64KB) az audio library-nek
+//   • Eltávolítva: SSL cooldown (már nem blokkolja a hálózatot)
+//   • Javított watchdog logika
+// ─────────────────────────────────────────────────────────────────────────────
 #include <Arduino.h>
 #include "Config.h"
 
 class Audio;
 class PersistStore;
 
-// Lejátszás utáni TCP/SSL cooldown idő (ms)
-#define AUDIO_EOF_COOLDOWN_MS 10000
-
-// Watchdog: ha 25s alatt nem indul el a lejátszás → cleanup
-#define URL_START_TIMEOUT_MS 25000
+#define AUDIO_EOF_COOLDOWN_MS  3000   // S3-n gyorsabb TCP cleanup
+#define URL_START_TIMEOUT_MS  25000
 
 class AudioManager {
 public:
@@ -23,30 +26,34 @@ public:
     uint8_t getVolume() const;
     bool    isMuted() const { return false; }
 
-    void playFile(const char* filename);
-    void playUrl(const char* url);
+    // ── Lejátszás ─────────────────────────────────────────────────────────
+    void playFile(const char* filename);          // LittleFS
+    void playUrl(const char* url);               // HTTP/S stream
+    void playPsram(const uint8_t* buf, size_t len);  // PSRAM buffer (TTS)
     void stop();
 
-    bool isPlaying() const;
+    // ── Állapot ───────────────────────────────────────────────────────────
+    bool isPlaying()    const;
     bool isStreamMode() const;
-
-    // true amíg URL stream aktív (playUrl()-tól EOF/stop/hiba-ig)
-    bool isBusy() const { return _urlActive; }
-
-    void notifyEof();
-    void notifyError();
+    bool isBusy()       const { return _urlActive; }
     bool isInCooldown() const;
 
-private:
-    Audio*        audio          = nullptr;
-    PersistStore* _store         = nullptr;
-    uint8_t       currentVolume  = 9;
-    bool          _streamMode    = false;
-    bool          _eofReceived   = false;
-    unsigned long _eofTimeMs     = 0;
-    bool          _urlActive     = false;  // playUrl()-tól EOF/stop/hiba-ig true
-    unsigned long _urlStartMs    = 0;      // mikor hívtuk a playUrl()-t
-    bool          _urlHasPlayed  = false;  // ténylegesen elindult-e az isRunning()
-};
+    // ── Callbacks (audio library-ből) ─────────────────────────────────────
+    void notifyEof();
+    void notifyError();
 
-#endif
+private:
+    Audio*        audio         = nullptr;
+    PersistStore* _store        = nullptr;
+    uint8_t       currentVolume = 9;
+
+    bool          _streamMode   = false;
+    bool          _eofReceived  = false;
+    unsigned long _eofTimeMs    = 0;
+    bool          _urlActive    = false;
+    unsigned long _urlStartMs   = 0;
+    bool          _urlHasPlayed = false;
+
+    // PSRAM alapú temp fájl a playPsram()-hoz
+    static const char* PSRAM_TEMP_PATH;
+};

@@ -1,9 +1,26 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// NetworkManager.cpp – S3 verzió
+// Újítások:
+//   • SNTP callback – _timeSynced pontosan beállítva szinkronkor
+//   • getCurrentTimeMs() – gettimeofday() µs pontosság
+//   • WiFi reconnect: exponenciális backoff eltávolítva (10s fix)
+// ─────────────────────────────────────────────────────────────────────────────
 #include "NetworkManager.h"
 #include "PersistStore.h"
 
 extern PersistStore store;
+NetworkManager* NetworkManager::_instance = nullptr;
 
-NetworkManager::NetworkManager() {}
+void NetworkManager::sntpCallback(struct timeval* tv) {
+    if (_instance) {
+        _instance->_timeSynced   = true;
+        _instance->_lastTimeSync = millis();
+        Serial.printf("[NTP] Szinkronizálva: %lld.%06ld\n",
+                      (long long)tv->tv_sec, tv->tv_usec);
+    }
+}
+
+NetworkManager::NetworkManager() { _instance = this; }
 
 void NetworkManager::begin() {
     WiFi.mode(WIFI_STA);
@@ -12,18 +29,22 @@ void NetworkManager::begin() {
     hostname.replace(":", "");
     hostname.toLowerCase();
     WiFi.setHostname(hostname.c_str());
+
+    // SNTP callback regisztrálása
+    sntp_set_time_sync_notification_cb(sntpCallback);
+    sntp_set_sync_mode(SNTP_SYNC_MODE_IMMED);
+
     loadFromNVS();
 }
 
 void NetworkManager::loadFromNVS() {
     knownNetworks.clear();
     if (!store.hasWifi()) return;
-
-    WiFiCreds creds;
-    creds.ssid = store.getWifiSsid();
-    creds.pass = store.getWifiPass();
-    creds.user = store.getWifiUser(); // Enterprise user (lehet üres)
-    knownNetworks.push_back(creds);
+    WiFiCreds c;
+    c.ssid = store.getWifiSsid();
+    c.pass = store.getWifiPass();
+    c.user = store.getWifiUser();
+    knownNetworks.push_back(c);
 }
 
 bool NetworkManager::syncTimeBlocking() {
@@ -32,21 +53,22 @@ bool NetworkManager::syncTimeBlocking() {
 
     WiFiCreds& c = knownNetworks[0];
     if (c.user.length() > 0) connectEnterprise(c.ssid, c.user, c.pass);
-    else connectPersonal(c.ssid, c.pass);
+    else                      connectPersonal(c.ssid, c.pass);
 
-    int retries = 0;
-    while (WiFi.status() != WL_CONNECTED && retries < 40) {
-        delay(500);
-        retries++;
-    }
+    for (int i = 0; i < 40 && WiFi.status() != WL_CONNECTED; i++) delay(500);
 
     if (WiFi.status() == WL_CONNECTED) {
-        configTime(3600, 3600, "pool.ntp.org", "time.google.com");
+        // SNTP inicializálás
+        configTime(3600, 3600, "pool.ntp.org", "time.google.com",
+                   "time.cloudflare.com");
         struct tm t;
-        for (int i = 0; i < 10; i++) {
+        for (int i = 0; i < 20; i++) {
             if (getLocalTime(&t)) {
-                _timeSynced = true;
+                _timeSynced   = true;
                 _lastTimeSync = millis();
+                Serial.printf("[NTP] Szinkron OK (blocking): %04d-%02d-%02d %02d:%02d:%02d\n",
+                              t.tm_year+1900, t.tm_mon+1, t.tm_mday,
+                              t.tm_hour, t.tm_min, t.tm_sec);
                 return true;
             }
             delay(200);
@@ -78,30 +100,34 @@ void NetworkManager::loop() {
 
 void NetworkManager::handleWiFi() {
     if (knownNetworks.empty()) return;
-
     if (WiFi.status() != WL_CONNECTED) {
-        const unsigned long now = millis();
+        unsigned long now = millis();
         if (now - _lastWifiCheck > 10000) {
-            Serial.println("[WIFI] Disconnected, reconnecting...");
+            Serial.println("[WIFI] Lecsatlakozva, újracsatlakozás...");
             WiFiCreds& c = knownNetworks[0];
             if (c.user.length() > 0) connectEnterprise(c.ssid, c.user, c.pass);
-            else connectPersonal(c.ssid, c.pass);
+            else                      connectPersonal(c.ssid, c.pass);
             _lastWifiCheck = now;
         }
     } else {
-        _lastWifiCheck = 0; // reset hogy lecsatlakozás után azonnal próbáljon
+        _lastWifiCheck = 0;
     }
 }
 
 void NetworkManager::handleNTP() {
-    if (!_timeSynced || (millis() - _lastTimeSync > 3600000)) {
+    // Az SNTP callback automatikusan frissíti _timeSynced-et
+    // Óránkénti re-szinkron ha szükséges
+    if (_timeSynced && (millis() - _lastTimeSync > 3600000UL)) {
         configTime(3600, 3600, "pool.ntp.org", "time.google.com");
-        struct tm t;
-        if (getLocalTime(&t)) {
-            _timeSynced = true;
-            _lastTimeSync = millis();
-        }
     }
+}
+
+// ── getCurrentTimeMs ─────────────────────────────────────────────────────────
+// gettimeofday() microsecond pontossággal → ms visszatérés
+int64_t NetworkManager::getCurrentTimeMs() const {
+    struct timeval tv;
+    gettimeofday(&tv, nullptr);
+    return (int64_t)tv.tv_sec * 1000LL + tv.tv_usec / 1000LL;
 }
 
 void NetworkManager::updateFirmware(const char* firmwareUrl) {
@@ -112,16 +138,9 @@ void NetworkManager::updateFirmware(const char* firmwareUrl) {
 }
 
 bool NetworkManager::isConnected() { return WiFi.status() == WL_CONNECTED; }
-bool NetworkManager::isTimeSynced() { return _timeSynced; }
-String NetworkManager::getIP() { return WiFi.localIP().toString(); }
-int32_t NetworkManager::getRSSI() { return WiFi.RSSI(); }
-String NetworkManager::getCurrentSSID() { return WiFi.SSID(); }
-String NetworkManager::getStoredSSID() { return WiFi.SSID(); }
-String NetworkManager::getStoredUser() { return ""; }
-String NetworkManager::getStoredDeviceID() { return WiFi.macAddress(); }
 
 String NetworkManager::fetchFile(const char* url) {
-    if (WiFi.status() != WL_CONNECTED) return "";
+    if (!isConnected()) return "";
     HTTPClient http;
     WiFiClientSecure client;
     client.setInsecure();
@@ -144,8 +163,8 @@ struct tm NetworkManager::getTimeInfo() {
     return t;
 }
 
-bool NetworkManager::saveCredentials(String ssid, String pass, String user, String devid, String& debugMsg) {
-    // Már nem wifi.txt-be ír, NVS-be menti
+bool NetworkManager::saveCredentials(String ssid, String pass, String user,
+                                      String devid, String& debugMsg) {
     store.setWifi(ssid, pass);
     if (user.length() > 0) store.setWifiUser(user);
     loadFromNVS();
@@ -153,7 +172,4 @@ bool NetworkManager::saveCredentials(String ssid, String pass, String user, Stri
     return true;
 }
 
-void NetworkManager::loadWifiTxt() {
-    // Legacy – már nem használjuk, NVS-ből töltünk
-    loadFromNVS();
-}
+void NetworkManager::loadWifiTxt() { loadFromNVS(); }
