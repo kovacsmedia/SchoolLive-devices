@@ -104,8 +104,8 @@ void TaskSync(void* pvParameters) {
     Serial.println("[SYNC-TASK] WiFi+NTP kész → WebSocket csatlakozás");
 
     String deviceKey = store.getDeviceKey();
-    String tenantId  = store.getTenantId();
-    syncClient.begin(audioManager, bellManager, deviceKey, tenantId);
+    // tenantId-t a szerver határozza meg a device key alapján
+    syncClient.begin(audioManager, bellManager, deviceKey, "");
 
     for (;;) {
         syncClient.loop();

@@ -36,7 +36,7 @@ public:
     SyncClient() {}
 
     void begin(AudioManager& audio, BellManager& bells,
-               const String& deviceKey, const String& tenantId);
+               const String& deviceKey, const String& tenantId = "");
     void loop();   // Call from network task ~every 10ms
 
     bool isConnected() const { return _connected; }
