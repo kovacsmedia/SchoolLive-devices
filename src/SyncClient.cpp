@@ -206,27 +206,39 @@ void SyncClient::handlePrepare(const JsonDocument& doc) {
         }
 
     } else if (action == "TTS") {
-        // TTS MP3 letöltése – PSRAM-ba ha van, egyébként LittleFS temp fájl
+        // TTS MP3 letöltése és LittleFS-RE ÍRÁS a PREPARE fázisban
+        // → PLAY-kor csak playFile() kell (~50ms), nem arányos a fájlmérettel
+        String tempPath = "/tts_sync.mp3";
+        bool written = false;
+
         if (_psramBuf) {
+            // 1. Letölt PSRAM-ba
             bool ok = downloadToPsram(url);
             if (ok) {
-                _prep.fromPsram = true;
-                _prep.psramBuf  = _psramBuf;
-                _prep.ready     = true;
-                uint32_t bufMs  = millis() - prepStart;
-                Serial.printf("[SYNC] TTS READY (PSRAM %d bytes) %dms\n",
-                              (int)_prep.psramLen, bufMs);
-                sendReadyAck(commandId, bufMs);
-                return;
+                // 2. Azonnal kiírja LittleFS-re (PREPARE fázisban, van idő)
+                File f = LittleFS.open(tempPath, "w");
+                if (f) {
+                    f.write(_psramBuf, _prep.psramLen);
+                    f.close();
+                    written = true;
+                    Serial.printf("[SYNC] TTS PREPARE: %d bytes PSRAM→LittleFS %dms\n",
+                                  (int)_prep.psramLen, millis() - prepStart);
+                }
             }
         }
-        // PSRAM fallback: LittleFS temp
-        String tempPath = "/tts_sync.mp3";
-        bool ok = downloadToLittleFS(url, tempPath);
-        _prep.localPath = tempPath;
-        _prep.ready     = ok;
-        uint32_t bufMs  = millis() - prepStart;
-        sendReadyAck(commandId, ok ? bufMs : 9999);
+
+        if (!written) {
+            // Közvetlen LittleFS letöltés
+            written = downloadToLittleFS(url, tempPath);
+            Serial.printf("[SYNC] TTS PREPARE: LittleFS direkt %dms\n",
+                          millis() - prepStart);
+        }
+
+        _prep.localPath  = tempPath;
+        _prep.fromPsram  = false;  // már LittleFS-en van, nem kell újra írni
+        _prep.ready      = written;
+        uint32_t bufMs   = millis() - prepStart;
+        sendReadyAck(commandId, written ? bufMs : 9999);
 
     } else if (action == "PLAY_URL") {
         // Stream – nem lehet pre-buffer, de ellenőrizzük a hálózatot
@@ -274,8 +286,24 @@ void SyncClient::handlePlay(const JsonDocument& doc) {
     Serial.printf("[SYNC] PLAY in %lld ms: %s (%s)\n",
                   delayMs, commandId.c_str(), _prep.action.c_str());
 
-    if (delayMs > 0 && delayMs < 5000) {
-        vTaskDelay(pdMS_TO_TICKS((uint32_t)delayMs));
+    // Indítási overhead levonása a várakozásból
+    // ESP32-n a lejátszás nem azonnal indul a play() hívás után:
+    //   TTS PSRAM: ~350ms (LittleFS írás + decoder init)
+    //   BELL fájl: ~120ms (fájl megnyitás + decoder init)
+    //   Stream:    ~200ms (HTTP kapcsolat felépítés)
+    // Indítási overhead: PREPARE-ben már minden ki van írva LittleFS-re
+    // Csak az MP3 decoder init marad (konstans ~100ms)
+    int64_t startupMs = 0;
+    if (_prep.action == "TTS")           startupMs = 100;
+    else if (_prep.action == "BELL")     startupMs = 100;
+    else if (_prep.action == "PLAY_URL") startupMs = 200;
+
+    int64_t adjustedDelay = delayMs - startupMs;
+    if (adjustedDelay > 0 && adjustedDelay < 5000) {
+        vTaskDelay(pdMS_TO_TICKS((uint32_t)adjustedDelay));
+    } else if (adjustedDelay <= 0) {
+        // Már késtünk – azonnal indítunk
+        Serial.printf("[SYNC] ⚠️ Késés: %lld ms – azonnali lejátszás\n", adjustedDelay);
     }
 
     // Lejátszás
@@ -287,9 +315,8 @@ void SyncClient::handlePlay(const JsonDocument& doc) {
             _audio->playFile(_prep.localPath.c_str());
         }
     } else if (action == "TTS") {
-        if (_prep.fromPsram && _prep.psramBuf && _prep.psramLen > 0) {
-            _audio->playPsram(_prep.psramBuf, _prep.psramLen);
-        } else if (_prep.localPath.length() > 0) {
+        // LittleFS-re már a PREPARE fázisban ki lett írva → csak playFile()
+        if (_prep.localPath.length() > 0) {
             _audio->playFile(_prep.localPath.c_str());
         }
     } else if (action == "PLAY_URL") {
