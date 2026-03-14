@@ -9,6 +9,25 @@
 
 SyncClient* SyncClient::_instance = nullptr;
 
+// timegm() helyettesítő – UTC struct tm → time_t, timezone offset nélkül
+static time_t utcmktime(struct tm* t) {
+    // Napok száma hónap szerint (nem szökőév)
+    static const int mdays[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    int y = t->tm_year + 1900;
+    int m = t->tm_mon;  // 0-11
+    // Napok 1970.01.01 óta
+    long days = (y - 1970) * 365L;
+    for (int i = 1970; i < y; i++) {
+        if ((i % 4 == 0 && i % 100 != 0) || i % 400 == 0) days++;
+    }
+    for (int i = 0; i < m; i++) {
+        days += mdays[i];
+        if (i == 1 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) days++;
+    }
+    days += t->tm_mday - 1;
+    return (time_t)(days * 86400L + t->tm_hour * 3600L + t->tm_min * 60L + t->tm_sec);
+}
+
 // ── Statikus WS callback ─────────────────────────────────────────────────────
 void SyncClient::wsEventHandler(WStype_t type, uint8_t* payload, size_t length) {
     if (!_instance) return;
@@ -118,7 +137,7 @@ void SyncClient::handleHello(const JsonDocument& doc) {
         tm.tm_mon  -= 1;
         tm.tm_isdst = 0;
         // timegm() = mktime() UTC verzió, nem alkalmaz timezone konverziót
-        time_t serverSec = timegm(&tm);
+        time_t serverSec = utcmktime(&tm);
         int64_t serverMs = (int64_t)serverSec * 1000 + ms;
         _serverOffsetMs = serverMs - nowMs();
         Serial.printf("[SYNC] Szerver offset: %lld ms\n", _serverOffsetMs);
@@ -231,7 +250,7 @@ void SyncClient::handlePlay(const JsonDocument& doc) {
             tm.tm_year -= 1900;
             tm.tm_mon  -= 1;
             tm.tm_isdst = 0;
-            playAtMs = (int64_t)timegm(&tm) * 1000 + ms;
+            playAtMs = (int64_t)utcmktime(&tm) * 1000 + ms;
         }
     }
 
