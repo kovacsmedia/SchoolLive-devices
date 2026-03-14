@@ -291,12 +291,14 @@ void SyncClient::handlePlay(const JsonDocument& doc) {
     //   TTS PSRAM: ~350ms (LittleFS írás + decoder init)
     //   BELL fájl: ~120ms (fájl megnyitás + decoder init)
     //   Stream:    ~200ms (HTTP kapcsolat felépítés)
-    // Indítási overhead: PREPARE-ben már minden ki van írva LittleFS-re
-    // Csak az MP3 decoder init marad (konstans ~100ms)
+    // Indítási overhead mérve logból:
+    //   playFile() → connecttoFS() → decoder init → stream ready → első hang
+    //   ESP32-S3 + Audio.h: ~950ms konstans (fájlmérettől független!)
+    //   PLAY_URL (stream): ~300ms (HTTP + decoder)
     int64_t startupMs = 0;
-    if (_prep.action == "TTS")           startupMs = 100;
-    else if (_prep.action == "BELL")     startupMs = 100;
-    else if (_prep.action == "PLAY_URL") startupMs = 200;
+    if (_prep.action == "TTS")           startupMs = 950;
+    else if (_prep.action == "BELL")     startupMs = 950;
+    else if (_prep.action == "PLAY_URL") startupMs = 300;
 
     int64_t adjustedDelay = delayMs - startupMs;
     if (adjustedDelay > 0 && adjustedDelay < 5000) {
