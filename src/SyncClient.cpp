@@ -116,7 +116,9 @@ void SyncClient::handleHello(const JsonDocument& doc) {
                &tm.tm_hour, &tm.tm_min, &tm.tm_sec, &ms) >= 6) {
         tm.tm_year -= 1900;
         tm.tm_mon  -= 1;
-        time_t serverSec = mktime(&tm);
+        tm.tm_isdst = 0;
+        // timegm() = mktime() UTC verzió, nem alkalmaz timezone konverziót
+        time_t serverSec = timegm(&tm);
         int64_t serverMs = (int64_t)serverSec * 1000 + ms;
         _serverOffsetMs = serverMs - nowMs();
         Serial.printf("[SYNC] Szerver offset: %lld ms\n", _serverOffsetMs);
@@ -228,7 +230,8 @@ void SyncClient::handlePlay(const JsonDocument& doc) {
                    &tm.tm_hour, &tm.tm_min, &tm.tm_sec, &ms) >= 6) {
             tm.tm_year -= 1900;
             tm.tm_mon  -= 1;
-            playAtMs = (int64_t)mktime(&tm) * 1000 + ms;
+            tm.tm_isdst = 0;
+            playAtMs = (int64_t)timegm(&tm) * 1000 + ms;
         }
     }
 
