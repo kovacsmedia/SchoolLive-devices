@@ -32,10 +32,10 @@ void AudioManager::begin(PersistStore* store) {
     audio->setPinout(I2S_BCLK, I2S_LRC, I2S_DIN);
     audio->forceMono(true);
 
-    // S3: nagyobb PSRAM alapú buffer az audio streaminghez
+    // S3: PSRAM automatikusan kihasználódik ha BOARD_HAS_PSRAM definiált
+    // Az ESP32-audioI2S belső buffereit a heap allokátor kezeli (PSRAM-ba kerül)
     if (psramFound()) {
-        audio->setPsram(true);
-        Serial.println("[AUDIO] PSRAM stream buffer: aktív");
+        Serial.println("[AUDIO] PSRAM elérhető – audio bufferek PSRAM-ban");
     }
 
     setVolume(currentVolume);
