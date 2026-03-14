@@ -28,6 +28,7 @@
 #include "DeviceAgent.h"
 #include "DeviceTelemetry.h"
 #include "SyncClient.h"
+#include "OtaManager.h"
 
 // ── Globális objektumok ───────────────────────────────────────────────────────
 NetworkManager  networkManager;
@@ -38,6 +39,7 @@ BellManager     bellManager(audioManager, networkManager, backend);
 DeviceAgent     agent;
 DeviceTelemetry telemetry;
 SyncClient      syncClient;
+OtaManager      otaManager;
 
 UIManager*           uiManager   = nullptr;
 ProvisioningManager* provManager = nullptr;
@@ -90,6 +92,7 @@ void TaskNetwork(void* pvParameters) {
         networkManager.loop();
         agent.loop();
         bellManager.loop();
+        otaManager.loop();
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
@@ -143,6 +146,7 @@ void startNormalMode() {
 
     agent.begin(networkManager, audioManager, *uiManager, backend, telemetry);
     agent.setFirmwareVersion(String(FW_VERSION));
+    otaManager.begin(backend, uiManager);
 
     // PSRAM-ban allokált task stack-ek
     // TaskNetwork: 20KB stack
