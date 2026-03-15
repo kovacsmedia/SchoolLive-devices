@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 #include "OtaManager.h"
 #include "BackendClient.h"
+#include "Config.h"
 #include "UIManager.h"
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
