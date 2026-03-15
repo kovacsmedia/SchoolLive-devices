@@ -60,7 +60,7 @@
 
 // --- DEVICE ---
 #define DEVICE_KEY_DEFAULT ""
-#define FW_VERSION "S3.4"
-#define HW_MODEL   "ESP32_S3"
+#define FW_VERSION "S3.5"
+#define HW_MODEL   "ESP32_S3"   // Hardver modell – firmware célzáshoz
 
 #endif

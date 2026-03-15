@@ -133,7 +133,7 @@ void UIManager::processLongPressR() {}
 void UIManager::navigateMenuNext() {
     if (menuPage == MENU_MAIN) {
         mainMenuIndex++;
-        if (mainMenuIndex > 4) mainMenuIndex = 0;  // 0..4
+        if (mainMenuIndex > 4) mainMenuIndex = 0;
     } else {
         subMenuIndex++;
         int maxSub = 0;
@@ -223,7 +223,6 @@ void UIManager::executeMenuAction() {
                 delay(500);
                 ESP.restart();
             } else {
-                // Timeout
                 _factoryResetConfirmStep = 0;
                 display.clearDisplay();
                 display.setTextSize(1);
@@ -469,7 +468,8 @@ void UIManager::drawSplashScreen() {
     display.println("SchoolLive!");
     display.setTextSize(1);
     display.setCursor(0, 20);
-    display.println("SmartSpeaker  V3.5");
+    display.print("SmartSpeaker  ");
+    display.println(FW_VERSION);   // ← Config.h-ból, nem hardkódolt
     display.display();
 }
 
