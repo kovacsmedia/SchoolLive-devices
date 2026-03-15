@@ -53,7 +53,7 @@ void OtaManager::checkForUpdate() {
 
     JsonDocument resp;
     int code = 0;
-    String path = String(OTA_CHECK_URL) + "?version=" + FW_VERSION + "&deviceClass=SPEAKER";
+    String path = String(OTA_CHECK_URL) + "?version=" + FW_VERSION + "&deviceClass=SPEAKER&hwModel=" + HW_MODEL;
     bool ok = _backend->getJson(path, resp, code);
 
     if (!ok || code != 200) {
