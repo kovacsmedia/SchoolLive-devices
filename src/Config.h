@@ -61,5 +61,6 @@
 // --- DEVICE ---
 #define DEVICE_KEY_DEFAULT ""
 #define FW_VERSION "S3.4"
+#define HW_MODEL   "ESP32_S3"
 
 #endif
