@@ -161,10 +161,9 @@ void SyncClient::handleHello(const JsonDocument& doc) {
     resp["seq"]  = (uint32_t)millis();
     String out; serializeJson(resp, out);
     _ws.sendTXT(out);
-
-// ── handlePrepare ─────────────────────────────────────────────────────────────
 }
 
+// ── handlePrepare ─────────────────────────────────────────────────────────────
 void SyncClient::handlePrepare(const JsonDocument& doc) {
     String commandId = doc["commandId"] | "";
     String action    = doc["action"]    | "";
@@ -207,7 +206,7 @@ void SyncClient::handlePrepare(const JsonDocument& doc) {
 
     } else if (action == "TTS") {
         // TTS MP3 letöltése és LittleFS-RE ÍRÁS a PREPARE fázisban
-        // → PLAY-kor csak playFile() kell (~50ms), nem arányos a fájlmérettel
+        // → PLAY-kor csak playFile() kell (~350ms), nem arányos a fájlmérettel
         String tempPath = "/tts_sync.mp3";
         bool written = false;
 
@@ -279,29 +278,41 @@ void SyncClient::handlePlay(const JsonDocument& doc) {
         }
     }
 
-    // Várakozás a playAt-ig (NTP + server offset korrigálva)
+    // ── Startup overhead kompenzáció ─────────────────────────────────────────
+    // playFile() nem játszik le azonnal a hívás után – a tényleges hangkimenetet
+    // megelőzi egy eszközspecifikus indítási overhead:
+    //   BELL:     ~120ms  (LittleFS megnyitás + I2S decoder init)
+    //   TTS:      ~350ms  (LittleFS megnyitás + MP3 decoder init)
+    //   PLAY_URL: ~200ms  (HTTP kapcsolat felépítés + streaming buffer)
+    //
+    // Kompenzáció: vTaskDelay-t (delayMs - startupMs)-szel csökkentjük,
+    // hogy a hang PONTOSAN playAt-kor szólaljon meg.
+    //
+    // Megjegyzés: ezek az értékek mért átlagok. Ha az NVS-ben tárolt mért
+    // értékek elérhetők, azokat kellene használni (TODO).
+    int32_t startupMs = 0;
+    const String& action = _prep.action;
+    if      (action == "BELL")         startupMs = 120;
+    else if (action == "TTS")          startupMs = 350;
+    else if (action == "PLAY_URL")     startupMs = 200;
+    // STOP_PLAYBACK és egyéb azonnali: startupMs = 0
+
+    // Várakozás a playAt-ig (NTP + server offset korrigálva), startup nélkül
     int64_t nowWithOffset = nowMs() + _serverOffsetMs;
     int64_t delayMs       = playAtMs - nowWithOffset;
+    int64_t waitMs        = delayMs - (int64_t)startupMs;
 
-    Serial.printf("[SYNC] PLAY in %lld ms: %s (%s)\n",
-                  delayMs, commandId.c_str(), _prep.action.c_str());
+    Serial.printf("[SYNC] PLAY in %lld ms (startup=%d ms, wait=%lld ms): %s (%s)\n",
+                  delayMs, startupMs, waitMs, commandId.c_str(), action.c_str());
 
-    // Indítási overhead levonása a várakozásból
-    // ESP32-n a lejátszás nem azonnal indul a play() hívás után:
-    //   TTS PSRAM: ~350ms (LittleFS írás + decoder init)
-    //   BELL fájl: ~120ms (fájl megnyitás + decoder init)
-    //   Stream:    ~200ms (HTTP kapcsolat felépítés)
-    // Startup overhead: a READY_ACK-ban bejelentett bufferMs tartalmazza
-    // a tényleges letöltési időt. A playFile() startup konstans ~1000ms.
-    // A szerver MIN_LEAD_MS=2000ms garantálja hogy ez belefér.
-    // Nincs kompenzáció szükséges – a szerver már beleszámolta.
-    if (delayMs > 0 && delayMs < 10000) {
-        vTaskDelay(pdMS_TO_TICKS((uint32_t)delayMs));
+    if (waitMs > 0 && waitMs < 10000) {
+        vTaskDelay(pdMS_TO_TICKS((uint32_t)waitMs));
+    } else if (waitMs <= 0) {
+        Serial.printf("[SYNC] ⚠️ Késő érkezés: %lld ms (PLAY azonnal)\n", waitMs);
     }
 
-    // Lejátszás
+    // ── Lejátszás ─────────────────────────────────────────────────────────────
     if (!_audio) return;
-    const String& action = _prep.action;
 
     if (action == "BELL") {
         if (_prep.localPath.length() > 0) {
