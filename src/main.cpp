@@ -114,15 +114,37 @@ void TaskSync(void* pvParameters) {
 void TaskSnapcast(void* pvParameters) {
     (void)pvParameters;
 
-    // Várunk WiFi + NTP szinkronra
+    // Várunk WiFi + NTP + backend ready szinkronra
     while (!networkManager.isConnected() || !networkManager.isTimeSynced()) {
         vTaskDelay(pdMS_TO_TICKS(500));
     }
-    Serial.println("[SNAP-TASK] WiFi+NTP kész → Snapcast csatlakozás");
+    while (!backend.isReady()) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+    Serial.println("[SNAP-TASK] WiFi+NTP+backend kész → Snapcast port lekérése");
 
-    String mac = WiFi.macAddress();
-    uint8_t vol = (uint8_t)map(audioManager.getVolume(), 1, 10, 10, 100);
-    snapClient.begin(mac, vol);
+    // Snapcast port lekérése a backendről (tenant-specifikus: 1800-1880)
+    uint16_t snapPort = 0;
+    uint8_t  retries  = 0;
+    while (snapPort == 0 && retries < 10) {
+        snapPort = backend.fetchSnapPort();
+        if (snapPort == 0) {
+            Serial.printf("[SNAP-TASK] Port lekérés sikertelen, újra 5s múlva (retry %d/10)\n", ++retries);
+            vTaskDelay(pdMS_TO_TICKS(5000));
+        }
+    }
+
+    if (snapPort == 0) {
+        Serial.println("[SNAP-TASK] ❌ Snapcast port nem elérhető – task leáll");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    Serial.printf("[SNAP-TASK] Snapcast port: %d → csatlakozás\n", snapPort);
+
+    String   mac = WiFi.macAddress();
+    uint8_t  vol = (uint8_t)map(audioManager.getVolume(), 1, 10, 10, 100);
+    snapClient.begin(mac, vol, snapPort);
 
     for (;;) {
         snapClient.loop();
