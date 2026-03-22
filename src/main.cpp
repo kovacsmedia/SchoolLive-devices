@@ -1,15 +1,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// main.cpp – SchoolLive ESP32-S3-N16R8 (S3.4)
+// main.cpp – SchoolLive S3.52
 //
 // Task architektúra:
-//   Core 0: TaskNetwork  – WiFi, NTP, BackendClient poll/beacon, BellManager szinkron
-//            TaskSync    – WebSocket SyncClient loop (SyncCast protokoll)
+//   Core 0: TaskNetwork  – WiFi, NTP, BackendClient poll/beacon, BellManager
+//            TaskSync    – WebSocket SyncClient (SyncCast, csak BELL)
+//            TaskSnapcast – Snapcast TCP kliens (PCM stream → I2S)
 //   Core 1: loop()       – AudioManager.loop() + UIManager.loop()
-//
-// PSRAM kihasználás:
-//   • Audio stream buffer (Audio.h setPsram(true))
-//   • SyncClient TTS pre-fetch buffer (256KB)
-//   • Task stack-ek PSRAM-ban (pvPortMallocCaps)
 // ─────────────────────────────────────────────────────────────────────────────
 #include <Arduino.h>
 #include <LittleFS.h>
@@ -28,6 +24,7 @@
 #include "DeviceAgent.h"
 #include "DeviceTelemetry.h"
 #include "SyncClient.h"
+#include "SnapcastClient.h"
 #include "OtaManager.h"
 
 // ── Globális objektumok ───────────────────────────────────────────────────────
@@ -39,6 +36,7 @@ BellManager     bellManager(audioManager, networkManager, backend);
 DeviceAgent     agent;
 DeviceTelemetry telemetry;
 SyncClient      syncClient;
+SnapcastClient  snapClient;
 OtaManager      otaManager;
 
 UIManager*           uiManager   = nullptr;
@@ -83,8 +81,6 @@ void TaskProvisioning(void* pvParameters) {
 }
 
 // ── Network task (Core 0) ─────────────────────────────────────────────────────
-// HTTP poll/beacon + BellManager szinkron
-// S3-n nincs audio busy guard – külön task kezeli az audiot
 void TaskNetwork(void* pvParameters) {
     (void)pvParameters;
     networkManager.begin();
@@ -100,26 +96,44 @@ void TaskNetwork(void* pvParameters) {
 // ── SyncCast WebSocket task (Core 0) ─────────────────────────────────────────
 void TaskSync(void* pvParameters) {
     (void)pvParameters;
-    // Várunk amíg WiFi és NTP szinkron megvan
     while (!networkManager.isConnected() || !networkManager.isTimeSynced()) {
         vTaskDelay(pdMS_TO_TICKS(500));
     }
     Serial.println("[SYNC-TASK] WiFi+NTP kész → WebSocket csatlakozás");
 
     String deviceKey = store.getDeviceKey();
-    // tenantId-t a szerver határozza meg a device key alapján
     syncClient.begin(audioManager, bellManager, deviceKey, "");
 
     for (;;) {
         syncClient.loop();
-        vTaskDelay(pdMS_TO_TICKS(10));  // 10ms loop = gyors WS feldolgozás
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+// ── Snapcast task (Core 0) ────────────────────────────────────────────────────
+void TaskSnapcast(void* pvParameters) {
+    (void)pvParameters;
+
+    // Várunk WiFi + NTP szinkronra
+    while (!networkManager.isConnected() || !networkManager.isTimeSynced()) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+    Serial.println("[SNAP-TASK] WiFi+NTP kész → Snapcast csatlakozás");
+
+    String mac = WiFi.macAddress();
+    uint8_t vol = (uint8_t)map(audioManager.getVolume(), 1, 10, 10, 100);
+    snapClient.begin(mac, vol);
+
+    for (;;) {
+        snapClient.loop();
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
 // ── Normál mód ────────────────────────────────────────────────────────────────
 void startNormalMode() {
     inProvisioningMode = false;
-    Serial.println("[MAIN] NORMAL mód");
+    Serial.println("[MAIN] NORMAL mód – S3.52 (Snapcast)");
 
     uiManager->drawBootStatus("System check", "WiFi + NTP szinkron");
     delay(300);
@@ -148,18 +162,14 @@ void startNormalMode() {
     agent.setFirmwareVersion(String(FW_VERSION));
     otaManager.begin(backend, uiManager);
 
-    // PSRAM-ban allokált task stack-ek
-    // TaskNetwork: 20KB stack
-    xTaskCreatePinnedToCore(
-        TaskNetwork, "NetworkTask",
-        20480, NULL, 1, NULL, 0
-    );
+    // TaskNetwork: 20KB stack, Core 0
+    xTaskCreatePinnedToCore(TaskNetwork, "NetworkTask", 20480, NULL, 1, NULL, 0);
 
-    // TaskSync: 12KB stack (WebSocket + JSON)
-    xTaskCreatePinnedToCore(
-        TaskSync, "SyncTask",
-        12288, NULL, 2, NULL, 0  // magasabb prioritás mint a network
-    );
+    // TaskSync: 12KB stack, Core 0, prioritás 2
+    xTaskCreatePinnedToCore(TaskSync, "SyncTask", 12288, NULL, 2, NULL, 0);
+
+    // TaskSnapcast: 8KB stack, Core 0, prioritás 2
+    xTaskCreatePinnedToCore(TaskSnapcast, "SnapTask", 8192, NULL, 2, NULL, 0);
 
     uiManager->drawBootStatus("Kész", ("FW: " + String(FW_VERSION)).c_str());
     delay(500);
@@ -171,49 +181,38 @@ void startProvisioningMode() {
     Serial.println("[MAIN] PROVISIONING mód");
     provManager = new ProvisioningManager(store);
     provManager->begin();
-    xTaskCreatePinnedToCore(
-        TaskProvisioning, "ProvTask",
-        16384, NULL, 1, NULL, 0
-    );
+    xTaskCreatePinnedToCore(TaskProvisioning, "ProvTask", 16384, NULL, 1, NULL, 0);
 }
 
 // ── setup ─────────────────────────────────────────────────────────────────────
 void setup() {
     Serial.begin(115200);
     delay(500);
-    Serial.println("\n=== SchoolLive S3.4 SETUP ===");
+    Serial.println("\n=== SchoolLive S3.52 SETUP ===");
     Serial.printf("Free heap:  %d bytes\n", ESP.getFreeHeap());
     Serial.printf("PSRAM:      %s (%d bytes)\n",
-                  psramFound() ? "OK" : "NEM TALÁLHATÓ",
+                  psramFound() ? "OK" : "NEM",
                   (int)ESP.getPsramSize());
-    Serial.printf("Flash:      %d MB\n", (int)(ESP.getFlashChipSize() / 1024 / 1024));
 
-    btStop();  // Bluetooth ki – nem kell, memóriát szabadít fel
+    btStop();
     Wire.begin(I2C_SDA, I2C_SCL);
     LittleFS.begin(true, "/littlefs", 10, "littlefs");
     store.begin();
-
     audioManager.begin(&store);
 
     uiManager = new UIManager(audioManager, networkManager, bellManager, store);
     uiManager->begin();
     uiManager->setTelemetry(&telemetry);
-
     bellManager.begin();
 
-    bool hasWifi   = store.hasWifi();
-    bool hasKey    = store.hasDeviceKey();
-    bool needsProv = !hasWifi || !hasKey;
-
-    Serial.printf("[MAIN] hasWifi=%d hasKey=%d needsProv=%d\n",
-                  hasWifi, hasKey, needsProv);
+    bool needsProv = !store.hasWifi() || !store.hasDeviceKey();
+    Serial.printf("[MAIN] needsProv=%d\n", needsProv);
 
     if (needsProv) startProvisioningMode();
     else           startNormalMode();
 }
 
-// ── loop (Core 1) ─────────────────────────────────────────────────────────────
-// CSAK audio és UI – hálózati hívás nincs itt
+// ── loop (Core 1) – csak audio és UI ─────────────────────────────────────────
 void loop() {
     if (!inProvisioningMode) {
         audioManager.loop();
