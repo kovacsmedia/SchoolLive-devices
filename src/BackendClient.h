@@ -12,6 +12,7 @@
 struct PolledCommand {
     String       id;
     JsonDocument payload;
+    bool         hasCommand = false;
 };
 
 class BackendClient {

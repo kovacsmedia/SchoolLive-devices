@@ -42,7 +42,7 @@ class SnapcastClient {
 public:
     SnapcastClient() {}
 
-    void begin(const String& mac, uint8_t volume = 70);
+    void begin(const String& mac, uint8_t volume = 70, uint16_t port = 1800);    
     void loop();   // Network task-ból hívandó ~10ms-enként
     void stop();
 

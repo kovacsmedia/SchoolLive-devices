@@ -122,7 +122,8 @@ bool BackendClient::poll(PolledCommand& outCmd) {
     if (!resp["command"].is<JsonObject>()) return false;
     outCmd.id = resp["command"]["id"] | "";
     outCmd.payload.set(resp["command"]["payload"].as<JsonVariantConst>());
-    return outCmd.id.length() > 0;
+    outCmd.hasCommand = outCmd.id.length() > 0;
+    return outCmd.hasCommand;
 }
 
 bool BackendClient::ack(const String& commandId, bool ok, const String& errorMsg) {
