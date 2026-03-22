@@ -22,6 +22,7 @@ struct PreparedCmd {
     String commandId;
     String action;      // BELL | TTS | PLAY_URL | STOP_PLAYBACK
     String localPath;   // LittleFS (csak BELL)
+    String url;         // eredeti URL (referencia, nem használt audio-ra)
     bool   ready    = false;
 };
 
