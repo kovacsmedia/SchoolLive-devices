@@ -16,9 +16,10 @@
 #define SNAP_BYTES_PER_MS 192
 
 // ── begin ────────────────────────────────────────────────────────────────────
-void SnapcastClient::begin(const String& mac, uint8_t volume) {
+void SnapcastClient::begin(const String& mac, uint8_t volume, uint16_t port) {
     _mac    = mac;
     _volume = volume;
+    _port   = port;
 
     // PSRAM ring buffer
     _ringSize = SNAP_BUF_SIZE;
