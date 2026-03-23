@@ -188,6 +188,14 @@ void SyncClient::handlePlay(const JsonDocument& doc) {
         // Bell esetleg szól – leállítás
         _audio->stop();
     }
+
+    
+    // UIManager értesítése lejátszásról
+    if (_onPlayAction) {
+        if      (action == "TTS")       _onPlayAction("UZENET");
+        else if (action == "PLAY_URL")  _onPlayAction("RADIO");
+        else if (action == "STOP_PLAYBACK") _onPlayAction("");
+    }
     // TTS és PLAY_URL: Snapcast már játszik, nincs teendő
 
     _prep = PreparedCmd{};

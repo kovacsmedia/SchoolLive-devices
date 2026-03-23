@@ -103,7 +103,9 @@ void TaskSync(void* pvParameters) {
 
     String deviceKey = store.getDeviceKey();
     syncClient.begin(audioManager, bellManager, deviceKey, "");
-
+    syncClient.setOnPlayAction([](const char* action) {
+        if (uiManager) uiManager->setPlayingState(String(action));
+    });
     for (;;) {
         syncClient.loop();
         vTaskDelay(pdMS_TO_TICKS(10));
