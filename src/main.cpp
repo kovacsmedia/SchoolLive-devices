@@ -169,7 +169,7 @@ void TaskSnapcast(void* pvParameters) {
 
     for (;;) {
         snapClient.loop();
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(1));  // 1ms – gyorsabb adatolvasás
     }
 }
 
@@ -211,7 +211,9 @@ void startNormalMode() {
 
     xTaskCreatePinnedToCore(TaskNetwork,  "NetworkTask", 20480, NULL, 1, NULL, 0);
     xTaskCreatePinnedToCore(TaskSync,     "SyncTask",    12288, NULL, 2, NULL, 0);
-    xTaskCreatePinnedToCore(TaskSnapcast, "SnapTask",     8192, NULL, 2, NULL, 0);
+    // SnapTask: nagyobb stack + magasabb prioritás – gyorsabb adatolvasás
+    // vTaskDelay(1ms) a loop-ban hogy ne blokkolja a NetworkTask-ot
+    xTaskCreatePinnedToCore(TaskSnapcast, "SnapTask",    16384, NULL, 3, NULL, 0);
 
     uiManager->drawBootStatus("Kész", ("FW: " + String(FW_VERSION)).c_str());
     delay(500);

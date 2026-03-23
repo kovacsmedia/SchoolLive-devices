@@ -267,7 +267,18 @@ void SnapcastClient::handleWireChunk(const uint8_t* body, uint32_t size) {
     int64_t nowUs_   = nowUs();
     int64_t deltaUs  = playAtUs - nowUs_;
 
-    if (deltaUs < -100000) return;  // késő chunk – kihagyjuk
+    // Debug: első chunk érkezésekor logolás
+    static uint32_t chunkCount = 0;
+    if (chunkCount++ < 3) {
+        Serial.printf("[SNAP] WireChunk #%d: size=%d pcmLen=%d deltaMs=%.1f bufFill=%d ms\n",
+                      chunkCount, size, pcmLen, deltaUs/1000.0f, _bufFillMs);
+    }
+
+    if (deltaUs < -100000) {
+        static uint32_t lateCount = 0;
+        if (lateCount++ < 3) Serial.printf("[SNAP] Késő chunk dobva (delta=%.0f ms)\n", deltaUs/1000.0f);
+        return;
+    }
 
     ringWrite(pcm, pcmLen);
     _bufFillMs = _ringFill / SNAP_BYTES_PER_MS;
@@ -306,6 +317,15 @@ void SnapcastClient::handleTime(const uint8_t* body, uint32_t size) {
 void SnapcastClient::drainToI2S() {
     if (!_i2sInstalled) return;
     if (_ringFill == 0) return;
+
+    // Debug: első drainkor logolás
+    static bool _drainLogged = false;
+    if (!_drainLogged && _ringFill > 0) {
+        Serial.printf("[SNAP] drainToI2S: ringFill=%d bufFillMs=%d playing=%d\n",
+                      _ringFill, _bufFillMs, _playing);
+        _drainLogged = true;
+    }
+
     if (!_playing && _bufFillMs < SNAP_START_THRESHOLD_MS) return;
 
     static uint8_t i2sBuf[1920];
