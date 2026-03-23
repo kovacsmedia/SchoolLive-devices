@@ -38,6 +38,16 @@
 #define SNAPCAST_SAMPLE_RATE  48000
 #define SNAPCAST_CHANNELS     2
 #define SNAPCAST_BITS         16
+// ── WebSocket sync ────────────────────────────────────────────────────────────
+#ifndef SYNC_WS_HOST
+  #define SYNC_WS_HOST       "api.schoollive.hu"
+#endif
+#ifndef SYNC_WS_PORT
+  #define SYNC_WS_PORT       443
+#endif
+#ifndef SYNC_WS_RECONNECT
+  #define SYNC_WS_RECONNECT  5000   // ms
+#endif
 
 // --- HÁLÓZAT ---
 #define MQTT_SERVER "mqtt.schoollive.hu"
@@ -62,7 +72,7 @@
 
 // --- DEVICE ---
 #define DEVICE_KEY_DEFAULT ""
-#define FW_VERSION "S3.53"
+#define FW_VERSION "S3.54"
 #define HW_MODEL   "ESP32_S3"
 
 #endif

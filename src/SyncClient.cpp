@@ -1,14 +1,23 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// SyncClient.cpp – S3.52
-// Snapcast mód: audio a szerver kezeli, ESP32 csak BELL-t játszik lokálisan
-// ─────────────────────────────────────────────────────────────────────────────
+// SyncClient.cpp – SchoolLive S3.54
+// Változások S3.52 → S3.54:
+//   • _notifyActivity() segédfüggvény – _ui->setNetActivity() ha _ui != nullptr
+//   • onMessage() – bejövő WS adat esetén jelzés (szerver kommunikál velünk)
+//   • sendReadyAck(), sendTimeSyncRequest() – kimenő WS küldés előtt jelzés
+//   • downloadToLittleFS() – HTTP letöltés előtt jelzés
+
 #include "SyncClient.h"
+#include "UIManager.h"
 #include <LittleFS.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <sys/time.h>
 
 SyncClient* SyncClient::_instance = nullptr;
+
+// ── UI aktivitás jelzés ───────────────────────────────────────────────────────
+void SyncClient::_notifyActivity() {
+    if (_ui) _ui->setNetActivity();
+}
 
 static time_t utcmktime(struct tm* t) {
     static const int mdays[] = {31,28,31,30,31,30,31,31,30,31,30,31};
@@ -67,7 +76,11 @@ void SyncClient::onDisconnected() {
     Serial.println("[SYNC] ❌ Lecsatlakozva");
 }
 
+// ── onMessage ─────────────────────────────────────────────────────────────────
+// Bejövő WS adat → aktivitás jelzés + feldolgozás
 void SyncClient::onMessage(const String& msg) {
+    _notifyActivity();                          // ← bejövő adat = kommunikáció zajlik
+
     JsonDocument doc;
     if (deserializeJson(doc, msg) != DeserializationError::Ok) return;
 
@@ -103,11 +116,12 @@ void SyncClient::handleHello(const JsonDocument& doc) {
         _serverOffsetMs = 0;
     }
     JsonDocument resp; resp["type"] = "TIME_SYNC"; resp["seq"] = (uint32_t)millis();
-    String out; serializeJson(resp, out); _ws.sendTXT(out);
+    String out; serializeJson(resp, out);
+    _notifyActivity();                          // ← kimenő WS küldés
+    _ws.sendTXT(out);
 }
 
 // ── handlePrepare ─────────────────────────────────────────────────────────────
-// S3.52: csak BELL-t készítjük elő lokálisan, egyébként azonnali ACK
 void SyncClient::handlePrepare(const JsonDocument& doc) {
     String commandId = doc["commandId"] | "";
     String action    = doc["action"]    | "";
@@ -121,7 +135,6 @@ void SyncClient::handlePrepare(const JsonDocument& doc) {
     _prep.url       = url;
 
     if (action == "BELL" && url.length() > 0) {
-        // Bell hang: LittleFS-en van-e?
         unsigned long t0 = millis();
         String filename = url.substring(url.lastIndexOf('/') + 1);
         String path = "/" + filename;
@@ -131,15 +144,12 @@ void SyncClient::handlePrepare(const JsonDocument& doc) {
             _prep.ready     = true;
             sendReadyAck(commandId, millis() - t0);
         } else {
-            // Letöltés LittleFS-re
             bool ok = downloadToLittleFS(url, path);
             _prep.localPath = path;
             _prep.ready     = ok;
             sendReadyAck(commandId, ok ? millis() - t0 : 9999);
         }
     } else {
-        // TTS, PLAY_URL, STOP_PLAYBACK: Snapcast kezeli az audiót
-        // Azonnali ACK, nincs letöltés
         _prep.ready = true;
         sendReadyAck(commandId, 0);
     }
@@ -152,7 +162,6 @@ void SyncClient::handlePlay(const JsonDocument& doc) {
 
     int64_t playAtMs = doc["playAtMs"] | (int64_t)0;
     if (playAtMs == 0) {
-        // ISO fallback
         const char* s = doc["playAt"] | "";
         struct tm tm = {}; int ms = 0;
         if (sscanf(s, "%4d-%2d-%2dT%2d:%2d:%2d.%dZ",
@@ -164,9 +173,7 @@ void SyncClient::handlePlay(const JsonDocument& doc) {
     }
 
     const String& action = _prep.action;
-
-    // BELL: startup overhead kompenzáció
-    int32_t startupMs = (action == "BELL") ? 120 : 0;
+    int32_t startupMs    = (action == "BELL") ? 120 : 0;
 
     int64_t nowWithOffset = nowMs() + _serverOffsetMs;
     int64_t waitMs        = playAtMs - nowWithOffset - startupMs;
@@ -180,23 +187,18 @@ void SyncClient::handlePlay(const JsonDocument& doc) {
     if (!_audio) { _prep = PreparedCmd{}; return; }
 
     if (action == "BELL") {
-        // Lokális lejátszás LittleFS-ről
         if (_prep.localPath.length() > 0) {
             _audio->playFile(_prep.localPath.c_str());
         }
     } else if (action == "STOP_PLAYBACK") {
-        // Bell esetleg szól – leállítás
         _audio->stop();
     }
 
-    
-    // UIManager értesítése lejátszásról
     if (_onPlayAction) {
-        if      (action == "TTS")       _onPlayAction("UZENET");
-        else if (action == "PLAY_URL")  _onPlayAction("RADIO");
+        if      (action == "TTS")           _onPlayAction("UZENET");
+        else if (action == "PLAY_URL")      _onPlayAction("RADIO");
         else if (action == "STOP_PLAYBACK") _onPlayAction("");
     }
-    // TTS és PLAY_URL: Snapcast már játszik, nincs teendő
 
     _prep = PreparedCmd{};
 }
@@ -212,17 +214,20 @@ void SyncClient::handleImmediate(const JsonDocument& doc) {
         _bells->requestSync();
     } else if (action == "STOP_PLAYBACK" && _audio) {
         _audio->stop();
+        if (_onPlayAction) _onPlayAction("");
     } else if (action == "BELL" && _audio && url.length() > 0) {
-        // Azonnali csengetés
         String path = "/" + url.substring(url.lastIndexOf('/') + 1);
         if (LittleFS.exists(path)) {
             _audio->playFile(path.c_str());
         }
-        // Ha nincs LittleFS-en, a Snapcast lejátssza
+    } else if (action == "TTS") {
+        if (_onPlayAction) _onPlayAction("UZENET");
+    } else if (action == "PLAY_URL") {
+        if (_onPlayAction) _onPlayAction("RADIO");
     }
-    // TTS és PLAY_URL: Snapcast kezeli, nincs lokális teendő
 }
 
+// ── sendReadyAck ──────────────────────────────────────────────────────────────
 void SyncClient::sendReadyAck(const String& commandId, uint32_t bufferMs) {
     JsonDocument doc;
     doc["type"]      = "READY_ACK";
@@ -239,21 +244,28 @@ void SyncClient::sendReadyAck(const String& commandId, uint32_t bufferMs) {
              t.tm_hour, t.tm_min, t.tm_sec, (int)(ms%1000));
     doc["readyAt"] = buf;
 
-    String out; serializeJson(doc, out); _ws.sendTXT(out);
+    String out; serializeJson(doc, out);
+    _notifyActivity();                          // ← kimenő WS küldés
+    _ws.sendTXT(out);
     Serial.printf("[SYNC] READY ACK: %s bufMs=%d\n", commandId.c_str(), bufferMs);
 }
 
+// ── sendTimeSyncRequest ───────────────────────────────────────────────────────
 void SyncClient::sendTimeSyncRequest() {
     JsonDocument doc; doc["type"] = "TIME_SYNC"; doc["seq"] = (uint32_t)millis();
-    String out; serializeJson(doc, out); _ws.sendTXT(out);
+    String out; serializeJson(doc, out);
+    _notifyActivity();                          // ← kimenő WS küldés
+    _ws.sendTXT(out);
 }
 
+// ── Segédfüggvények ───────────────────────────────────────────────────────────
 int64_t SyncClient::nowMs() const {
     struct timeval tv; gettimeofday(&tv, nullptr);
     return (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
 }
 
 bool SyncClient::downloadToLittleFS(const String& url, const String& path) {
+    _notifyActivity();                          // ← HTTP letöltés indul
     WiFiClientSecure client; client.setInsecure();
     HTTPClient http; http.setTimeout(10000);
     if (!http.begin(client, url)) return false;

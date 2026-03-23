@@ -1,3 +1,8 @@
+// DeviceAgent.h – SchoolLive S3.54
+// Változások:
+//   • _firstBeacon bool – azonnali első beacon küldéshez
+//   • _sendBeacon() privát segédfüggvény
+
 #pragma once
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -16,7 +21,6 @@ public:
     void setFirmwareVersion(const String& v) { _fw = v; }
     void loop();
 
-    // SyncClient-ből is hívható közvetlenül
     bool executeCommand(const String& commandId, const String& action,
                         const String& url, const String& text,
                         const String& title);
@@ -26,15 +30,17 @@ private:
     AudioManager*   _audio   = nullptr;
     UIManager*      _ui      = nullptr;
     BackendClient*  _backend = nullptr;
-    String          _fw      = "S3.4";
+    String          _fw      = "S3.54";
 
     unsigned long _lastBeaconMs = 0;
     unsigned long _lastPollMs   = 0;
+    bool          _firstBeacon  = true;   // ← első beacon azonnali küldés
 
     static const unsigned long BEACON_INTERVAL_MS = 30000UL;
-    static const unsigned long POLL_INTERVAL_MS   = 5000UL;  // WS fallback
+    static const unsigned long POLL_INTERVAL_MS   = 5000UL;
 
     void sendBeaconIfDue();
+    void _sendBeacon();           // ← tényleges beacon küldés
     void pollIfDue();
     bool executeAndAck(const PolledCommand& cmd);
 

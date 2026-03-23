@@ -1,11 +1,18 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// main.cpp – SchoolLive S3.52
+// main.cpp – SchoolLive S3.54
+//
+// Változások S3.52 → S3.54:
+//   • setOnPlayAction lambda: const char* → const String&
+//   • backend.setUIManager(uiManager)   – HTTP aktivitás jelzés
+//   • syncClient.setUIManager(uiManager) – WS aktivitás jelzés
+//   • snapClient.setOnConnected / setOnDisconnected → ui->setSnapStatus()
+//   • Verzió string: S3.52 → S3.54
 //
 // Task architektúra:
-//   Core 0: TaskNetwork  – WiFi, NTP, BackendClient poll/beacon, BellManager
-//            TaskSync    – WebSocket SyncClient (SyncCast, csak BELL)
+//   Core 0: TaskNetwork   – WiFi, NTP, BackendClient poll/beacon, BellManager
+//            TaskSync     – WebSocket SyncClient (SyncCast, csak BELL)
 //            TaskSnapcast – Snapcast TCP kliens (PCM stream → I2S)
-//   Core 1: loop()       – AudioManager.loop() + UIManager.loop()
+//   Core 1: loop()        – AudioManager.loop() + UIManager.loop()
 // ─────────────────────────────────────────────────────────────────────────────
 #include <Arduino.h>
 #include <LittleFS.h>
@@ -93,7 +100,7 @@ void TaskNetwork(void* pvParameters) {
     }
 }
 
-// ── SyncCast WebSocket task (Core 0) ─────────────────────────────────────────
+// ── SyncCast WebSocket task (Core 0) ──────────────────────────────────────────
 void TaskSync(void* pvParameters) {
     (void)pvParameters;
     while (!networkManager.isConnected() || !networkManager.isTimeSynced()) {
@@ -103,9 +110,11 @@ void TaskSync(void* pvParameters) {
 
     String deviceKey = store.getDeviceKey();
     syncClient.begin(audioManager, bellManager, deviceKey, "");
-    syncClient.setOnPlayAction([](const char* action) {
-        if (uiManager) uiManager->setPlayingState(String(action));
+
+    syncClient.setOnPlayAction([](const String& action) {
+        if (uiManager) uiManager->setPlayingState(action);
     });
+
     for (;;) {
         syncClient.loop();
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -116,7 +125,6 @@ void TaskSync(void* pvParameters) {
 void TaskSnapcast(void* pvParameters) {
     (void)pvParameters;
 
-    // Várunk WiFi + NTP + backend ready szinkronra
     while (!networkManager.isConnected() || !networkManager.isTimeSynced()) {
         vTaskDelay(pdMS_TO_TICKS(500));
     }
@@ -125,7 +133,6 @@ void TaskSnapcast(void* pvParameters) {
     }
     Serial.println("[SNAP-TASK] WiFi+NTP+backend kész → Snapcast port lekérése");
 
-    // Snapcast port lekérése a backendről (tenant-specifikus: 1800-1880)
     uint16_t snapPort = 0;
     uint8_t  retries  = 0;
     while (snapPort == 0 && retries < 10) {
@@ -138,14 +145,26 @@ void TaskSnapcast(void* pvParameters) {
 
     if (snapPort == 0) {
         Serial.println("[SNAP-TASK] ❌ Snapcast port nem elérhető – task leáll");
+        // Snap véglegesen offline – UI értesítés
+        if (uiManager) uiManager->setSnapStatus(false, "no port");
         vTaskDelete(NULL);
         return;
     }
 
     Serial.printf("[SNAP-TASK] Snapcast port: %d → csatlakozás\n", snapPort);
 
-    String   mac = WiFi.macAddress();
-    uint8_t  vol = (uint8_t)map(audioManager.getVolume(), 1, 10, 10, 100);
+    // ── S3.54: Snap connected / disconnected → UIManager ─────────────────
+    snapClient.setOnConnected([](){ 
+        Serial.println("[SNAP-TASK] Snap CONNECTED");
+        if (uiManager) uiManager->setSnapStatus(true);
+    });
+    snapClient.setOnDisconnected([](){
+        Serial.println("[SNAP-TASK] Snap DISCONNECTED");
+        if (uiManager) uiManager->setSnapStatus(false);
+    });
+
+    String  mac = WiFi.macAddress();
+    uint8_t vol = (uint8_t)map(audioManager.getVolume(), 1, 10, 10, 100);
     snapClient.begin(mac, vol, snapPort);
 
     for (;;) {
@@ -157,7 +176,7 @@ void TaskSnapcast(void* pvParameters) {
 // ── Normál mód ────────────────────────────────────────────────────────────────
 void startNormalMode() {
     inProvisioningMode = false;
-    Serial.println("[MAIN] NORMAL mód – S3.52 (Snapcast)");
+    Serial.println("[MAIN] NORMAL mód – S3.54 (Snapcast)");
 
     uiManager->drawBootStatus("System check", "WiFi + NTP szinkron");
     delay(300);
@@ -179,6 +198,10 @@ void startNormalMode() {
     }
     backend.setDeviceKey(dk);
 
+    // ── S3.54: UI pointer regisztráció ────────────────────────────────────
+    backend.setUIManager(uiManager);
+    syncClient.setUIManager(uiManager);
+
     telemetry.firmwareVersion = String(FW_VERSION);
     telemetry.deviceId        = WiFi.macAddress();
 
@@ -186,20 +209,15 @@ void startNormalMode() {
     agent.setFirmwareVersion(String(FW_VERSION));
     otaManager.begin(backend, uiManager);
 
-    // TaskNetwork: 20KB stack, Core 0
-    xTaskCreatePinnedToCore(TaskNetwork, "NetworkTask", 20480, NULL, 1, NULL, 0);
-
-    // TaskSync: 12KB stack, Core 0, prioritás 2
-    xTaskCreatePinnedToCore(TaskSync, "SyncTask", 12288, NULL, 2, NULL, 0);
-
-    // TaskSnapcast: 8KB stack, Core 0, prioritás 2
-    xTaskCreatePinnedToCore(TaskSnapcast, "SnapTask", 8192, NULL, 2, NULL, 0);
+    xTaskCreatePinnedToCore(TaskNetwork,  "NetworkTask", 20480, NULL, 1, NULL, 0);
+    xTaskCreatePinnedToCore(TaskSync,     "SyncTask",    12288, NULL, 2, NULL, 0);
+    xTaskCreatePinnedToCore(TaskSnapcast, "SnapTask",     8192, NULL, 2, NULL, 0);
 
     uiManager->drawBootStatus("Kész", ("FW: " + String(FW_VERSION)).c_str());
     delay(500);
 }
 
-// ── Provisioning mód ─────────────────────────────────────────────────────────
+// ── Provisioning mód ──────────────────────────────────────────────────────────
 void startProvisioningMode() {
     inProvisioningMode = true;
     Serial.println("[MAIN] PROVISIONING mód");
@@ -212,7 +230,7 @@ void startProvisioningMode() {
 void setup() {
     Serial.begin(115200);
     delay(500);
-    Serial.println("\n=== SchoolLive S3.52 SETUP ===");
+    Serial.println("\n=== SchoolLive S3.54 SETUP ===");
     Serial.printf("Free heap:  %d bytes\n", ESP.getFreeHeap());
     Serial.printf("PSRAM:      %s (%d bytes)\n",
                   psramFound() ? "OK" : "NEM",

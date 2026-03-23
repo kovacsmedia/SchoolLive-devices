@@ -1,6 +1,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// DeviceAgent.cpp
-// Poll alapú fallback – WebSocket (SyncClient) az elsődleges csatorna
+// DeviceAgent.cpp – SchoolLive S3.54
+// Változások:
+//   • Első beacon AZONNAL megy (nem vár 30s-ot):
+//     _lastBeaconMs = -(BEACON_INTERVAL_MS) inicializáció helyett
+//     _firstBeacon flag – az első loop() hívásban azonnal küld, ha WiFi OK
+//   • beacon ok/fail → _ui->setBackendOnline(true/false)
+//   • poll fail → _ui->setBackendOnline(false)
 // ─────────────────────────────────────────────────────────────────────────────
 #include "DeviceAgent.h"
 #include <LittleFS.h>
@@ -13,21 +18,37 @@ void DeviceAgent::begin(NetworkManager& net, AudioManager& audio,
     _ui      = &ui;
     _backend = &backend;
     _tel     = &tel;
+    // _lastBeaconMs = 0 alapértelmezés → az első híváskor
+    // (now - 0) >= BEACON_INTERVAL_MS csak ~30s után lenne igaz.
+    // Ezért _firstBeacon = true flaggel kezeljük az azonnali első küldést.
+    _firstBeacon = true;
 }
 
 void DeviceAgent::loop() {
-    // S3-n nincs SSL cooldown guard – a hálózat és az audio külön taskon fut
     sendBeaconIfDue();
     pollIfDue();
 }
 
-// ── Beacon ───────────────────────────────────────────────────────────────────
+// ── Beacon ────────────────────────────────────────────────────────────────────
 void DeviceAgent::sendBeaconIfDue() {
     unsigned long now = millis();
+
+    // Első beacon: azonnal, amint WiFi elérhető
+    if (_firstBeacon) {
+        if (!_net || !_net->isConnected()) return;  // vár WiFi-ra, de nem blokkolja
+        _firstBeacon  = false;
+        _lastBeaconMs = now;
+        _sendBeacon();
+        return;
+    }
+
     if ((now - _lastBeaconMs) < BEACON_INTERVAL_MS) return;
     _lastBeaconMs = now;
     if (!_net || !_net->isConnected()) return;
+    _sendBeacon();
+}
 
+void DeviceAgent::_sendBeacon() {
     JsonDocument status;
     if (_tel) _tel->fillJson(status);
 
@@ -36,10 +57,15 @@ void DeviceAgent::sendBeaconIfDue() {
         _audio ? _audio->isMuted()   : false,
         _fw, status
     );
+
+    if (_ui) _ui->setBackendOnline(ok);
+
     if (_tel) {
-        if (ok) { _tel->beaconOk++;   _tel->markServerOk(); }
-        else    { _tel->beaconErr++;  _tel->markServerErr("beacon failed"); }
+        if (ok) { _tel->beaconOk++;  _tel->markServerOk(); }
+        else    { _tel->beaconErr++; _tel->markServerErr("beacon failed"); }
     }
+
+    Serial.printf("[AGENT] Beacon: %s\n", ok ? "OK" : "FAIL");
 }
 
 // ── Poll (fallback ha WebSocket nem elérhető) ─────────────────────────────────
@@ -51,6 +77,9 @@ void DeviceAgent::pollIfDue() {
 
     PolledCommand cmd;
     bool ok = _backend->poll(cmd);
+
+    if (!ok && _ui) _ui->setBackendOnline(false);
+
     if (_tel) {
         if (ok) _tel->pollOk++;
         else  { _tel->pollErr++; return; }
@@ -69,14 +98,13 @@ bool DeviceAgent::executeAndAck(const PolledCommand& cmd) {
     String err;
     bool ok = executeCommand(cmd.id, action, url, text, title);
     if (action != "PLAY_URL" && action != "TTS") {
-        // PLAY_URL és TTS esetén az ACK már korábban ment (audio előtt)
         bool ackOk = _backend->ack(cmd.id, ok, err);
         if (_tel) { if (ackOk) _tel->ackOk++; else _tel->ackErr++; }
     }
     return ok;
 }
 
-// ── executeCommand (SyncClient és poll egyaránt használja) ────────────────────
+// ── executeCommand ────────────────────────────────────────────────────────────
 bool DeviceAgent::executeCommand(const String& commandId,
                                   const String& action,
                                   const String& url,
@@ -86,18 +114,16 @@ bool DeviceAgent::executeCommand(const String& commandId,
     Serial.printf("[AGENT] Parancs: %s url=%.60s\n", action.c_str(), url.c_str());
 
     if (action == "PLAY_URL") {
-        // ACK előre – audio SSL socket megnyitása előtt
         _backend->ack(commandId, true, "");
-        return handlePlayUrl(JsonVariant(), err);  // URL már átadva
-        // (url direkt paraméterként kellene – lásd lent)
+        return handlePlayUrl(JsonVariant(), err);
     }
 
     if      (action == "BELL")          return handleBell(JsonVariant(), err);
     else if (action == "TTS")           return handleTts(JsonVariant(), err);
     else if (action == "STOP_PLAYBACK") return handleStop(err);
-    else if (action == "SET_VOLUME")    return false;  // UIManager kezeli
+    else if (action == "SET_VOLUME")    return false;
     else if (action == "SHOW_MESSAGE")  return false;
-    else if (action == "SYNC_BELLS")    return true;   // BellManager kezeli
+    else if (action == "SYNC_BELLS")    return true;
     else {
         Serial.printf("[AGENT] Ismeretlen akció: %s\n", action.c_str());
         return false;

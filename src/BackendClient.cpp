@@ -1,7 +1,19 @@
-// BackendClient.cpp
+// BackendClient.cpp – SchoolLive S3.54
+// Változások S3.52 → S3.54:
+//   • _notifyActivity() segédfüggvény – _ui->setNetActivity() ha _ui != nullptr
+//   • postJson, getJson, downloadFile, postJsonUnauthed hívja _notifyActivity()-t
+//     http.begin() ELŐTT (már a kérés indításakor látszódjon az aktivitás)
+
 #include "BackendClient.h"
+#include "UIManager.h"
 #include <LittleFS.h>
 
+// ── UI aktivitás jelzés ───────────────────────────────────────────────────────
+void BackendClient::_notifyActivity() {
+    if (_ui) _ui->setNetActivity();
+}
+
+// ── Inicializáció ─────────────────────────────────────────────────────────────
 void BackendClient::begin(const String& baseUrl) {
     _baseUrl = baseUrl;
 }
@@ -21,6 +33,7 @@ void BackendClient::waitCooldown() {
     if (elapsed < HTTP_COOLDOWN_MS) delay(HTTP_COOLDOWN_MS - elapsed);
 }
 
+// ── fetchSnapPort ─────────────────────────────────────────────────────────────
 uint16_t BackendClient::fetchSnapPort() {
     if (!isReady()) return 0;
     JsonDocument resp;
@@ -35,10 +48,12 @@ uint16_t BackendClient::fetchSnapPort() {
     return port;
 }
 
+// ── postJson ──────────────────────────────────────────────────────────────────
 bool BackendClient::postJson(const String& path, const JsonDocument& req,
                               JsonDocument& resp, int& httpCode) {
     if (_baseUrl.length() == 0) return false;
     waitCooldown();
+    _notifyActivity();                          // ← UI aktivitás jelzés
     WiFiClientSecure client; client.setInsecure();
     HTTPClient http; http.setTimeout(8000);
     const String url = _baseUrl + path;
@@ -56,9 +71,11 @@ bool BackendClient::postJson(const String& path, const JsonDocument& req,
     return true;
 }
 
+// ── getJson ───────────────────────────────────────────────────────────────────
 bool BackendClient::getJson(const String& path, JsonDocument& resp, int& httpCode) {
     if (_baseUrl.length() == 0) return false;
     waitCooldown();
+    _notifyActivity();                          // ← UI aktivitás jelzés
     WiFiClientSecure client; client.setInsecure();
     HTTPClient http; http.setTimeout(8000);
     const String url = _baseUrl + path;
@@ -75,8 +92,11 @@ bool BackendClient::getJson(const String& path, JsonDocument& resp, int& httpCod
     return true;
 }
 
-bool BackendClient::downloadFile(const String& url, const String& localPath, size_t expectedBytes) {
+// ── downloadFile ──────────────────────────────────────────────────────────────
+bool BackendClient::downloadFile(const String& url, const String& localPath,
+                                  size_t expectedBytes) {
     waitCooldown();
+    _notifyActivity();                          // ← UI aktivitás jelzés
     String fullUrl = url;
     if (!fullUrl.startsWith("http")) fullUrl = _baseUrl + fullUrl;
     WiFiClientSecure client; client.setInsecure();
@@ -97,12 +117,14 @@ bool BackendClient::downloadFile(const String& url, const String& localPath, siz
         if (avail == 0) { if (millis()-t0>10000) break; delay(1); continue; }
         size_t rd = stream->readBytes(buf, min(avail, sizeof(buf)));
         file.write(buf, rd); total += rd; t0 = millis();
+        _notifyActivity();                      // ← folyamatos jelzés letöltés közben
     }
     file.close(); _lastHttpEndMs = millis(); http.end();
     Serial.printf("[BACKEND] downloadFile: %s (%d bytes)\n", localPath.c_str(), (int)total);
     return total > 0;
 }
 
+// ── sendBeacon ────────────────────────────────────────────────────────────────
 bool BackendClient::sendBeacon(uint8_t volume, bool muted,
                                 const String& firmwareVersion,
                                 const JsonDocument& statusPayload) {
@@ -114,6 +136,7 @@ bool BackendClient::sendBeacon(uint8_t volume, bool muted,
     return postJson("/devices/beacon", req, resp, code);
 }
 
+// ── poll ──────────────────────────────────────────────────────────────────────
 bool BackendClient::poll(PolledCommand& outCmd) {
     JsonDocument req;
     JsonDocument resp; int code = 0;
@@ -126,6 +149,7 @@ bool BackendClient::poll(PolledCommand& outCmd) {
     return outCmd.hasCommand;
 }
 
+// ── ack ───────────────────────────────────────────────────────────────────────
 bool BackendClient::ack(const String& commandId, bool ok, const String& errorMsg) {
     JsonDocument req;
     req["commandId"] = commandId; req["ok"] = ok;
@@ -134,10 +158,12 @@ bool BackendClient::ack(const String& commandId, bool ok, const String& errorMsg
     return postJson("/devices/ack", req, resp, code);
 }
 
+// ── postJsonUnauthed ──────────────────────────────────────────────────────────
 bool BackendClient::postJsonUnauthed(const String& path, const JsonDocument& req,
                                       JsonDocument& resp, int& httpCode) {
     if (_baseUrl.length() == 0) return false;
     waitCooldown();
+    _notifyActivity();                          // ← UI aktivitás jelzés
     WiFiClientSecure client; client.setInsecure();
     HTTPClient http; http.setTimeout(7000);
     const String url = _baseUrl + path;
@@ -153,6 +179,7 @@ bool BackendClient::postJsonUnauthed(const String& path, const JsonDocument& req
     return true;
 }
 
+// ── confirmProvisioning ───────────────────────────────────────────────────────
 bool BackendClient::confirmProvisioning(const String& provisioningToken,
                                          String& outDeviceKey,
                                          String& outWifiSsid,

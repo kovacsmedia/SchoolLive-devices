@@ -42,9 +42,12 @@ class SnapcastClient {
 public:
     SnapcastClient() {}
 
-    void begin(const String& mac, uint8_t volume = 70, uint16_t port = 1800);    
-    void loop();   // Network task-ból hívandó ~10ms-enként
+    void begin(const String& mac, uint8_t volume = 70, uint16_t port = SNAPCAST_PORT);
+    void loop();
     void stop();
+
+    void setOnConnected(void (*cb)())    { _onConnected    = cb; }
+    void setOnDisconnected(void (*cb)()) { _onDisconnected = cb; }
 
     bool isConnected() const { return _connected; }
     bool isPlaying()   const { return _playing;   }
@@ -56,6 +59,8 @@ public:
 
 private:
     WiFiClient   _client;
+    void (*_onConnected)()    = nullptr;
+    void (*_onDisconnected)() = nullptr;
     String       _mac;
     String       _host = SNAPCAST_HOST;
     uint16_t     _port = SNAPCAST_PORT;

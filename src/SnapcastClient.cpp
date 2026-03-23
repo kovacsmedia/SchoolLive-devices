@@ -88,6 +88,7 @@ void SnapcastClient::disconnect() {
     _connected = false;
     _playing   = false;
     deinitI2S();
+    if (_onDisconnected) _onDisconnected();
     Serial.println("[SNAP] Lecsatlakozva");
 }
 
@@ -165,6 +166,7 @@ void SnapcastClient::processMessage(const SnapHeader& hdr,
         case SNAP_MSG_SERVER_SETTINGS:
             handleServerSettings(body, size);
             _connected = true;
+            if (_onConnected) _onConnected();
             break;
         case SNAP_MSG_CODEC_HEADER:
             handleCodecHeader(body, size);
