@@ -13,12 +13,13 @@
 #include "Config.h"
 
 // Snapcast üzenettípusok
-#define SNAP_MSG_CODEC_HEADER    0
-#define SNAP_MSG_WIRE_CHUNK      1
-#define SNAP_MSG_SERVER_SETTINGS 2
-#define SNAP_MSG_TIME            3
-#define SNAP_MSG_HELLO           4
-#define SNAP_MSG_STREAM_TAGS     5
+#define SNAP_MSG_BASE            0
+#define SNAP_MSG_CODEC_HEADER    1
+#define SNAP_MSG_WIRE_CHUNK      2
+#define SNAP_MSG_SERVER_SETTINGS 3
+#define SNAP_MSG_TIME            4
+#define SNAP_MSG_HELLO           5
+#define SNAP_MSG_STREAM_TAGS     6
 
 // Üzenet header: 26 byte
 struct SnapHeader {
@@ -64,7 +65,8 @@ private:
     String       _mac;
     String       _host = SNAPCAST_HOST;
     uint16_t     _port = SNAPCAST_PORT;
-
+    bool          _connecting        = false;  // Hello elküldve, vár ServerSettings-re
+    unsigned long _connectingStartMs = 0;      // timeout számításhoz
     bool         _connected    = false;
     bool         _playing      = false;
     bool         _headerRecvd  = false;

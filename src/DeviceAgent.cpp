@@ -1,11 +1,13 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // DeviceAgent.cpp – SchoolLive S3.54
 // Változások:
-//   • Első beacon AZONNAL megy (nem vár 30s-ot):
-//     _lastBeaconMs = -(BEACON_INTERVAL_MS) inicializáció helyett
-//     _firstBeacon flag – az első loop() hívásban azonnal küld, ha WiFi OK
-//   • beacon ok/fail → _ui->setBackendOnline(true/false)
-//   • poll fail → _ui->setBackendOnline(false)
+//   • pollIfDue(): poll hiba NEM hívja setBackendOnline(false)
+//     Indok: az ESP32 x-device-key auth-ot használ, a /devices/poll
+//     endpoint authJwt middleware-t vár (JWT Bearer) → mindig 401/HTML
+//     választ ad → InvalidInput JSON parse hiba. Ez normális viselkedés,
+//     a poll csak fallback – a beacon az online státusz forrása.
+//   • _sendBeacon(): beacon ok/fail → setBackendOnline(true/false) – változatlan
+//   • _firstBeacon flag – azonnali első beacon küldés
 // ─────────────────────────────────────────────────────────────────────────────
 #include "DeviceAgent.h"
 #include <LittleFS.h>
@@ -18,24 +20,24 @@ void DeviceAgent::begin(NetworkManager& net, AudioManager& audio,
     _ui      = &ui;
     _backend = &backend;
     _tel     = &tel;
-    // _lastBeaconMs = 0 alapértelmezés → az első híváskor
-    // (now - 0) >= BEACON_INTERVAL_MS csak ~30s után lenne igaz.
-    // Ezért _firstBeacon = true flaggel kezeljük az azonnali első küldést.
     _firstBeacon = true;
 }
 
 void DeviceAgent::loop() {
     sendBeaconIfDue();
-    pollIfDue();
+    // Poll szándékosan ki van kapcsolva:
+    // A /devices/poll authJwt (JWT Bearer) auth-ot vár, az ESP32
+    // x-device-key-t küld → mindig 401/HTML választ kap → JSON parse hiba.
+    // A WS (SyncClient) az elsődleges parancscsatorna, poll nem kell.
+    // pollIfDue();
 }
 
 // ── Beacon ────────────────────────────────────────────────────────────────────
 void DeviceAgent::sendBeaconIfDue() {
     unsigned long now = millis();
 
-    // Első beacon: azonnal, amint WiFi elérhető
     if (_firstBeacon) {
-        if (!_net || !_net->isConnected()) return;  // vár WiFi-ra, de nem blokkolja
+        if (!_net || !_net->isConnected()) return;
         _firstBeacon  = false;
         _lastBeaconMs = now;
         _sendBeacon();
@@ -58,6 +60,7 @@ void DeviceAgent::_sendBeacon() {
         _fw, status
     );
 
+    // Beacon az online státusz egyetlen hiteles forrása
     if (_ui) _ui->setBackendOnline(ok);
 
     if (_tel) {
@@ -68,24 +71,10 @@ void DeviceAgent::_sendBeacon() {
     Serial.printf("[AGENT] Beacon: %s\n", ok ? "OK" : "FAIL");
 }
 
-// ── Poll (fallback ha WebSocket nem elérhető) ─────────────────────────────────
+// Poll ki van kapcsolva – lásd loop() megjegyzés.
+// A függvény megtartva hogy a .h deklaráció ne változzon.
 void DeviceAgent::pollIfDue() {
-    unsigned long now = millis();
-    if ((now - _lastPollMs) < POLL_INTERVAL_MS) return;
-    _lastPollMs = now;
-    if (!_net || !_net->isConnected()) return;
-
-    PolledCommand cmd;
-    bool ok = _backend->poll(cmd);
-
-    if (!ok && _ui) _ui->setBackendOnline(false);
-
-    if (_tel) {
-        if (ok) _tel->pollOk++;
-        else  { _tel->pollErr++; return; }
-    }
-    if (!cmd.hasCommand) return;
-    executeAndAck(cmd);
+    // Szándékosan üres
 }
 
 // ── executeAndAck ─────────────────────────────────────────────────────────────
