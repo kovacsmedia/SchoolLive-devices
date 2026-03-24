@@ -19,6 +19,24 @@ void audio_error(const char* info)      { Serial.printf("[AUDIO] ERROR: %s\n", i
 
 AudioManager::AudioManager() { currentVolume = 9; }
 
+void AudioManager::_initAudio() {
+    if (audio) return;
+    audio = new Audio();
+    audio->setPinout(I2S_BCLK, I2S_LRC, I2S_DIN);
+    audio->forceMono(true);
+    uint8_t internal = map(currentVolume, 1, 10, 2, 21);
+    audio->setVolume(internal);
+}
+
+void AudioManager::_deinitAudio() {
+    if (!audio) return;
+    audio->stopSong();
+    delete audio;
+    audio = nullptr;
+    // Az Audio library destruktora felszabadítja az I2S drivert
+    vTaskDelay(pdMS_TO_TICKS(20));
+}
+
 void AudioManager::begin(PersistStore* store) {
     _instance = this;
     _store    = store;
@@ -28,22 +46,35 @@ void AudioManager::begin(PersistStore* store) {
         Serial.printf("[AUDIO] Volume restored: %d\n", currentVolume);
     }
 
-    if (!audio) audio = new Audio();
-    audio->setPinout(I2S_BCLK, I2S_LRC, I2S_DIN);
-    audio->forceMono(true);
+    _initAudio();
 
-    // S3: PSRAM automatikusan kihasználódik ha BOARD_HAS_PSRAM definiált
-    // Az ESP32-audioI2S belső buffereit a heap allokátor kezeli (PSRAM-ba kerül)
     if (psramFound()) {
         Serial.println("[AUDIO] PSRAM elérhető – audio bufferek PSRAM-ban");
     }
-
-    setVolume(currentVolume);
     Serial.println("[AUDIO] AudioManager kész");
 }
 
+// ── I2S arbitráció ────────────────────────────────────────────────────────────
+// A SnapcastClient hívja csatlakozáskor: felszabadítja az I2S drivert a Snap számára
+void AudioManager::suspend() {
+    if (_suspended) return;
+    Serial.println("[AUDIO] Felfüggesztés – I2S átadva a Snapcastnak");
+    _deinitAudio();
+    _suspended  = true;
+    _streamMode = false;
+    _urlActive  = false;
+}
+
+// A SnapcastClient hívja lecsatlakozáskor: visszaveszi az I2S drivert
+void AudioManager::resume() {
+    if (!_suspended) return;
+    Serial.println("[AUDIO] Újraindítás – I2S visszavéve az AudioManager számára");
+    _suspended = false;
+    _initAudio();
+}
+
 void AudioManager::loop() {
-    if (!audio) return;
+    if (!audio || _suspended) return;
 
     if (_urlActive && audio->isRunning()) {
         _urlHasPlayed = true;
@@ -66,15 +97,20 @@ void AudioManager::setVolume(uint8_t vol) {
     if (vol < 1) vol = 1;
     if (vol > 10) vol = 10;
     currentVolume = vol;
-    uint8_t internal = map(currentVolume, 1, 10, 2, 21);
-    if (audio) audio->setVolume(internal);
+    if (audio) {
+        uint8_t internal = map(currentVolume, 1, 10, 2, 21);
+        audio->setVolume(internal);
+    }
     if (_store) _store->setVolume(vol);
 }
 
 uint8_t AudioManager::getVolume() const { return currentVolume; }
 
-// ── playFile ─────────────────────────────────────────────────────────────────
 void AudioManager::playFile(const char* filename) {
+    if (_suspended) {
+        Serial.println("[AUDIO] playFile: felfüggesztve (Snap aktív) – skip");
+        return;
+    }
     if (!audio || !filename) return;
     _eofReceived = false; _eofTimeMs = 0;
     _urlActive   = false; _urlStartMs = 0; _urlHasPlayed = false;
@@ -87,47 +123,32 @@ void AudioManager::playFile(const char* filename) {
     }
 }
 
-// ── playUrl ──────────────────────────────────────────────────────────────────
 void AudioManager::playUrl(const char* url) {
+    if (_suspended) {
+        Serial.println("[AUDIO] playUrl: felfüggesztve (Snap aktív) – skip");
+        return;
+    }
     if (!audio || !url) return;
-    _eofReceived = false; _eofTimeMs = 0;
-    _streamMode  = true;
+    _eofReceived  = false; _eofTimeMs = 0;
+    _streamMode   = true;
     _urlHasPlayed = false;
-    _urlStartMs  = millis();
-    _urlActive   = true;
+    _urlStartMs   = millis();
+    _urlActive    = true;
     audio->connecttohost(url);
     Serial.printf("[AUDIO] playUrl: %.80s\n", url);
 }
 
-// ── playPsram ─────────────────────────────────────────────────────────────────
-// PSRAM tartalmát kiírjuk egy temp fájlba LittleFS-re, majd onnan játsszuk
-// (Az ESP32-audioI2S nem tud közvetlenül memóriából játszani, de a LittleFS
-//  write gyors – egy 200KB TTS fájl ~150ms alatt kiíródik)
 void AudioManager::playPsram(const uint8_t* buf, size_t len) {
+    if (_suspended) return;
     if (!audio || !buf || len == 0) return;
-
-    // Kiírás LittleFS-re
     File f = LittleFS.open(PSRAM_TEMP_PATH, "w");
-    if (!f) {
-        Serial.println("[AUDIO] playPsram: temp fájl nyitás sikertelen");
-        return;
-    }
+    if (!f) return;
     size_t written = f.write(buf, len);
     f.close();
-
-    if (written != len) {
-        Serial.printf("[AUDIO] playPsram: írás csonka %d/%d\n",
-                      (int)written, (int)len);
-        LittleFS.remove(PSRAM_TEMP_PATH);
-        return;
-    }
-
-    Serial.printf("[AUDIO] playPsram: %d bytes LittleFS-re írva → lejátszás\n",
-                  (int)len);
+    if (written != len) { LittleFS.remove(PSRAM_TEMP_PATH); return; }
     playFile(PSRAM_TEMP_PATH);
 }
 
-// ── stop ─────────────────────────────────────────────────────────────────────
 void AudioManager::stop() {
     if (!audio) return;
     audio->stopSong();
@@ -137,7 +158,7 @@ void AudioManager::stop() {
     Serial.println("[AUDIO] Stop");
 }
 
-bool AudioManager::isPlaying()    const { return audio && audio->isRunning(); }
+bool AudioManager::isPlaying()    const { return !_suspended && audio && audio->isRunning(); }
 bool AudioManager::isStreamMode() const { return _streamMode; }
 bool AudioManager::isInCooldown() const {
     if (!_eofReceived) return false;

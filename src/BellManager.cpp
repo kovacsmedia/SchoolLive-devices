@@ -438,30 +438,38 @@ void BellManager::loadHardcodedDefault() {
 // ---------------------------------------------------------------------------
 void BellManager::checkSchedule() {
     struct tm t = network.getTimeInfo();
-
+ 
     int curMin = t.tm_hour * 60 + t.tm_min;
     if (_lastDay == t.tm_yday && _lastMinute == curMin) return;
-
+ 
     for (uint8_t i = 0; i < _entryCount; i++) {
         if (_entries[i].hour   == (uint8_t)t.tm_hour &&
             _entries[i].minute == (uint8_t)t.tm_min) {
-
+ 
             const char* sf = _entries[i].soundFile[0]
                              ? _entries[i].soundFile
                              : (_entries[i].type == BellType::SIGNAL
                                 ? "jelzocsengo.mp3"
                                 : "kibecsengo.mp3");
-
+ 
             Serial.printf("[BELL] %s @ %02d:%02d  file:%s (src:%s)\n",
                           _entries[i].type == BellType::SIGNAL ? "SIGNAL" : "MAIN",
                           t.tm_hour, t.tm_min, sf, _scheduleSource.c_str());
-
-            String path = sf[0] == '/' ? String(sf) : "/" + String(sf);
-            audio.playFile(path.c_str());
-
+ 
             _lastDay    = t.tm_yday;
             _lastMinute = curMin;
-
+ 
+            // Ha Snap csatlakozva van, a szerver Snapcaston játssza a csengőt
+            // – ne játsszunk lokálisan, hogy ne legyen dupla hang
+            if (_snap && _snap->isConnected()) {
+                Serial.println("[BELL] Snap aktív – lokális lejátszás kihagyva");
+            } else {
+                // Offline fallback: lokális MP3 lejátszás
+                String path = sf[0] == '/' ? String(sf) : "/" + String(sf);
+                audio.playFile(path.c_str());
+                Serial.println("[BELL] Offline: lokális MP3 lejátszás");
+            }
+ 
             if (_mode == BELL_MODE_TODAY) {
                 bool isLast = true;
                 for (uint8_t j = 0; j < _entryCount; j++) {
@@ -475,7 +483,6 @@ void BellManager::checkSchedule() {
         }
     }
 }
-
 // ---------------------------------------------------------------------------
 // setBellMode / getBellMode
 // ---------------------------------------------------------------------------

@@ -1,18 +1,14 @@
 #pragma once
 // ─────────────────────────────────────────────────────────────────────────────
-// SnapcastClient.h – Snapcast TCP kliens ESP32-S3-ra
-//
-// Snapcast protokoll v2:
-//   TCP 1704 → Hello → ServerSettings → CodecHeader → WireChunk stream
-//   PCM 48000:16:2 → I2S közvetlen output (driver I2S API)
-//
-// PSRAM ring buffer biztosítja a bufferMs-nyi pufferelést.
+// SnapcastClient.h
+// I2S arbitráció: setAudioManager() – AudioManager suspend/resume koordináció
 // ─────────────────────────────────────────────────────────────────────────────
 #include <Arduino.h>
 #include <WiFi.h>
 #include "Config.h"
 
-// Snapcast üzenettípusok
+class AudioManager;  // forward declaration
+
 #define SNAP_MSG_BASE            0
 #define SNAP_MSG_CODEC_HEADER    1
 #define SNAP_MSG_WIRE_CHUNK      2
@@ -21,22 +17,11 @@
 #define SNAP_MSG_HELLO           5
 #define SNAP_MSG_STREAM_TAGS     6
 
-// Üzenet header: 26 byte
 struct SnapHeader {
-    uint16_t type;
-    uint16_t id;
-    uint16_t refersTo;
-    int32_t  sent_sec;
-    int32_t  sent_usec;
-    int32_t  recv_sec;
-    int32_t  recv_usec;
+    uint16_t type; uint16_t id; uint16_t refersTo;
+    int32_t  sent_sec; int32_t sent_usec;
+    int32_t  recv_sec; int32_t recv_usec;
     uint32_t size;
-};
-
-// WireChunk timestamp
-struct SnapTimestamp {
-    int32_t sec;
-    int32_t usec;
 };
 
 class SnapcastClient {
@@ -47,42 +32,41 @@ public:
     void loop();
     void stop();
 
+    // I2S arbitrációhoz: AudioManager referencia beállítása
+    void setAudioManager(AudioManager* am) { _audioMgr = am; }
+
     void setOnConnected(void (*cb)())    { _onConnected    = cb; }
     void setOnDisconnected(void (*cb)()) { _onDisconnected = cb; }
 
     bool isConnected() const { return _connected; }
     bool isPlaying()   const { return _playing;   }
 
-    void setVolume(uint8_t vol);  // 0-100
-
-    // Statisztika
+    void setVolume(uint8_t vol);
     uint32_t getBufferFillMs() const { return _bufFillMs; }
 
 private:
     WiFiClient   _client;
+    AudioManager* _audioMgr = nullptr;  // I2S arbitrációhoz
     void (*_onConnected)()    = nullptr;
     void (*_onDisconnected)() = nullptr;
     String       _mac;
     String       _host = SNAPCAST_HOST;
     uint16_t     _port = SNAPCAST_PORT;
-    bool          _connecting        = false;  // Hello elküldve, vár ServerSettings-re
-    unsigned long _connectingStartMs = 0;      // timeout számításhoz
+    bool          _connecting        = false;
+    unsigned long _connectingStartMs = 0;
     bool         _connected    = false;
     bool         _playing      = false;
     bool         _headerRecvd  = false;
     uint8_t      _volume       = 70;
 
-    // Server paraméterek
     uint32_t     _bufferMs     = 1000;
     uint32_t     _latencyMs    = 0;
     bool         _muted        = false;
     int32_t      _serverVolume = 100;
 
-    // Időszinkron
-    int64_t      _serverOffsetUs = 0;   // szerver - lokális (mikrosec)
+    int64_t      _serverOffsetUs = 0;
     uint32_t     _lastTimeSyncMs = 0;
 
-    // PCM ring buffer (PSRAM)
     uint8_t*     _ringBuf      = nullptr;
     size_t       _ringSize     = 0;
     size_t       _ringWrite    = 0;
@@ -90,10 +74,8 @@ private:
     size_t       _ringFill     = 0;
     uint32_t     _bufFillMs    = 0;
 
-    // I2S
     bool         _i2sInstalled = false;
 
-    // Üzenet beérkezési buffer
     uint8_t      _hdrBuf[26];
     size_t       _hdrRead = 0;
     uint8_t*     _bodyBuf = nullptr;
@@ -102,7 +84,6 @@ private:
     bool         _readingBody = false;
     SnapHeader   _curHdr;
 
-    // Reconnect
     uint32_t     _lastConnectMs = 0;
     uint32_t     _reconnectMs   = 3000;
     uint8_t      _msgId         = 0;
@@ -111,22 +92,17 @@ private:
     void disconnect();
     void processIncoming();
     void processMessage(const SnapHeader& hdr, const uint8_t* body, uint32_t size);
-
     void handleServerSettings(const uint8_t* body, uint32_t size);
     void handleCodecHeader(const uint8_t* body, uint32_t size);
     void handleWireChunk(const uint8_t* body, uint32_t size);
     void handleTime(const uint8_t* body, uint32_t size);
-
     void sendHello();
     void sendTime(int32_t latSec, int32_t latUsec);
-    void sendMessage(uint16_t type, uint16_t refersTo,
-                     const uint8_t* payload, uint32_t size);
-
+    void sendMessage(uint16_t type, uint16_t refersTo, const uint8_t* payload, uint32_t size);
     void initI2S();
     void deinitI2S();
     void drainToI2S();
-
-    int64_t nowUs() const;  // mikrosec
+    int64_t nowUs() const;
     void    ringWrite(const uint8_t* data, size_t len);
     size_t  ringRead(uint8_t* out, size_t maxLen);
 };

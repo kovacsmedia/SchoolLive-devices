@@ -1,18 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // main.cpp – SchoolLive S3.54
-//
-// Változások S3.52 → S3.54:
-//   • setOnPlayAction lambda: const char* → const String&
-//   • backend.setUIManager(uiManager)   – HTTP aktivitás jelzés
-//   • syncClient.setUIManager(uiManager) – WS aktivitás jelzés
-//   • snapClient.setOnConnected / setOnDisconnected → ui->setSnapStatus()
-//   • Verzió string: S3.52 → S3.54
-//
-// Task architektúra:
-//   Core 0: TaskNetwork   – WiFi, NTP, BackendClient poll/beacon, BellManager
-//            TaskSync     – WebSocket SyncClient (SyncCast, csak BELL)
-//            TaskSnapcast – Snapcast TCP kliens (PCM stream → I2S)
-//   Core 1: loop()        – AudioManager.loop() + UIManager.loop()
 // ─────────────────────────────────────────────────────────────────────────────
 #include <Arduino.h>
 #include <LittleFS.h>
@@ -111,6 +98,9 @@ void TaskSync(void* pvParameters) {
     String deviceKey = store.getDeviceKey();
     syncClient.begin(audioManager, bellManager, deviceKey, "");
 
+    // Snap referencia – handlePlay() tudja, hogy Snap aktív-e
+    syncClient.setSnapClient(&snapClient);
+
     syncClient.setOnPlayAction([](const String& action) {
         if (uiManager) uiManager->setPlayingState(action);
     });
@@ -145,7 +135,6 @@ void TaskSnapcast(void* pvParameters) {
 
     if (snapPort == 0) {
         Serial.println("[SNAP-TASK] ❌ Snapcast port nem elérhető – task leáll");
-        // Snap véglegesen offline – UI értesítés
         if (uiManager) uiManager->setSnapStatus(false, "no port");
         vTaskDelete(NULL);
         return;
@@ -153,14 +142,19 @@ void TaskSnapcast(void* pvParameters) {
 
     Serial.printf("[SNAP-TASK] Snapcast port: %d → csatlakozás\n", snapPort);
 
-    // ── S3.54: Snap connected / disconnected → UIManager ─────────────────
+    // I2S arbitráció: SnapcastClient tudja melyik AudioManager-t kell
+    // suspend()/resume()-olni az I2S driver átadásakor
+    snapClient.setAudioManager(&audioManager);
+
     snapClient.setOnConnected([](){ 
         Serial.println("[SNAP-TASK] Snap CONNECTED");
         if (uiManager) uiManager->setSnapStatus(true);
+        // audioManager.suspend() már a SnapcastClient.initI2S()-ben megtörténik
     });
     snapClient.setOnDisconnected([](){
         Serial.println("[SNAP-TASK] Snap DISCONNECTED");
         if (uiManager) uiManager->setSnapStatus(false);
+        // audioManager.resume() már a SnapcastClient.deinitI2S()-ben megtörténik
     });
 
     String  mac = WiFi.macAddress();
@@ -169,7 +163,7 @@ void TaskSnapcast(void* pvParameters) {
 
     for (;;) {
         snapClient.loop();
-        vTaskDelay(pdMS_TO_TICKS(1));  // 1ms – gyorsabb adatolvasás
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
 
@@ -198,9 +192,11 @@ void startNormalMode() {
     }
     backend.setDeviceKey(dk);
 
-    // ── S3.54: UI pointer regisztráció ────────────────────────────────────
     backend.setUIManager(uiManager);
     syncClient.setUIManager(uiManager);
+
+    // BellManager snap referencia – checkSchedule() skip ha Snap aktív
+    bellManager.setSnapClient(&snapClient);
 
     telemetry.firmwareVersion = String(FW_VERSION);
     telemetry.deviceId        = WiFi.macAddress();
@@ -211,8 +207,6 @@ void startNormalMode() {
 
     xTaskCreatePinnedToCore(TaskNetwork,  "NetworkTask", 20480, NULL, 1, NULL, 0);
     xTaskCreatePinnedToCore(TaskSync,     "SyncTask",    12288, NULL, 2, NULL, 0);
-    // SnapTask: nagyobb stack + magasabb prioritás – gyorsabb adatolvasás
-    // vTaskDelay(1ms) a loop-ban hogy ne blokkolja a NetworkTask-ot
     xTaskCreatePinnedToCore(TaskSnapcast, "SnapTask",    16384, NULL, 3, NULL, 0);
 
     uiManager->drawBootStatus("Kész", ("FW: " + String(FW_VERSION)).c_str());

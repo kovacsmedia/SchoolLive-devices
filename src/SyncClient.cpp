@@ -159,7 +159,7 @@ void SyncClient::handlePrepare(const JsonDocument& doc) {
 void SyncClient::handlePlay(const JsonDocument& doc) {
     String commandId = doc["commandId"] | "";
     if (commandId != _prep.commandId || !_prep.ready) return;
-
+ 
     int64_t playAtMs = doc["playAtMs"] | (int64_t)0;
     if (playAtMs == 0) {
         const char* s = doc["playAt"] | "";
@@ -171,60 +171,53 @@ void SyncClient::handlePlay(const JsonDocument& doc) {
             playAtMs = (int64_t)utcmktime(&tm) * 1000 + ms;
         }
     }
-
+ 
     const String& action = _prep.action;
     int32_t startupMs    = (action == "BELL") ? 120 : 0;
-
+ 
     int64_t nowWithOffset = nowMs() + _serverOffsetMs;
     int64_t waitMs        = playAtMs - nowWithOffset - startupMs;
-
-    Serial.printf("[SYNC] PLAY: %s wait=%lld ms\n", action.c_str(), waitMs);
-
+ 
+    // Stale parancs eldobása (>10 másodperc régi)
+    if (waitMs < -10000) {
+        Serial.printf("[SYNC] PLAY stale (%.0f ms régen volt) → skip\n", (double)-waitMs);
+        _prep = PreparedCmd{};
+        return;
+    }
+ 
+    Serial.printf("[SYNC] PLAY: %s wait=%lld ms snap=%s\n",
+                  action.c_str(), waitMs, _snap && _snap->isConnected() ? "ON" : "OFF");
+ 
     if (waitMs > 0 && waitMs < 10000) {
         vTaskDelay(pdMS_TO_TICKS((uint32_t)waitMs));
     }
-
+ 
     if (!_audio) { _prep = PreparedCmd{}; return; }
-
+ 
+    // Ha Snap csatlakozva van: Snapcast kezeli a hangot, csak UI frissítés kell
+    bool snapActive = _snap && _snap->isConnected();
+ 
     if (action == "BELL") {
-        if (_prep.localPath.length() > 0) {
+        if (!snapActive && _prep.localPath.length() > 0) {
+            // Offline fallback: lokális MP3
             _audio->playFile(_prep.localPath.c_str());
+            Serial.println("[SYNC] BELL: offline lokális lejátszás");
+        } else if (snapActive) {
+            Serial.println("[SYNC] BELL: Snap aktív – Snapcast játssza");
         }
     } else if (action == "STOP_PLAYBACK") {
         _audio->stop();
     }
-
+    // TTS, PLAY_URL: Snapcast kezeli a hangot, AudioManager nem kell
+ 
     if (_onPlayAction) {
         if      (action == "TTS")           _onPlayAction("UZENET");
         else if (action == "PLAY_URL")      _onPlayAction("RADIO");
         else if (action == "STOP_PLAYBACK") _onPlayAction("");
+        else if (action == "BELL")          _onPlayAction("CSENGŐ");
     }
-
+ 
     _prep = PreparedCmd{};
-}
-
-// ── handleImmediate ───────────────────────────────────────────────────────────
-void SyncClient::handleImmediate(const JsonDocument& doc) {
-    String action = doc["action"] | "";
-    String url    = doc["url"]    | "";
-
-    Serial.printf("[SYNC] Azonnali: %s\n", action.c_str());
-
-    if (action == "SYNC_BELLS" && _bells) {
-        _bells->requestSync();
-    } else if (action == "STOP_PLAYBACK" && _audio) {
-        _audio->stop();
-        if (_onPlayAction) _onPlayAction("");
-    } else if (action == "BELL" && _audio && url.length() > 0) {
-        String path = "/" + url.substring(url.lastIndexOf('/') + 1);
-        if (LittleFS.exists(path)) {
-            _audio->playFile(path.c_str());
-        }
-    } else if (action == "TTS") {
-        if (_onPlayAction) _onPlayAction("UZENET");
-    } else if (action == "PLAY_URL") {
-        if (_onPlayAction) _onPlayAction("RADIO");
-    }
 }
 
 // ── sendReadyAck ──────────────────────────────────────────────────────────────

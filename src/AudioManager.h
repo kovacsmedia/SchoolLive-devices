@@ -1,11 +1,7 @@
 #pragma once
 // ─────────────────────────────────────────────────────────────────────────────
-// AudioManager.h – ESP32-S3-N16R8 verzió
-// Újítások:
-//   • playPsram() – PSRAM-ból közvetlen lejátszás (TTS pre-fetch)
-//   • PSRAM stream buffer (64KB) az audio library-nek
-//   • Eltávolítva: SSL cooldown (már nem blokkolja a hálózatot)
-//   • Javított watchdog logika
+// AudioManager.h – ESP32-S3-N16R8
+// I2S arbitráció: suspend() / resume() – SnapcastClient veszi át az I2S-t
 // ─────────────────────────────────────────────────────────────────────────────
 #include <Arduino.h>
 #include "Config.h"
@@ -13,7 +9,7 @@
 class Audio;
 class PersistStore;
 
-#define AUDIO_EOF_COOLDOWN_MS  3000   // S3-n gyorsabb TCP cleanup
+#define AUDIO_EOF_COOLDOWN_MS  3000
 #define URL_START_TIMEOUT_MS  25000
 
 class AudioManager {
@@ -24,13 +20,20 @@ public:
 
     void    setVolume(uint8_t vol);
     uint8_t getVolume() const;
-    bool    isMuted() const { return false; }
+    bool    isMuted()   const { return false; }
 
     // ── Lejátszás ─────────────────────────────────────────────────────────
-    void playFile(const char* filename);          // LittleFS
-    void playUrl(const char* url);               // HTTP/S stream
-    void playPsram(const uint8_t* buf, size_t len);  // PSRAM buffer (TTS)
+    void playFile(const char* filename);
+    void playUrl(const char* url);
+    void playPsram(const uint8_t* buf, size_t len);
     void stop();
+
+    // ── I2S arbitráció (SnapcastClient hívja) ─────────────────────────────
+    // suspend(): leállítja az Audio objektumot és felszabadítja az I2S drivert
+    // resume():  újraindítja az Audio objektumot (Snap után)
+    void suspend();
+    void resume();
+    bool isSuspended() const { return _suspended; }
 
     // ── Állapot ───────────────────────────────────────────────────────────
     bool isPlaying()    const;
@@ -38,7 +41,6 @@ public:
     bool isBusy()       const { return _urlActive; }
     bool isInCooldown() const;
 
-    // ── Callbacks (audio library-ből) ─────────────────────────────────────
     void notifyEof();
     void notifyError();
 
@@ -46,6 +48,7 @@ private:
     Audio*        audio         = nullptr;
     PersistStore* _store        = nullptr;
     uint8_t       currentVolume = 9;
+    bool          _suspended    = false;
 
     bool          _streamMode   = false;
     bool          _eofReceived  = false;
@@ -54,6 +57,8 @@ private:
     unsigned long _urlStartMs   = 0;
     bool          _urlHasPlayed = false;
 
-    // PSRAM alapú temp fájl a playPsram()-hoz
     static const char* PSRAM_TEMP_PATH;
+
+    void _initAudio();
+    void _deinitAudio();
 };
