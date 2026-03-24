@@ -1,12 +1,7 @@
 // SyncClient.cpp – SchoolLive S3.54
-// Változások S3.52 → S3.54:
-//   • _notifyActivity() segédfüggvény – _ui->setNetActivity() ha _ui != nullptr
-//   • onMessage() – bejövő WS adat esetén jelzés (szerver kommunikál velünk)
-//   • sendReadyAck(), sendTimeSyncRequest() – kimenő WS küldés előtt jelzés
-//   • downloadToLittleFS() – HTTP letöltés előtt jelzés
-
 #include "SyncClient.h"
 #include "UIManager.h"
+#include "SnapcastClient.h"
 #include <LittleFS.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
@@ -14,7 +9,6 @@
 
 SyncClient* SyncClient::_instance = nullptr;
 
-// ── UI aktivitás jelzés ───────────────────────────────────────────────────────
 void SyncClient::_notifyActivity() {
     if (_ui) _ui->setNetActivity();
 }
@@ -76,10 +70,8 @@ void SyncClient::onDisconnected() {
     Serial.println("[SYNC] ❌ Lecsatlakozva");
 }
 
-// ── onMessage ─────────────────────────────────────────────────────────────────
-// Bejövő WS adat → aktivitás jelzés + feldolgozás
 void SyncClient::onMessage(const String& msg) {
-    _notifyActivity();                          // ← bejövő adat = kommunikáció zajlik
+    _notifyActivity();
 
     JsonDocument doc;
     if (deserializeJson(doc, msg) != DeserializationError::Ok) return;
@@ -117,11 +109,10 @@ void SyncClient::handleHello(const JsonDocument& doc) {
     }
     JsonDocument resp; resp["type"] = "TIME_SYNC"; resp["seq"] = (uint32_t)millis();
     String out; serializeJson(resp, out);
-    _notifyActivity();                          // ← kimenő WS küldés
+    _notifyActivity();
     _ws.sendTXT(out);
 }
 
-// ── handlePrepare ─────────────────────────────────────────────────────────────
 void SyncClient::handlePrepare(const JsonDocument& doc) {
     String commandId = doc["commandId"] | "";
     String action    = doc["action"]    | "";
@@ -156,10 +147,11 @@ void SyncClient::handlePrepare(const JsonDocument& doc) {
 }
 
 // ── handlePlay ────────────────────────────────────────────────────────────────
+// Stale parancs eldobása + Snap-aware hangkezelés
 void SyncClient::handlePlay(const JsonDocument& doc) {
     String commandId = doc["commandId"] | "";
     if (commandId != _prep.commandId || !_prep.ready) return;
- 
+
     int64_t playAtMs = doc["playAtMs"] | (int64_t)0;
     if (playAtMs == 0) {
         const char* s = doc["playAt"] | "";
@@ -171,32 +163,30 @@ void SyncClient::handlePlay(const JsonDocument& doc) {
             playAtMs = (int64_t)utcmktime(&tm) * 1000 + ms;
         }
     }
- 
+
     const String& action = _prep.action;
     int32_t startupMs    = (action == "BELL") ? 120 : 0;
- 
+
     int64_t nowWithOffset = nowMs() + _serverOffsetMs;
     int64_t waitMs        = playAtMs - nowWithOffset - startupMs;
- 
+
     // Stale parancs eldobása (>10 másodperc régi)
     if (waitMs < -10000) {
         Serial.printf("[SYNC] PLAY stale (%.0f ms régen volt) → skip\n", (double)-waitMs);
         _prep = PreparedCmd{};
         return;
     }
- 
+
+    bool snapActive = _snap && _snap->isConnected();
     Serial.printf("[SYNC] PLAY: %s wait=%lld ms snap=%s\n",
-                  action.c_str(), waitMs, _snap && _snap->isConnected() ? "ON" : "OFF");
- 
+                  action.c_str(), waitMs, snapActive ? "ON" : "OFF");
+
     if (waitMs > 0 && waitMs < 10000) {
         vTaskDelay(pdMS_TO_TICKS((uint32_t)waitMs));
     }
- 
+
     if (!_audio) { _prep = PreparedCmd{}; return; }
- 
-    // Ha Snap csatlakozva van: Snapcast kezeli a hangot, csak UI frissítés kell
-    bool snapActive = _snap && _snap->isConnected();
- 
+
     if (action == "BELL") {
         if (!snapActive && _prep.localPath.length() > 0) {
             // Offline fallback: lokális MP3
@@ -208,19 +198,44 @@ void SyncClient::handlePlay(const JsonDocument& doc) {
     } else if (action == "STOP_PLAYBACK") {
         _audio->stop();
     }
-    // TTS, PLAY_URL: Snapcast kezeli a hangot, AudioManager nem kell
- 
+    // TTS, PLAY_URL: Snapcast kezeli a hangot
+
     if (_onPlayAction) {
         if      (action == "TTS")           _onPlayAction("UZENET");
         else if (action == "PLAY_URL")      _onPlayAction("RADIO");
         else if (action == "STOP_PLAYBACK") _onPlayAction("");
         else if (action == "BELL")          _onPlayAction("CSENGŐ");
     }
- 
+
     _prep = PreparedCmd{};
 }
 
-// ── sendReadyAck ──────────────────────────────────────────────────────────────
+void SyncClient::handleImmediate(const JsonDocument& doc) {
+    String action = doc["action"] | "";
+    String url    = doc["url"]    | "";
+
+    Serial.printf("[SYNC] Azonnali: %s\n", action.c_str());
+
+    if (action == "SYNC_BELLS" && _bells) {
+        _bells->requestSync();
+    } else if (action == "STOP_PLAYBACK" && _audio) {
+        _audio->stop();
+        if (_onPlayAction) _onPlayAction("");
+    } else if (action == "BELL" && _audio && url.length() > 0) {
+        bool snapActive = _snap && _snap->isConnected();
+        if (!snapActive) {
+            String path = "/" + url.substring(url.lastIndexOf('/') + 1);
+            if (LittleFS.exists(path)) {
+                _audio->playFile(path.c_str());
+            }
+        }
+    } else if (action == "TTS") {
+        if (_onPlayAction) _onPlayAction("UZENET");
+    } else if (action == "PLAY_URL") {
+        if (_onPlayAction) _onPlayAction("RADIO");
+    }
+}
+
 void SyncClient::sendReadyAck(const String& commandId, uint32_t bufferMs) {
     JsonDocument doc;
     doc["type"]      = "READY_ACK";
@@ -238,27 +253,25 @@ void SyncClient::sendReadyAck(const String& commandId, uint32_t bufferMs) {
     doc["readyAt"] = buf;
 
     String out; serializeJson(doc, out);
-    _notifyActivity();                          // ← kimenő WS küldés
+    _notifyActivity();
     _ws.sendTXT(out);
     Serial.printf("[SYNC] READY ACK: %s bufMs=%d\n", commandId.c_str(), bufferMs);
 }
 
-// ── sendTimeSyncRequest ───────────────────────────────────────────────────────
 void SyncClient::sendTimeSyncRequest() {
     JsonDocument doc; doc["type"] = "TIME_SYNC"; doc["seq"] = (uint32_t)millis();
     String out; serializeJson(doc, out);
-    _notifyActivity();                          // ← kimenő WS küldés
+    _notifyActivity();
     _ws.sendTXT(out);
 }
 
-// ── Segédfüggvények ───────────────────────────────────────────────────────────
 int64_t SyncClient::nowMs() const {
     struct timeval tv; gettimeofday(&tv, nullptr);
     return (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
 }
 
 bool SyncClient::downloadToLittleFS(const String& url, const String& path) {
-    _notifyActivity();                          // ← HTTP letöltés indul
+    _notifyActivity();
     WiFiClientSecure client; client.setInsecure();
     HTTPClient http; http.setTimeout(10000);
     if (!http.begin(client, url)) return false;

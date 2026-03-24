@@ -1,11 +1,12 @@
-#ifndef BELLMANAGER_H
-#define BELLMANAGER_H
-
+#pragma once
+// BellManager.h – SchoolLive S3.54
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include "AudioManager.h"
 #include "NetworkManager.h"
 #include "BackendClient.h"
+
+class SnapcastClient;  // forward declaration
 
 #define BELL_MODE_OFF   0
 #define BELL_MODE_ON    1
@@ -44,7 +45,8 @@ public:
     String  getScheduleSource()  const { return _scheduleSource; }
     bool    isSyncedFromServer() const { return _syncedFromServer; }
 
-    // SyncClient hívja SYNC_BELLS parancsnál
+    void setSnapClient(SnapcastClient* snap) { _snap = snap; }
+
     void requestSync() {
         _syncedToday        = false;
         _lastVersionCheckMs = 0;
@@ -55,6 +57,7 @@ private:
     AudioManager&   audio;
     NetworkManager& network;
     BackendClient&  backend;
+    SnapcastClient* _snap = nullptr;
 
     uint8_t _mode       = BELL_MODE_ON;
     int     _lastDay    = -1;
@@ -86,5 +89,3 @@ private:
     void   checkSchedule();
     String getTodayDateStr();
 };
-
-#endif
