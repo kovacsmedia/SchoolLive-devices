@@ -522,8 +522,8 @@ String BellManager::getNextEventTimeStr() {
     }
 
     if (nextMin == 9999) return "--:--";
-    char buf[6];
-    sprintf(buf, "%02d:%02d", nextMin / 60, nextMin % 60);
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%02d:%02d", nextMin / 60, nextMin % 60);
     return String(buf);
 }
 
@@ -532,8 +532,8 @@ String BellManager::getNextEventTimeStr() {
 // ---------------------------------------------------------------------------
 String BellManager::getTodayDateStr() {
     struct tm t = network.getTimeInfo();
-    char buf[11];
-    sprintf(buf, "%04d-%02d-%02d",
-            t.tm_year + 1900, t.tm_mon + 1, t.tm_mday);
+    char buf[40];
+    snprintf(buf, sizeof(buf), "%04d-%02d-%02d",
+             t.tm_year + 1900, t.tm_mon + 1, t.tm_mday);
     return String(buf);
 }
