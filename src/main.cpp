@@ -1,6 +1,6 @@
 #include <Arduino.h>
-#include <LittleFS.h>
 #include <Wire.h>
+#include <LittleFS.h>
 #include <WiFi.h>
 
 #include "Config.h"
@@ -13,187 +13,240 @@
 #include "BackendClient.h"
 #include "DeviceAgent.h"
 #include "DeviceTelemetry.h"
+#include "SnapcastClientESP32.h"
 
 // --- Globális objektumok ---
-NetworkManager  networkManager;
-AudioManager    audioManager;
-PersistStore    store;
-BackendClient   backend;
-BellManager     bellManager(audioManager, networkManager, backend);
-DeviceAgent     agent;
+NetworkManager networkManager;
+AudioManager audioManager;
+PersistStore store;
+BackendClient backend;
+BellManager bellManager(audioManager, networkManager, backend);
+DeviceAgent agent;
 DeviceTelemetry telemetry;
+SnapcastClientESP32 snapClient;
 
 // --- Pointerek – setup()-ban példányosítjuk ---
-UIManager*           uiManager   = nullptr;
+UIManager* uiManager = nullptr;
 ProvisioningManager* provManager = nullptr;
 
 bool inProvisioningMode = false;
+
 TaskHandle_t TaskNetworkHandle = nullptr;
 
 // --- Provisioning task (core 0) ---
 void TaskProvisioning(void* pvParameters) {
-  (void)pvParameters;
+    (void)pvParameters;
 
-  uiManager->enterProvisioningMode();
+    uiManager->enterProvisioningMode();
 
-  for (;;) {
-    provManager->loop();
+    for (;;) {
+        provManager->loop();
 
-    ProvState state = provManager->getState();
-    String mac = provManager->getMac();
-    String ip  = provManager->getIP();
+        ProvState state = provManager->getState();
+        String mac = provManager->getMac();
+        String ip = provManager->getIP();
 
-    switch (state) {
-      case ProvState::CONNECTING_WIFI:
-        uiManager->updateProvisioningDisplay(mac, "", "WiFi csatlakozas...");
-        break;
-      case ProvState::WIFI_CONNECTED:
-      case ProvState::REGISTERING:
-        uiManager->updateProvisioningDisplay(mac, ip, "Regisztracio...");
-        break;
-      case ProvState::WAITING_ACTIVATION:
-        uiManager->updateProvisioningDisplay(mac, ip, "Var aktivalasra...");
-        break;
-      case ProvState::ACTIVATED:
-        uiManager->updateProvisioningDisplay(mac, ip, "Aktivalva! Indul...");
-        delay(2000);
-        provManager->applyAndReboot();
-        break;
-      case ProvState::FAILED:
-        uiManager->updateProvisioningDisplay(mac, ip, "HIBA! Ujraindul...");
-        delay(5000);
-        ESP.restart();
-        break;
-      default:
-        break;
+        switch (state) {
+            case ProvState::CONNECTING_WIFI:
+                uiManager->updateProvisioningDisplay(mac, "", "WiFi csatlakozas...");
+                break;
+
+            case ProvState::WIFI_CONNECTED:
+            case ProvState::REGISTERING:
+                uiManager->updateProvisioningDisplay(mac, ip, "Regisztracio...");
+                break;
+
+            case ProvState::WAITING_ACTIVATION:
+                uiManager->updateProvisioningDisplay(mac, ip, "Var aktivalasra...");
+                break;
+
+            case ProvState::ACTIVATED:
+                uiManager->updateProvisioningDisplay(mac, ip, "Aktivalva! Indul...");
+                delay(2000);
+                provManager->applyAndReboot();
+                break;
+
+            case ProvState::FAILED:
+                uiManager->updateProvisioningDisplay(mac, ip, "HIBA! Ujraindul...");
+                delay(5000);
+                ESP.restart();
+                break;
+
+            default:
+                break;
+        }
+
+        vTaskDelay(500 / portTICK_PERIOD_MS);
     }
-
-    vTaskDelay(500 / portTICK_PERIOD_MS);
-  }
 }
 
 // --- Normál network task (core 0) ---
-// beacon, poll, bell szinkron – mind egymás után, ugyanazon a core-on
-// így a BackendClient cooldown hatékonyan véd az SSL socket ütközések ellen
 void TaskNetwork(void* pvParameters) {
-  (void)pvParameters;
-  networkManager.begin();
-  for (;;) {
-    networkManager.loop();
-    agent.loop();
-    // BellManager HTTP hívásai ne ütközzenek az audio SSL sockettel
-    if (!audioManager.isBusy() && !audioManager.isInCooldown()) {
-      bellManager.loop();
+    (void)pvParameters;
+
+    networkManager.begin();
+
+    for (;;) {
+        networkManager.loop();
+
+        agent.loop();
+
+        /*
+         * A backend beacon válaszából jön:
+         *   deviceId
+         *   snapHost
+         *   snapPort
+         *
+         * Amint ezek megvannak, elindítjuk a Snapcast TCP klienst.
+         * Ettől kezdve a hang nem PLAY_URL-ből, hanem Snapcast PCM streamből jön.
+         */
+        if (backend.hasSnapConfig() && !snapClient.isStarted()) {
+            Serial.println("[MAIN] Starting Snapcast client from backend config");
+
+            audioManager.stop();
+
+            snapClient.begin(
+                backend.getSnapHost(),
+                backend.getSnapPort(),
+                backend.getDeviceId(),
+                audioManager.getVolume()
+            );
+
+            snapClient.start();
+        }
+
+        // BellManager HTTP hívásai ne ütközzenek a régi audio SSL sockettel.
+        // Snapcast mellett ez később egyszerűsíthető lesz.
+        if (!audioManager.isBusy() && !audioManager.isInCooldown()) {
+            bellManager.loop();
+        }
+
+        vTaskDelay(100 / portTICK_PERIOD_MS);
     }
-    vTaskDelay(100 / portTICK_PERIOD_MS);
-  }
 }
 
 // --- Provisioning mód ---
 void startProvisioningMode() {
-  inProvisioningMode = true;
-  Serial.println("[MAIN] Starting PROVISIONING mode");
+    inProvisioningMode = true;
 
-  provManager = new ProvisioningManager(store);
-  provManager->begin();
+    Serial.println("[MAIN] Starting PROVISIONING mode");
 
-  xTaskCreatePinnedToCore(
-    TaskProvisioning,
-    "ProvTask",
-    16384,
-    NULL,
-    1,
-    NULL,
-    0
-  );
+    provManager = new ProvisioningManager(store);
+    provManager->begin();
+
+    xTaskCreatePinnedToCore(
+        TaskProvisioning,
+        "ProvTask",
+        16384,
+        NULL,
+        1,
+        NULL,
+        0
+    );
 }
 
 // --- Normál mód ---
 void startNormalMode() {
-  inProvisioningMode = false;
-  Serial.println("[MAIN] Starting NORMAL mode");
+    inProvisioningMode = false;
 
-  uiManager->drawBootStatus("System check", "WiFi + time sync");
-  delay(300);
+    Serial.println("[MAIN] Starting NORMAL mode");
 
-  bool wifiOk = networkManager.syncTimeBlocking();
-  if (!wifiOk) {
-    uiManager->drawBootStatus("WIFI FAILED!", "Check wifi config");
-    delay(3000);
-  } else {
-    uiManager->drawBootStatus("WIFI OK!", networkManager.getIP().c_str());
-    delay(1000);
-  }
+    uiManager->drawBootStatus("System check", "WiFi + time sync");
+    delay(300);
 
-  backend.begin(String(BACKEND_BASE_URL));
+    bool wifiOk = networkManager.syncTimeBlocking();
 
-  String dk = store.getDeviceKey();
-  if (dk.length() == 0 && String(DEVICE_KEY_DEFAULT).length() > 0) {
-    dk = String(DEVICE_KEY_DEFAULT);
-    store.setDeviceKey(dk);
-  }
-  backend.setDeviceKey(dk);
+    if (!wifiOk) {
+        uiManager->drawBootStatus("WIFI FAILED!", "Check wifi config");
+        delay(3000);
+    } else {
+        uiManager->drawBootStatus("WIFI OK!", networkManager.getIP().c_str());
+        delay(1000);
+    }
 
-  telemetry.firmwareVersion = String(FW_VERSION);
-  telemetry.deviceId = WiFi.macAddress();
+    backend.begin(String(BACKEND_BASE_URL));
 
-  agent.begin(networkManager, audioManager, *uiManager, backend, telemetry);
-  agent.setFirmwareVersion(String(FW_VERSION));
+    String dk = store.getDeviceKey();
 
-  xTaskCreatePinnedToCore(
-    TaskNetwork,
-    "NetworkTask",
-    12000,
-    NULL,
-    1,
-    &TaskNetworkHandle,
-    0
-  );
+    if (dk.length() == 0 && String(DEVICE_KEY_DEFAULT).length() > 0) {
+        dk = String(DEVICE_KEY_DEFAULT);
+        store.setDeviceKey(dk);
+    }
+
+    backend.setDeviceKey(dk);
+
+    telemetry.firmwareVersion = String(FW_VERSION);
+    telemetry.deviceId = WiFi.macAddress();
+
+    agent.begin(networkManager, audioManager, *uiManager, backend, telemetry);
+    agent.setFirmwareVersion(String(FW_VERSION));
+
+    xTaskCreatePinnedToCore(
+        TaskNetwork,
+        "NetworkTask",
+        12000,
+        NULL,
+        1,
+        &TaskNetworkHandle,
+        0
+    );
 }
 
 // --- SETUP ---
 void setup() {
-  Serial.begin(115200);
-  delay(500);
-  Serial.println("=== SETUP START ===");
-  Serial.printf("Free heap: %d\n", ESP.getFreeHeap());
-  Serial.printf("Reset reason: %d\n", (int)esp_reset_reason());
+    Serial.begin(115200);
+    delay(500);
 
-  btStop();
-  Wire.begin(I2C_SDA, I2C_SCL);
-  LittleFS.begin(true, "/littlefs", 10, "littlefs");
-  store.begin();
+    Serial.println("=== SETUP START ===");
+    Serial.printf("Free heap: %d\n", ESP.getFreeHeap());
+    Serial.printf("Reset reason: %d\n", (int)esp_reset_reason());
 
-  audioManager.begin(&store);
+    btStop();
 
-  uiManager = new UIManager(audioManager, networkManager, bellManager, store);
-  uiManager->begin();
-  uiManager->setTelemetry(&telemetry);
+    Wire.begin(I2C_SDA, I2C_SCL);
 
-  bellManager.begin();
+    LittleFS.begin(true, "/littlefs", 10, "littlefs");
 
-  bool hasWifi   = store.hasWifi();
-  bool hasKey    = store.hasDeviceKey();
-  bool needsProv = !hasWifi || !hasKey;
+    store.begin();
 
-  Serial.printf("[MAIN] hasWifi=%d hasKey=%d needsProv=%d\n", hasWifi, hasKey, needsProv);
+    audioManager.begin(&store);
 
-  if (needsProv) {
-    startProvisioningMode();
-  } else {
-    startNormalMode();
-  }
+    uiManager = new UIManager(audioManager, networkManager, bellManager, store);
+    uiManager->begin();
+    uiManager->setTelemetry(&telemetry);
+
+    bellManager.begin();
+
+    bool hasWifi = store.hasWifi();
+    bool hasKey = store.hasDeviceKey();
+    bool needsProv = !hasWifi || !hasKey;
+
+    Serial.printf(
+        "[MAIN] hasWifi=%d hasKey=%d needsProv=%d\n",
+        hasWifi,
+        hasKey,
+        needsProv
+    );
+
+    if (needsProv) {
+        startProvisioningMode();
+    } else {
+        startNormalMode();
+    }
 }
 
 // --- LOOP (core 1) ---
-// Csak audio és UI – HTTP hívás nincs itt, az mind a TaskNetwork-ben van
 void loop() {
-  if (!inProvisioningMode) {
-    audioManager.loop();
-    uiManager->loop();
-    // bellManager.loop() → TaskNetwork-be költözött (core 0)
-  } else {
-    uiManager->loop();
-    delay(50);
-  }
+    if (!inProvisioningMode) {
+        /*
+         * A régi AudioManager loop egyelőre marad,
+         * mert a helyi csengőhang / meglévő UI logika még hivatkozhat rá.
+         * A Snapcast hang viszont már külön taskban, közvetlen I2S-en fut.
+         */
+        audioManager.loop();
+        uiManager->loop();
+    } else {
+        uiManager->loop();
+        delay(50);
+    }
 }
