@@ -60,11 +60,11 @@ bool DeviceAgent::executeAndAck(const PolledCommand& cmd) {
     bool ok = false;
 
     if (action == "PLAY_URL") {
-        // ACK előre – az audio SSL socket megnyitása előtt
-        _backend->ack(cmd.id, true, "");
-        ok = handlePlayUrl(payload, err);
-        return ok;
-    }
+   
+    Serial.println("[AGENT] PLAY_URL ignored: audio is handled by Snapcast");
+    _backend->ack(cmd.id, true, "PLAY_URL ignored: Snapcast mode");
+    return true;
+}
 
     if      (action == "SET_VOLUME")   ok = handleSetVolume(payload, err);
     else if (action == "SHOW_MESSAGE") ok = handleShowMessage(payload, err);
