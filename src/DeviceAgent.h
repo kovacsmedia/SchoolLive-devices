@@ -1,7 +1,8 @@
 #pragma once
+
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include <WiFi.h>
+
 #include "DeviceTelemetry.h"
 #include "AudioManager.h"
 #include "NetworkManager.h"
@@ -10,37 +11,54 @@
 
 class DeviceAgent {
 public:
-  void loop();
-  DeviceTelemetry* _tel = nullptr;
-  void begin(NetworkManager& net, AudioManager& audio, UIManager& ui, BackendClient& backend, DeviceTelemetry& tel);
-  void setFirmwareVersion(const String& v) { _fw = v; }
+    void begin(
+        NetworkManager& net,
+        AudioManager& audio,
+        UIManager& ui,
+        BackendClient& backend,
+        DeviceTelemetry& tel
+    );
+
+    void loop();
+
+    void setFirmwareVersion(const String& v) {
+        _fw = v;
+    }
+
+    bool isPlaybackQuietActive() const;
+    unsigned long playbackQuietRemainingMs() const;
 
 private:
-  NetworkManager* _net = nullptr;
-  AudioManager* _audio = nullptr;
-  UIManager* _ui = nullptr;
-  BackendClient* _backend = nullptr;
+    NetworkManager* _net = nullptr;
+    AudioManager* _audio = nullptr;
+    UIManager* _ui = nullptr;
+    BackendClient* _backend = nullptr;
+    DeviceTelemetry* _tel = nullptr;
 
-  String _fw = "dev";
+    String _fw = "dev";
 
-  unsigned long _lastBeaconMs = 0;
-  unsigned long _lastPollMs = 0;
+    unsigned long _lastBeaconMs = 0;
+    unsigned long _lastPollMs = 0;
 
-  const unsigned long BEACON_INTERVAL_MS = 30000;
-  const unsigned long POLL_INTERVAL_MS   = 1500;
+    const unsigned long BEACON_INTERVAL_MS = 30000UL;
+    const unsigned long POLL_INTERVAL_MS = 1500UL;
 
-  bool _pendingAck = false;
-  String _pendingAckId;
-  bool _pendingAckOk = false;
-  String _pendingAckErr;
-  unsigned long _ackReadyMs = 0;
-  const unsigned long ACK_DELAY_MS = 8000;
+    unsigned long _playbackQuietUntilMs = 0;
 
-  void sendBeaconIfDue();
-  void pollIfDue();
-  bool executeAndAck(const PolledCommand& cmd);
+    const unsigned long PLAYBACK_SAFETY_MS = 10000UL;
+    const unsigned long DEFAULT_PLAYBACK_QUIET_MS = 60000UL;
 
-  bool handlePlayUrl(JsonVariantConst payload, String& err);
-  bool handleSetVolume(JsonVariantConst payload, String& err);
-  bool handleShowMessage(JsonVariantConst payload, String& err);
+    void sendBeaconIfDue();
+    void pollIfDue();
+
+    bool executeAndAck(const PolledCommand& cmd);
+
+    bool handleSetVolume(JsonVariantConst payload, String& err);
+    bool handleShowMessage(JsonVariantConst payload, String& err);
+
+    String detectAction(JsonVariantConst payload) const;
+    bool looksLikeAudioCommand(JsonVariantConst payload, const String& action) const;
+
+    unsigned long getPlaybackQuietMs(JsonVariantConst payload) const;
+    void enterPlaybackQuiet(JsonVariantConst payload, const String& action);
 };

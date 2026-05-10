@@ -12,10 +12,19 @@
 #define SNAP_RECONNECT_DELAY_MS    3000
 #define SNAP_READ_TIMEOUT_MS       8000
 
-#define SNAP_QUEUE_LENGTH          240
+// 20 ms/chunk mellett 300 chunk kb. 6 mp pufferkapacitás.
+// Nem érdemes túl nagyra venni, mert PSRAM nélkül a sok malloc szétverheti a heapet.
+#define SNAP_QUEUE_LENGTH          300
+
+// Induláskor kb. 1,5 mp puffer.
+// Ez elég stabilabb, de nem terheli túl a memóriát.
 #define SNAP_INITIAL_PREBUFFER     75
 
 #define SNAP_I2S_PORT              I2S_NUM_0
+
+#define SNAP_VERBOSE_HEADERS       0
+#define SNAP_VERBOSE_SETTINGS      0
+#define SNAP_VERBOSE_UNDERRUN      0
 
 SnapcastClientESP32::SnapcastClientESP32() {
 }
@@ -62,9 +71,9 @@ void SnapcastClientESP32::start() {
     xTaskCreatePinnedToCore(
         netTaskThunk,
         "SnapNet",
-        12288,
+        16384,
         this,
-        1,
+        5,
         &_netTaskHandle,
         0
     );
@@ -72,9 +81,9 @@ void SnapcastClientESP32::start() {
     xTaskCreatePinnedToCore(
         audioTaskThunk,
         "SnapAudio",
-        8192,
+        12288,
         this,
-        2,
+        7,
         &_audioTaskHandle,
         1
     );
@@ -205,8 +214,10 @@ void SnapcastClientESP32::audioTask() {
 
         PcmBlock block{};
 
-        if (xQueueReceive(_pcmQueue, &block, pdMS_TO_TICKS(500)) != pdTRUE) {
+        if (xQueueReceive(_pcmQueue, &block, pdMS_TO_TICKS(1000)) != pdTRUE) {
+#if SNAP_VERBOSE_UNDERRUN
             Serial.println("[SNAP] audio queue underrun, waiting");
+#endif
             buffered = false;
             continue;
         }
@@ -222,6 +233,15 @@ void SnapcastClientESP32::audioTask() {
             continue;
         }
 
+        /*
+         * Androiddal azonos alapelv:
+         *
+         * A Snapcastból érkező PCM:
+         *   16-bit signed little-endian, interleaved stereo
+         *
+         * Ezt itt közvetlenül 16-bit I2S-re írjuk.
+         * Nincs 32 bites bővítés, nincs byte-swap, nincs csatornacsere.
+         */
         applyVolumeInPlace(block.data, block.len);
 
         size_t offset = 0;
@@ -350,10 +370,88 @@ bool SnapcastClientESP32::sendTimeRequest() {
 bool SnapcastClientESP32::readLoop() {
     uint8_t header[SNAP_HEADER_SIZE];
 
-    while (_running && _client.connected()) {
-        if (!readFully(header, SNAP_HEADER_SIZE, SNAP_READ_TIMEOUT_MS)) {
-            Serial.println("[SNAP] header read failed");
+    auto isPlausibleHeader = [&](const uint8_t* h) -> bool {
+        uint16_t type = readU16LE(h + 0);
+        uint32_t sentUsec = readU32LE(h + 10);
+        uint32_t recvUsec = readU32LE(h + 18);
+        uint32_t payloadSize = readU32LE(h + 22);
+
+        if (type < SNAP_TYPE_CODEC_HEADER || type > SNAP_TYPE_HELLO) return false;
+        if (sentUsec >= 1000000UL) return false;
+        if (recvUsec >= 1000000UL) return false;
+        if (payloadSize > 512 * 1024UL) return false;
+
+        if (type == SNAP_TYPE_TIME && payloadSize != 8 && payloadSize != 0) {
             return false;
+        }
+
+        if (type == SNAP_TYPE_WIRE_CHUNK && payloadSize < 12) {
+            return false;
+        }
+
+        return true;
+    };
+
+    auto dumpHeader = [&](const char* prefix, const uint8_t* h) {
+#if SNAP_VERBOSE_HEADERS
+        uint16_t type = readU16LE(h + 0);
+        uint16_t id = readU16LE(h + 2);
+        uint16_t refersTo = readU16LE(h + 4);
+
+        uint32_t sec = readU32LE(h + 6);
+        uint32_t usec = readU32LE(h + 10);
+
+        uint32_t recvSec = readU32LE(h + 14);
+        uint32_t recvUsec = readU32LE(h + 18);
+
+        uint32_t payloadSize = readU32LE(h + 22);
+
+        Serial.printf(
+            "[SNAP] %s type=%u id=%u ref=%u sent=%u.%06u recv=%u.%06u size=%u\n",
+            prefix,
+            type,
+            id,
+            refersTo,
+            sec,
+            usec,
+            recvSec,
+            recvUsec,
+            payloadSize
+        );
+#else
+        (void)prefix;
+        (void)h;
+#endif
+    };
+
+    if (!readFully(header, SNAP_HEADER_SIZE, SNAP_READ_TIMEOUT_MS)) {
+        Serial.println("[SNAP] initial header read failed");
+        return false;
+    }
+
+    uint32_t resyncCount = 0;
+
+    while (_running && _client.connected()) {
+        while (_running && _client.connected() && !isPlausibleHeader(header)) {
+            if (resyncCount < 5) {
+                dumpHeader("bad header, resync", header);
+            }
+
+            memmove(header, header + 1, SNAP_HEADER_SIZE - 1);
+
+            if (!readFully(header + SNAP_HEADER_SIZE - 1, 1, SNAP_READ_TIMEOUT_MS)) {
+                Serial.println("[SNAP] resync byte read failed");
+                return false;
+            }
+
+            resyncCount++;
+        }
+
+        if (!_running || !_client.connected()) return false;
+
+        if (resyncCount > 0) {
+            Serial.printf("[SNAP] header resynced after %u byte shifts\n", resyncCount);
+            resyncCount = 0;
         }
 
         uint16_t type = readU16LE(header + 0);
@@ -362,11 +460,6 @@ bool SnapcastClientESP32::readLoop() {
         uint32_t usec = readU32LE(header + 10);
 
         uint32_t payloadSize = readU32LE(header + 22);
-
-        if (payloadSize > 512 * 1024) {
-            Serial.printf("[SNAP] invalid payload size: %u\n", payloadSize);
-            return false;
-        }
 
         uint8_t* payload = nullptr;
 
@@ -407,6 +500,11 @@ bool SnapcastClientESP32::readLoop() {
         }
 
         if (payload) free(payload);
+
+        if (!readFully(header, SNAP_HEADER_SIZE, SNAP_READ_TIMEOUT_MS)) {
+            Serial.println("[SNAP] next header read failed");
+            return false;
+        }
     }
 
     return false;
@@ -491,19 +589,28 @@ void SnapcastClientESP32::handleCodecHeader(const uint8_t* payload, size_t len) 
 
         uint16_t bits = readU16LE(payload + pos);
 
+        bool formatChanged =
+            _sampleRate != (int)rate ||
+            _channels != (int)ch ||
+            _bits != (int)bits;
+
         _sampleRate = (int)rate;
         _channels = (int)ch;
         _bits = (int)bits;
 
         Serial.printf(
-            "[SNAP] PCM format: fmt=%u ch=%u rate=%u bits=%u\n",
+            "[SNAP] PCM format: fmt=%u ch=%u rate=%u bits=%u changed=%d\n",
             audioFormat,
             ch,
             rate,
-            bits
+            bits,
+            formatChanged ? 1 : 0
         );
 
-        if (!_pausedForLocalPlayback) {
+        /*
+         * Csak akkor inicializáljuk újra az I2S-t, ha tényleg változott a formátum.
+         */
+        if (!_pausedForLocalPlayback && formatChanged) {
             stopI2S();
             initI2S();
         }
@@ -536,7 +643,10 @@ void SnapcastClientESP32::handleWireChunk(const uint8_t* payload, size_t len) {
 
     uint32_t serverMs = sec * 1000UL + usec / 1000UL;
 
-    // Fontos: PCM a 12. bájttól indul, nem a 8.-tól.
+    /*
+     * Androidon is ez volt a kritikus javítás:
+     * a PCM nem a 8., hanem a 12. bájttól indul.
+     */
     enqueuePcm(payload + 12, pcmSize, serverMs);
 }
 
@@ -565,16 +675,29 @@ void SnapcastClientESP32::handleServerSettings(const uint8_t* payload, size_t le
         return;
     }
 
+    bool oldMuted = _serverMuted;
+    uint8_t oldVolume = _serverVolume;
+
     _serverMuted = doc["muted"] | false;
     _serverVolume = doc["volume"] | 100;
 
     if (_serverVolume > 100) _serverVolume = 100;
 
+#if SNAP_VERBOSE_SETTINGS
     Serial.printf(
         "[SNAP] settings: muted=%d volume=%u\n",
         _serverMuted ? 1 : 0,
         _serverVolume
     );
+#else
+    if (oldMuted != _serverMuted || oldVolume != _serverVolume) {
+        Serial.printf(
+            "[SNAP] settings changed: muted=%d volume=%u\n",
+            _serverMuted ? 1 : 0,
+            _serverVolume
+        );
+    }
+#endif
 }
 
 void SnapcastClientESP32::handleTimeResponse(uint32_t sec, uint32_t usec) {
@@ -592,12 +715,28 @@ bool SnapcastClientESP32::initI2S() {
     i2s_config_t config = {};
     config.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX);
     config.sample_rate = _sampleRate;
+
+    /*
+     * Androidhoz hasonlóan 16-bit PCM-et kezelünk.
+     */
     config.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
+
     config.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
-    config.communication_format = I2S_COMM_FORMAT_STAND_I2S;
+
+    /*
+     * MAX98357A-val a korábbi, érthetőbb állapot ez volt.
+     * A 32-bit slot rontott, ezért visszaállunk 16-bit I2S-re.
+     */
+    config.communication_format = I2S_COMM_FORMAT_I2S;
+
     config.intr_alloc_flags = ESP_INTR_FLAG_LEVEL1;
+
+    /*
+     * Nagy DMA puffer, de nem túl extrém.
+     */
     config.dma_buf_count = 12;
-    config.dma_buf_len = 512;
+    config.dma_buf_len = 1024;
+
     config.use_apll = false;
     config.tx_desc_auto_clear = true;
     config.fixed_mclk = 0;
@@ -654,11 +793,22 @@ void SnapcastClientESP32::enqueuePcm(const uint8_t* data, size_t len, uint32_t s
     if (!_pcmQueue || !data || len == 0) return;
     if (_pausedForLocalPlayback) return;
 
+    /*
+     * Egy WireChunknál 20 ms PCM várható:
+     * 48000 Hz * 0.02 s * 2 csatorna * 2 bájt = 3840 bájt.
+     *
+     * Ha ettől eltér, még nem dobjuk el, de csak teljes 16-bit mintákat engedünk tovább.
+     */
+    if ((len % 2) != 0) {
+        Serial.printf("[SNAP] odd PCM size dropped: %u\n", (unsigned)len);
+        return;
+    }
+
     uint8_t* copy = nullptr;
 
-    #if CONFIG_SPIRAM_SUPPORT
+#if CONFIG_SPIRAM_SUPPORT
     copy = (uint8_t*)ps_malloc(len);
-    #endif
+#endif
 
     if (!copy) {
         copy = (uint8_t*)malloc(len);
@@ -676,8 +826,7 @@ void SnapcastClientESP32::enqueuePcm(const uint8_t* data, size_t len, uint32_t s
     block.len = len;
     block.serverMs = serverMs;
 
-    if (xQueueSend(_pcmQueue, &block, pdMS_TO_TICKS(250)) != pdTRUE) {
-        Serial.println("[SNAP] PCM queue full, dropping block");
+    if (xQueueSend(_pcmQueue, &block, pdMS_TO_TICKS(20)) != pdTRUE) {
         free(copy);
     }
 }
@@ -706,7 +855,16 @@ void SnapcastClientESP32::applyVolumeInPlace(uint8_t* data, size_t len) {
     if (effective > 100) effective = 100;
     if (effective < 0) effective = 0;
 
+    /*
+     * 100%-nál nem nyúlunk a PCM-hez.
+     * Teszthez állítsd a helyi hangerőt 10-re.
+     */
     if (effective == 100) return;
+
+    if (effective == 0) {
+        memset(data, 0, len);
+        return;
+    }
 
     size_t samples = len / 2;
 

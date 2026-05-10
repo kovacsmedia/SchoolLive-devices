@@ -2,6 +2,7 @@
 #include <Wire.h>
 #include <LittleFS.h>
 #include <WiFi.h>
+#include <ArduinoJson.h>
 
 #include "Config.h"
 #include "PersistStore.h"
@@ -43,6 +44,51 @@ void beforeLocalPlayback() {
 void afterLocalPlayback() {
     Serial.println("[MAIN] afterLocalPlayback: resume Snapcast");
     snapClient.resumeAfterLocalPlayback();
+}
+
+// --- Snapcast indítás, ha már van backend config ---
+
+void tryStartSnapcastClient() {
+    if (!backend.hasSnapConfig()) return;
+    if (snapClient.isStarted()) return;
+
+    Serial.println("[MAIN] Starting Snapcast client from backend config");
+
+    snapClient.begin(
+        backend.getSnapHost(),
+        backend.getSnapPort(),
+        backend.getDeviceId(),
+        audioManager.getVolume()
+    );
+
+    snapClient.start();
+}
+
+// --- Induláskori beacon, hogy a Snapcast config még poll előtt meglegyen ---
+
+void sendInitialBeaconAndStartSnapcast() {
+    JsonDocument status;
+    status["boot"] = true;
+    status["mode"] = "normal";
+    status["ip"] = WiFi.localIP().toString();
+    status["mac"] = WiFi.macAddress();
+    status["snapcast"] = "requested";
+
+    Serial.println("[MAIN] Sending initial beacon before polling");
+
+    bool ok = backend.sendBeacon(
+        audioManager.getVolume(),
+        false,
+        String(FW_VERSION),
+        status
+    );
+
+    if (!ok) {
+        Serial.println("[MAIN] Initial beacon failed, Snapcast config not available yet");
+        return;
+    }
+
+    tryStartSnapcastClient();
 }
 
 // --- Provisioning task (core 0) ---
@@ -103,37 +149,46 @@ void TaskNetwork(void* pvParameters) {
     for (;;) {
         networkManager.loop();
 
-        agent.loop();
+        tryStartSnapcastClient();
 
         /*
-         * A backend beacon válaszából jön:
-         *   deviceId
-         *   snapHost
-         *   snapPort
+         * Lejátszás közben:
+         * - nincs polling;
+         * - nincs beacon;
+         * - nincs bell sync;
+         * - nem futtatunk semmilyen extra HTTP kérést.
          *
-         * Amint ezek megvannak, elindítjuk a Snapcast TCP klienst.
+         * Ekkor a Snapcast hálózati task és az audio task kap prioritást.
          */
-        if (backend.hasSnapConfig() && !snapClient.isStarted()) {
-            Serial.println("[MAIN] Starting Snapcast client from backend config");
-
-            snapClient.begin(
-                backend.getSnapHost(),
-                backend.getSnapPort(),
-                backend.getDeviceId(),
-                audioManager.getVolume()
-            );
-
-            snapClient.start();
+        if (agent.isPlaybackQuietActive()) {
+            vTaskDelay(100 / portTICK_PERIOD_MS);
+            continue;
         }
 
         /*
-         * Offline csengetés:
-         * a BellManager továbbra is használhatja az AudioManager.playFile()-t.
-         * Az AudioManager ilyenkor a callbackeken át átmenetileg leállítja
-         * a Snapcast I2S-t, majd EOF után visszaengedi.
+         * Ha Snapcast kapcsolat él, a bell syncet akkor sem futtatjuk.
+         * A hangos üzemmódot Snapcast viszi, az offline bell sync ráér,
+         * vagy csak akkor fontos, ha nincs Snapcast kapcsolat.
          */
-        if (!audioManager.isBusy() && !audioManager.isInCooldown()) {
-            bellManager.loop();
+        bool snapConnected = snapClient.isConnected();
+
+        /*
+         * Polling csak akkor megy, ha éppen nincs védett lejátszási időszak.
+         * A pollingból jön a célzott régi kompatibilitási parancs,
+         * amit ACK-olunk, majd DeviceAgent playback quiet módba lép.
+         */
+        agent.loop();
+
+        tryStartSnapcastClient();
+
+        /*
+         * Bell sync / offline bell kezelés csak akkor,
+         * ha nincs Snapcast kapcsolat.
+         */
+        if (!snapConnected) {
+            if (!audioManager.isBusy() && !audioManager.isInCooldown()) {
+                bellManager.loop();
+            }
         }
 
         vTaskDelay(100 / portTICK_PERIOD_MS);
@@ -194,6 +249,13 @@ void startNormalMode() {
 
     telemetry.firmwareVersion = String(FW_VERSION);
     telemetry.deviceId = WiFi.macAddress();
+
+    /*
+     * Kritikus:
+     * még az agent.begin() és a polling előtt kérünk Snapcast configot,
+     * majd elindítjuk a Snapcast klienst.
+     */
+    sendInitialBeaconAndStartSnapcast();
 
     agent.begin(networkManager, audioManager, *uiManager, backend, telemetry);
     agent.setFirmwareVersion(String(FW_VERSION));
@@ -266,6 +328,10 @@ void setup() {
 
 void loop() {
     if (!inProvisioningMode) {
+        /*
+         * A Snapcast audio külön taskban fut.
+         * Itt csak UI és offline AudioManager loop marad.
+         */
         audioManager.loop();
         uiManager->loop();
     } else {
