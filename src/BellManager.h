@@ -4,7 +4,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include "AudioManager.h"
-#include "NetworkManager.h"
+#include "SLNetworkManager.h"
 #include "BackendClient.h"
 
 // Csengetési módok
@@ -43,7 +43,7 @@ struct BellEntry {
 
 class BellManager {
 public:
-    BellManager(AudioManager& audioMgr, NetworkManager& netMgr, BackendClient& backend);
+    BellManager(AudioManager& audioMgr, SLNetworkManager& netMgr, BackendClient& backend);
 
     void    begin();
     void    loop();
@@ -60,7 +60,7 @@ public:
 
 private:
     AudioManager&   audio;
-    NetworkManager& network;
+    SLNetworkManager& network;
     BackendClient&  backend;
 
     uint8_t _mode       = BELL_MODE_ON;

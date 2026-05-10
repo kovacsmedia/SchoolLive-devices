@@ -13,7 +13,7 @@ void IRAM_ATTR isrR() {
 }
 
 // --- KONSTRUKTOR ---
-UIManager::UIManager(AudioManager &audioMgr, NetworkManager &netMgr, BellManager &bellMgr, PersistStore &storeRef)
+UIManager::UIManager(AudioManager &audioMgr, SLNetworkManager &netMgr, BellManager &bellMgr, PersistStore &storeRef)
     : audio(audioMgr), network(netMgr), bell(bellMgr), _store(storeRef),
       display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1) {}
 

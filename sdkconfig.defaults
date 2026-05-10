@@ -1,22 +1,18 @@
-# SchoolLive ESP32-S3 (N16R8 / N8R8) — mixed Arduino + ESP-IDF
+# SchoolLive ESP32-S3 N16R8 — mixed Arduino + ESP-IDF (v5.5.x)
 #
-# Itt csak azokat a Kconfig értékeket állítjuk explicit-re, amiket
-# a board JSON nem örökít át mixed módban. A többi default jó.
+# Csak a tényleg szükséges Kconfig override-ok. A többi default jó a
+# pioarduino platformon, vagy az Arduino-ESP32 v3.x maga állítja be.
 
-# Az Arduino-ESP32 megköveteli a 1000 Hz-es FreeRTOS tick-et.
-# E nélkül a CMake config errorral leáll.
+# Az Arduino-ESP32 v3.x is megköveteli a 1000 Hz-es FreeRTOS tick-et.
 CONFIG_FREERTOS_HZ=1000
 
 # Az Arduino komponens biztosítsa az app_main()-t és indítsa el automatikusan
 # a setup() / loop() ciklust. E nélkül a linker undefined reference-szel hibázik.
 CONFIG_AUTOSTART_ARDUINO=y
 
-# Octal (OPI) PSRAM az N16R8 / N8R8 modulokhoz, 80 MHz órajellel.
-# ESP-IDF v4.4-en a target-specifikus flag aktivál: ESP32-S3-on
-# CONFIG_ESP32S3_SPIRAM_SUPPORT, NEM a generikus CONFIG_SPIRAM.
-# E nélkül a PSRAM nem inicializálódik, és csak a 320 KB SRAM heap
-# áll rendelkezésre — a snap PCM jitter buffer azt percek alatt kifutja.
-CONFIG_ESP32S3_SPIRAM_SUPPORT=y
+# Octal (OPI) PSRAM az N16R8 modulokhoz, 80 MHz órajellel.
+# ESP-IDF v5.x-en a generikus CONFIG_SPIRAM a target-független név.
+CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_BOOT_INIT=y
@@ -30,10 +26,18 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 
 # WiFiClientSecure pre-shared-key ciphersuite-okat igényel.
-# Enélkül az ssl_client.cpp belső implementáció nem fordul be a binarybe,
-# és a linker `start_ssl_client` / `ssl_init` / stb. undefined-ot dob.
+# Enélkül az ssl_client.cpp belső implementáció nem fordul be a binarybe.
 CONFIG_MBEDTLS_PSK_MODES=y
 CONFIG_MBEDTLS_KEY_EXCHANGE_PSK=y
 CONFIG_MBEDTLS_KEY_EXCHANGE_DHE_PSK=y
 CONFIG_MBEDTLS_KEY_EXCHANGE_ECDHE_PSK=y
 CONFIG_MBEDTLS_KEY_EXCHANGE_RSA_PSK=y
+
+# I2S driver conflict check kikapcsolása. ESP-IDF v5.x runtime-ban abort-ot
+# dob, ha a legacy driver/i2s.h ÉS a new driver/i2s_std.h ugyanabban a
+# binarában van. A mi rendszerünkben CSAK a legacy-t használjuk (SnapcastClientESP32
+# és ESP32-audioI2S), de az Arduino-ESP32 v3.x ESP_I2S lib weak link-eli az új
+# drivert, ami triggereli az ellenőrzést.
+# A futási konfliktus NINCS - senki nem hívja az új API-t. A Fázis 2-3 után
+# (új snap kliens + libhelix MP3) ez a flag eltávolítható.
+CONFIG_I2S_SKIP_LEGACY_CONFLICT_CHECK=y

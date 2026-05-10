@@ -5,14 +5,14 @@
 
 #include "DeviceTelemetry.h"
 #include "AudioManager.h"
-#include "NetworkManager.h"
+#include "SLNetworkManager.h"
 #include "BackendClient.h"
 #include "UIManager.h"
 
 class DeviceAgent {
 public:
     void begin(
-        NetworkManager& net,
+        SLNetworkManager& net,
         AudioManager& audio,
         UIManager& ui,
         BackendClient& backend,
@@ -29,7 +29,7 @@ public:
     unsigned long playbackQuietRemainingMs() const;
 
 private:
-    NetworkManager* _net = nullptr;
+    SLNetworkManager* _net = nullptr;
     AudioManager* _audio = nullptr;
     UIManager* _ui = nullptr;
     BackendClient* _backend = nullptr;

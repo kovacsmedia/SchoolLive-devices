@@ -8,7 +8,7 @@
 #include <vector>
 #include "Config.h"
 #include "AudioManager.h"
-#include "NetworkManager.h"
+#include "SLNetworkManager.h"
 #include "BellManager.h"
 #include "DeviceTelemetry.h"
 #include "PersistStore.h"
@@ -31,7 +31,7 @@ struct RadioStation {
 
 class UIManager {
 public:
-    UIManager(AudioManager &audioMgr, NetworkManager &netMgr, BellManager &bellMgr, PersistStore &storeRef);
+    UIManager(AudioManager &audioMgr, SLNetworkManager &netMgr, BellManager &bellMgr, PersistStore &storeRef);
     void begin();
     void loop();
     void setTelemetry(DeviceTelemetry* tel);
@@ -41,7 +41,7 @@ public:
 
 private:
     AudioManager &audio;
-    NetworkManager &network;
+    SLNetworkManager &network;
     BellManager &bell;
     PersistStore &_store;
     Adafruit_SSD1306 display;

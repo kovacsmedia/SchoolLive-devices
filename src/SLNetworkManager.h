@@ -1,5 +1,10 @@
-#ifndef NETWORKMANAGER_H
-#define NETWORKMANAGER_H
+#ifndef SLNETWORKMANAGER_H
+#define SLNETWORKMANAGER_H
+
+// SchoolLive hálózatkezelő. Az osztály eredeti neve NetworkManager volt,
+// de Arduino-ESP32 v3.x-től a Network/NetworkManager.h egy globális
+// NetworkManager osztályt definiál (WiFi.h-on át mindenhol importálódik),
+// így átneveztük SLNetworkManager-re, hogy ne ütközzön.
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -17,9 +22,9 @@ struct WiFiCreds {
     String pass;
 };
 
-class NetworkManager {
+class SLNetworkManager {
 public:
-    NetworkManager();
+    SLNetworkManager();
     void begin();
     void loop();
     bool syncTimeBlocking();

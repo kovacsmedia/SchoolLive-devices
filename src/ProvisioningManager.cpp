@@ -130,7 +130,7 @@ void ProvisioningManager::applyAndReboot() {
   _store.setWifi(_activatedConfig.wifiSsid, _activatedConfig.wifiPassword);
   _store.setDeviceKey(_activatedConfig.deviceKey);
 
-  // wifi.txt írása – NetworkManager ebből olvas
+  // wifi.txt írása – SLNetworkManager ebből olvas
   File f = LittleFS.open("/wifi.txt", "w");
   if (f) {
     f.print("\"");

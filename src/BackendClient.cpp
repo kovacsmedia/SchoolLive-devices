@@ -1,4 +1,5 @@
 #include "BackendClient.h"
+#include <WiFiClient.h>  // Arduino-ESP32 v3.x: WiFiClient typedef alias for NetworkClient
 
 void BackendClient::begin(const String& baseUrl) {
     _baseUrl = baseUrl;

@@ -8,7 +8,7 @@
 #include "PersistStore.h"
 #include "ProvisioningManager.h"
 #include "AudioManager.h"
-#include "NetworkManager.h"
+#include "SLNetworkManager.h"
 #include "BellManager.h"
 #include "UIManager.h"
 #include "BackendClient.h"
@@ -17,7 +17,7 @@
 #include "SnapcastClientESP32.h"
 
 // --- Globális objektumok ---
-NetworkManager networkManager;
+SLNetworkManager networkManager;
 AudioManager audioManager;
 PersistStore store;
 BackendClient backend;

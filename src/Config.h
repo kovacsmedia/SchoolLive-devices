@@ -7,7 +7,7 @@
 // ESZKÖZ AZONOSÍTÁS
 // -----------------------------------------------------------------------------
 
-#define DEVICE_ID "Info 2. terem"
+#define DEVICE_ID "Speaker 5"
 
 // Ha van gyárilag beégetett / ideiglenes deviceKey, ide írható.
 // Normál esetben üres, provisioning után a Preferences tárolja.

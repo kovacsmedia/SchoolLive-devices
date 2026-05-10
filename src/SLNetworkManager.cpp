@@ -1,11 +1,11 @@
-#include "NetworkManager.h"
+#include "SLNetworkManager.h"
 #include "PersistStore.h"
 
 extern PersistStore store;
 
-NetworkManager::NetworkManager() {}
+SLNetworkManager::SLNetworkManager() {}
 
-void NetworkManager::begin() {
+void SLNetworkManager::begin() {
     WiFi.mode(WIFI_STA);
     WiFi.setSleep(false);
     String hostname = "schoollive-" + WiFi.macAddress();
@@ -15,7 +15,7 @@ void NetworkManager::begin() {
     loadFromNVS();
 }
 
-void NetworkManager::loadFromNVS() {
+void SLNetworkManager::loadFromNVS() {
     knownNetworks.clear();
     if (!store.hasWifi()) return;
 
@@ -26,7 +26,7 @@ void NetworkManager::loadFromNVS() {
     knownNetworks.push_back(creds);
 }
 
-bool NetworkManager::syncTimeBlocking() {
+bool SLNetworkManager::syncTimeBlocking() {
     loadFromNVS();
     if (knownNetworks.empty()) return false;
 
@@ -55,7 +55,7 @@ bool NetworkManager::syncTimeBlocking() {
     return false;
 }
 
-void NetworkManager::connectEnterprise(String ssid, String user, String pass) {
+void SLNetworkManager::connectEnterprise(String ssid, String user, String pass) {
     WiFi.disconnect(true);
     WiFi.mode(WIFI_STA);
     esp_wifi_sta_wpa2_ent_set_identity((uint8_t*)user.c_str(), user.length());
@@ -65,18 +65,18 @@ void NetworkManager::connectEnterprise(String ssid, String user, String pass) {
     WiFi.begin(ssid.c_str());
 }
 
-void NetworkManager::connectPersonal(String ssid, String pass) {
+void SLNetworkManager::connectPersonal(String ssid, String pass) {
     WiFi.disconnect(true);
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid.c_str(), pass.c_str());
 }
 
-void NetworkManager::loop() {
+void SLNetworkManager::loop() {
     handleWiFi();
     if (isConnected()) handleNTP();
 }
 
-void NetworkManager::handleWiFi() {
+void SLNetworkManager::handleWiFi() {
     if (knownNetworks.empty()) return;
 
     if (WiFi.status() != WL_CONNECTED) {
@@ -93,7 +93,7 @@ void NetworkManager::handleWiFi() {
     }
 }
 
-void NetworkManager::handleNTP() {
+void SLNetworkManager::handleNTP() {
     if (!_timeSynced || (millis() - _lastTimeSync > 3600000)) {
         configTime(3600, 3600, "pool.ntp.org", "time.google.com");
         struct tm t;
@@ -104,23 +104,23 @@ void NetworkManager::handleNTP() {
     }
 }
 
-void NetworkManager::updateFirmware(const char* firmwareUrl) {
+void SLNetworkManager::updateFirmware(const char* firmwareUrl) {
     if (WiFi.status() != WL_CONNECTED) return;
     WiFiClientSecure client;
     client.setInsecure();
     httpUpdate.update(client, firmwareUrl);
 }
 
-bool NetworkManager::isConnected() { return WiFi.status() == WL_CONNECTED; }
-bool NetworkManager::isTimeSynced() { return _timeSynced; }
-String NetworkManager::getIP() { return WiFi.localIP().toString(); }
-int32_t NetworkManager::getRSSI() { return WiFi.RSSI(); }
-String NetworkManager::getCurrentSSID() { return WiFi.SSID(); }
-String NetworkManager::getStoredSSID() { return WiFi.SSID(); }
-String NetworkManager::getStoredUser() { return ""; }
-String NetworkManager::getStoredDeviceID() { return WiFi.macAddress(); }
+bool SLNetworkManager::isConnected() { return WiFi.status() == WL_CONNECTED; }
+bool SLNetworkManager::isTimeSynced() { return _timeSynced; }
+String SLNetworkManager::getIP() { return WiFi.localIP().toString(); }
+int32_t SLNetworkManager::getRSSI() { return WiFi.RSSI(); }
+String SLNetworkManager::getCurrentSSID() { return WiFi.SSID(); }
+String SLNetworkManager::getStoredSSID() { return WiFi.SSID(); }
+String SLNetworkManager::getStoredUser() { return ""; }
+String SLNetworkManager::getStoredDeviceID() { return WiFi.macAddress(); }
 
-String NetworkManager::fetchFile(const char* url) {
+String SLNetworkManager::fetchFile(const char* url) {
     if (WiFi.status() != WL_CONNECTED) return "";
     HTTPClient http;
     WiFiClientSecure client;
@@ -138,13 +138,13 @@ String NetworkManager::fetchFile(const char* url) {
     return "";
 }
 
-struct tm NetworkManager::getTimeInfo() {
+struct tm SLNetworkManager::getTimeInfo() {
     struct tm t = {0};
     getLocalTime(&t);
     return t;
 }
 
-bool NetworkManager::saveCredentials(String ssid, String pass, String user, String devid, String& debugMsg) {
+bool SLNetworkManager::saveCredentials(String ssid, String pass, String user, String devid, String& debugMsg) {
     // Már nem wifi.txt-be ír, NVS-be menti
     store.setWifi(ssid, pass);
     if (user.length() > 0) store.setWifiUser(user);
@@ -153,7 +153,7 @@ bool NetworkManager::saveCredentials(String ssid, String pass, String user, Stri
     return true;
 }
 
-void NetworkManager::loadWifiTxt() {
+void SLNetworkManager::loadWifiTxt() {
     // Legacy – már nem használjuk, NVS-ből töltünk
     loadFromNVS();
 }

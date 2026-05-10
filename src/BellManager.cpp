@@ -41,7 +41,7 @@ const uint8_t BellManager::HARDCODED_DEFAULT_COUNT =
 // Konstruktor / begin
 // ---------------------------------------------------------------------------
 BellManager::BellManager(AudioManager& audioMgr,
-                         NetworkManager& netMgr,
+                         SLNetworkManager& netMgr,
                          BackendClient& be)
     : audio(audioMgr), network(netMgr), backend(be) {}
 

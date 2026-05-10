@@ -1,7 +1,7 @@
 #include "DeviceAgent.h"
 
 void DeviceAgent::begin(
-    NetworkManager& net,
+    SLNetworkManager& net,
     AudioManager& audio,
     UIManager& ui,
     BackendClient& backend,
