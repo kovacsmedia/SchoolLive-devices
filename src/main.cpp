@@ -33,7 +33,20 @@ bool inProvisioningMode = false;
 
 TaskHandle_t TaskNetworkHandle = nullptr;
 
+// --- I2S arbitration callbackok ---
+
+void beforeLocalPlayback() {
+    Serial.println("[MAIN] beforeLocalPlayback: pause Snapcast");
+    snapClient.pauseForLocalPlayback();
+}
+
+void afterLocalPlayback() {
+    Serial.println("[MAIN] afterLocalPlayback: resume Snapcast");
+    snapClient.resumeAfterLocalPlayback();
+}
+
 // --- Provisioning task (core 0) ---
+
 void TaskProvisioning(void* pvParameters) {
     (void)pvParameters;
 
@@ -81,6 +94,7 @@ void TaskProvisioning(void* pvParameters) {
 }
 
 // --- Normál network task (core 0) ---
+
 void TaskNetwork(void* pvParameters) {
     (void)pvParameters;
 
@@ -98,12 +112,9 @@ void TaskNetwork(void* pvParameters) {
          *   snapPort
          *
          * Amint ezek megvannak, elindítjuk a Snapcast TCP klienst.
-         * Ettől kezdve a hang nem PLAY_URL-ből, hanem Snapcast PCM streamből jön.
          */
         if (backend.hasSnapConfig() && !snapClient.isStarted()) {
             Serial.println("[MAIN] Starting Snapcast client from backend config");
-
-            audioManager.stop();
 
             snapClient.begin(
                 backend.getSnapHost(),
@@ -115,8 +126,12 @@ void TaskNetwork(void* pvParameters) {
             snapClient.start();
         }
 
-        // BellManager HTTP hívásai ne ütközzenek a régi audio SSL sockettel.
-        // Snapcast mellett ez később egyszerűsíthető lesz.
+        /*
+         * Offline csengetés:
+         * a BellManager továbbra is használhatja az AudioManager.playFile()-t.
+         * Az AudioManager ilyenkor a callbackeken át átmenetileg leállítja
+         * a Snapcast I2S-t, majd EOF után visszaengedi.
+         */
         if (!audioManager.isBusy() && !audioManager.isInCooldown()) {
             bellManager.loop();
         }
@@ -126,6 +141,7 @@ void TaskNetwork(void* pvParameters) {
 }
 
 // --- Provisioning mód ---
+
 void startProvisioningMode() {
     inProvisioningMode = true;
 
@@ -146,6 +162,7 @@ void startProvisioningMode() {
 }
 
 // --- Normál mód ---
+
 void startNormalMode() {
     inProvisioningMode = false;
 
@@ -193,6 +210,7 @@ void startNormalMode() {
 }
 
 // --- SETUP ---
+
 void setup() {
     Serial.begin(115200);
     delay(500);
@@ -210,6 +228,15 @@ void setup() {
     store.begin();
 
     audioManager.begin(&store);
+
+    /*
+     * I2S arbitration:
+     * helyi/offline csengetés idejére a Snapcast engedje el az I2S-t.
+     */
+    audioManager.setI2SCallbacks(
+        beforeLocalPlayback,
+        afterLocalPlayback
+    );
 
     uiManager = new UIManager(audioManager, networkManager, bellManager, store);
     uiManager->begin();
@@ -236,13 +263,9 @@ void setup() {
 }
 
 // --- LOOP (core 1) ---
+
 void loop() {
     if (!inProvisioningMode) {
-        /*
-         * A régi AudioManager loop egyelőre marad,
-         * mert a helyi csengőhang / meglévő UI logika még hivatkozhat rá.
-         * A Snapcast hang viszont már külön taskban, közvetlen I2S-en fut.
-         */
         audioManager.loop();
         uiManager->loop();
     } else {
