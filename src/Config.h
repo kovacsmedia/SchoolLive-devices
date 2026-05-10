@@ -43,6 +43,6 @@
 
 // --- DEVICE ---
 #define DEVICE_KEY_DEFAULT ""
-#define FW_VERSION "3.5"
+#define FW_VERSION "S3.55"
 
 #endif
