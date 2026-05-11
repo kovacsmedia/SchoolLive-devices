@@ -95,6 +95,27 @@ int32_t reset_latency_buffer(void);
 int32_t server_now(int64_t *sNow, int64_t *diff2Server);
 
 int32_t pcm_chunk_queue_msg_waiting(void);
+
+/**
+ * SchoolLive integráció:
+ *
+ * Lokális (offline) audio lejátszás idejére fel kell függesztenünk a
+ * player_task I2S írását, hogy az AudioManager szabadon vegye át az I2S
+ * vezérlést és ne keletkezzen összeakadás (DMA kettős író, glitch).
+ *
+ * - player_pause(): vTaskSuspend a player_task-on. A http_get_task és a
+ *   chunk feldolgozás tovább fut, a jitter buffer halmozza a chunkokat.
+ *   I2S kimenet kikapcsol, mert a player_task nem ír többet.
+ * - player_resume(): vTaskResume + reset_latency_buffer, hogy a time-sync
+ *   tisztán induljon újra (egy hard resync várható, az ESP-n eddig is így volt).
+ *
+ * Mindkét hívás idempotens. Ha a player_task még nem indult el (még nem
+ * érkezett első settings + codec header), no-op.
+ */
+void player_pause(void);
+void player_resume(void);
+bool player_is_paused(void);
+
 #ifdef __cplusplus
 }
 #endif

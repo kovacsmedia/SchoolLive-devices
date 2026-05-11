@@ -45,6 +45,12 @@ private:
 
     unsigned long _playbackQuietUntilMs = 0;
 
+    // Emergency hangerő-felülírás:
+    // Egy `emergency: true` flaggel érkező audio command (TTS, PLAY_URL, stb.)
+    // bekapcsolja a maximális hangerő override-ot az AudioManager-ben a
+    // playback quiet teljes idejére. Amint a quiet mode lejár, ezt töröljük.
+    bool _emergencyOverrideActive = false;
+
     const unsigned long PLAYBACK_SAFETY_MS = 10000UL;
     const unsigned long DEFAULT_PLAYBACK_QUIET_MS = 60000UL;
 
@@ -61,4 +67,8 @@ private:
 
     unsigned long getPlaybackQuietMs(JsonVariantConst payload) const;
     void enterPlaybackQuiet(JsonVariantConst payload, const String& action);
+
+    // Quiet mode lejárta után, ha emergency volt aktív, töröljük a hangerő-
+    // felülírást. A loop()-ban hívjuk minden ciklusban.
+    void maybeClearEmergencyOverride();
 };

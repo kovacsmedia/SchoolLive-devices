@@ -14,7 +14,7 @@
 #include "BackendClient.h"
 #include "DeviceAgent.h"
 #include "DeviceTelemetry.h"
-#include "SnapcastClientESP32.h"
+#include "SnapcastClient.h"
 
 // --- Globális objektumok ---
 SLNetworkManager networkManager;
@@ -24,7 +24,7 @@ BackendClient backend;
 BellManager bellManager(audioManager, networkManager, backend);
 DeviceAgent agent;
 DeviceTelemetry telemetry;
-SnapcastClientESP32 snapClient;
+SnapcastClient snapClient;
 
 // --- Pointerek – setup()-ban példányosítjuk ---
 UIManager* uiManager = nullptr;
@@ -58,7 +58,7 @@ void tryStartSnapcastClient() {
         backend.getSnapHost(),
         backend.getSnapPort(),
         backend.getDeviceId(),
-        audioManager.getVolume()
+        audioManager.getEffectiveVolume()
     );
 
     snapClient.start();
@@ -299,6 +299,16 @@ void setup() {
         beforeLocalPlayback,
         afterLocalPlayback
     );
+
+    /*
+     * Volume‐láncolás:
+     * a manuális hangerő (gombnyomás vagy backend SET_VOLUME parancs) és az
+     * emergency override is azonnal érvényesüljön a Snapcast streamen.
+     * AudioManager az effective volume-ot (override vagy manual) küldi át.
+     */
+    audioManager.setVolumeChangedCallback([](uint8_t effectiveVol) {
+        snapClient.setLocalVolume(effectiveVol);
+    });
 
     uiManager = new UIManager(audioManager, networkManager, bellManager, store);
     uiManager->begin();

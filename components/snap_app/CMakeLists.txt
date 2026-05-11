@@ -1,0 +1,25 @@
+idf_component_register(
+    SRCS
+        "snap_app.c"
+        "connection_handler.c"
+    INCLUDE_DIRS
+        "include"
+    PRIV_REQUIRES
+        lightsnapcast
+        dsp_processor
+        opus
+        flac
+        custom_board
+        audio_board
+        audio_hal
+        net_functions
+        nvs_flash
+        esp_wifi
+        esp_timer
+        esp_netif
+        esp_event
+        esp_pm
+        driver
+        lwip
+        mdns
+)

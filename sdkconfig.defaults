@@ -41,3 +41,16 @@ CONFIG_MBEDTLS_KEY_EXCHANGE_RSA_PSK=y
 # A futási konfliktus NINCS - senki nem hívja az új API-t. A Fázis 2-3 után
 # (új snap kliens + libhelix MP3) ez a flag eltávolítható.
 CONFIG_I2S_SKIP_LEGACY_CONFLICT_CHECK=y
+
+# Snapcast volume-fix:
+# A snap stream PCM mintáin a dsp_processor SOFT_VOL mechanizmusa végzi
+# a hangerő-skálázást. Ez kell, mert:
+#  - a MAX98357A passzív erősítő, hardveres volume nincs;
+#  - a snap szerver oldali volume kezelést szándékosan kihagyjuk
+#    (server_settings_msg_received force-olja volume=100, muted=false-ra,
+#    így a backend mute targeting nem zavarja össze a player_task indulását);
+#  - a kliens manuális (1-10) hangerejét tehát kizárólag PCM-szinten
+#    érvényesítjük, a dsp_processor_set_volome()-on át.
+# E két flag nélkül a Snapcast stream MINDIG max hangerőn szól.
+CONFIG_USE_DSP_PROCESSOR=y
+CONFIG_SNAPCLIENT_USE_SOFT_VOL=y

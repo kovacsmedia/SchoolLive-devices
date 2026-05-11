@@ -146,6 +146,14 @@ static void player_task(void *pvParameters);
 bool gotSettings = false;
 bool playerstarted = false;
 
+/*
+ * SchoolLive: a lokális (offline) audio (TTS, MP3, mintatészta) lejátszás
+ * idejére fel kell függeszteni az I2S írást. A player_task ekkor `Suspended`
+ * állapotban van, a `chunk_task` és a `http_get_task` viszont továbbra is
+ * fut, így a Snapcast szerver oldalon nincs TCP backpressure.
+ */
+static volatile bool s_player_paused = false;
+
 extern void audio_set_mute(bool mute);
 extern void audio_dac_enable(bool enabled);
 
@@ -2167,5 +2175,51 @@ static void player_task(void *pvParameters) {
   ESP_LOGI(TAG, "stop player done");
   playerTaskHandle = NULL;
   vTaskDelete(NULL);
+}
+
+// ─── SchoolLive: pause / resume player_task ────────────────────────────────
+
+void player_pause(void) {
+  if (s_player_paused) return;
+
+  if (playerTaskHandle == NULL) {
+    /*
+     * A player_task még nem indult el (settings/codec header még nem érkezett).
+     * Csak a flagot állítjuk be — a player_task indulásakor majd átveszi.
+     * Itt nincs mit suspendálni.
+     */
+    s_player_paused = true;
+    ESP_LOGI(TAG, "player_pause: player_task not running yet, flag set");
+    return;
+  }
+
+  s_player_paused = true;
+  vTaskSuspend(playerTaskHandle);
+  ESP_LOGI(TAG, "player_pause: player_task suspended");
+}
+
+void player_resume(void) {
+  if (!s_player_paused) return;
+
+  s_player_paused = false;
+
+  if (playerTaskHandle == NULL) {
+    ESP_LOGI(TAG, "player_resume: player_task not running, flag cleared");
+    return;
+  }
+
+  /*
+   * Resume előtt resetelünk: a latency buffer és a time-sync filterek
+   * a pause alatt elavulttá váltak. Egy hard resync amúgy is várható
+   * az első chunknál.
+   */
+  reset_latency_buffer();
+
+  vTaskResume(playerTaskHandle);
+  ESP_LOGI(TAG, "player_resume: player_task resumed, latency buffer reset");
+}
+
+bool player_is_paused(void) {
+  return s_player_paused;
 }
 

@@ -128,21 +128,68 @@ void AudioManager::setVolume(uint8_t vol) {
 
     currentVolume = vol;
 
-    uint8_t internalVolume = map(currentVolume, 1, 10, 2, 21);
+    if (_store) {
+        _store->setVolume(vol);
+    }
+
+    Serial.printf("[AUDIO] Manual volume=%d (override=%d)\n", currentVolume, _volumeOverride);
+
+    /*
+     * A tényleges kimenetre az effective volume érvényesül:
+     * - ha override aktív → override
+     * - egyébként → currentVolume
+     *
+     * Tehát override alatt a felhasználó még nyomhat gombokat, mi tároljuk
+     * a manuális beállítást, de a Snapcast / helyi MP3 az override-ot követi
+     * amíg az aktív.
+     */
+    applyEffectiveVolume();
+}
+
+uint8_t AudioManager::getVolume() const {
+    return currentVolume;
+}
+
+uint8_t AudioManager::getEffectiveVolume() const {
+    return _volumeOverride > 0 ? _volumeOverride : currentVolume;
+}
+
+void AudioManager::setVolumeOverride(uint8_t vol) {
+    if (vol < 1) vol = 1;
+    if (vol > 10) vol = 10;
+
+    if (_volumeOverride == vol) return;
+
+    _volumeOverride = vol;
+    Serial.printf("[AUDIO] Volume override ON: %d (manual stays %d)\n", _volumeOverride, currentVolume);
+
+    applyEffectiveVolume();
+}
+
+void AudioManager::clearVolumeOverride(void) {
+    if (_volumeOverride == 0) return;
+
+    _volumeOverride = 0;
+    Serial.printf("[AUDIO] Volume override OFF, back to manual: %d\n", currentVolume);
+
+    applyEffectiveVolume();
+}
+
+void AudioManager::applyEffectiveVolume() {
+    uint8_t eff = getEffectiveVolume();
+    uint8_t internalVolume = map(eff, 1, 10, 2, 21);
 
     if (audio) {
         audio->setVolume(internalVolume);
     }
 
-    if (_store) {
-        _store->setVolume(vol);
+    if (_onVolumeChanged) {
+        // A Snapcast oldali skála (0..100) konverziót a SnapcastClient végzi
+        // (setLocalVolume(uint8_t 1..10) → snap_app *10).
+        _onVolumeChanged(eff);
     }
 
-    Serial.printf("[AUDIO] Volume=%d internal=%d\n", currentVolume, internalVolume);
-}
-
-uint8_t AudioManager::getVolume() const {
-    return currentVolume;
+    Serial.printf("[AUDIO] Effective volume=%d internal=%d\n", eff, internalVolume);
 }
 
 void AudioManager::playFile(const char* filename) {

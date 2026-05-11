@@ -23,6 +23,12 @@ void DeviceAgent::loop() {
         return;
     }
 
+    // Ha a quiet mode lejárt és vészhelyzeti override volt aktív, töröljük.
+    // Itt biztos vagyunk, hogy a lejátszás is befejeződött (a quiet mode a
+    // payload duration + safety margin), tehát ekkor visszaadhatjuk a
+    // hangerő-vezérlést a manuálisnak.
+    maybeClearEmergencyOverride();
+
     if (_audio && _audio->isInCooldown()) {
         return;
     }
@@ -263,9 +269,38 @@ void DeviceAgent::enterPlaybackQuiet(JsonVariantConst payload, const String& act
     _lastPollMs = millis();
     _lastBeaconMs = millis();
 
+    /*
+     * Vészhelyzeti hangerő-override:
+     * a backend `emergency: true` flagjére az AudioManager-ben max hangerőt
+     * forszírozunk a teljes quiet mode idejére. A callback a Snapcast
+     * streamre is azonnal érvényesíti.
+     * A manuális hangerő (currentVolume) változatlan marad - a felhasználó
+     * tovább nyomhatja a gombokat, csak nem érvényesül a riasztás alatt.
+     */
+    bool emergency = payload["emergency"].is<bool>() && payload["emergency"].as<bool>();
+
+    if (emergency && _audio) {
+        _audio->setVolumeOverride(10);
+        _emergencyOverrideActive = true;
+        Serial.println("[AGENT] EMERGENCY flag set: volume override -> 10");
+    }
+
     Serial.printf(
-        "[AGENT] Playback quiet mode: action=%s quietMs=%lu\n",
+        "[AGENT] Playback quiet mode: action=%s quietMs=%lu emergency=%d\n",
         action.c_str(),
-        quietMs
+        quietMs,
+        emergency ? 1 : 0
     );
+}
+
+void DeviceAgent::maybeClearEmergencyOverride() {
+    if (!_emergencyOverrideActive) return;
+
+    // Csak akkor töröljük, ha a quiet mode lejárt - a quiet mode aktív
+    // állapotot a fenti `if (isPlaybackQuietActive()) return;` szűrte.
+    if (_audio) {
+        _audio->clearVolumeOverride();
+    }
+    _emergencyOverrideActive = false;
+    Serial.println("[AGENT] EMERGENCY override cleared after playback quiet expired");
 }
