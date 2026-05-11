@@ -1,4 +1,0 @@
-CompileFlags:
-  CompilationDatabase: build
-  Remove: [-m*, -f*]
-InlayHints: {Enabled: false}

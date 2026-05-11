@@ -1199,6 +1199,165 @@ CONFIG_ARDUHAL_PARTITION_SCHEME="default"
 # end of Arduino Configuration
 
 #
+# Audio Board
+#
+# default:
+CONFIG_AUDIO_BOARD_CUSTOM=y
+# default:
+# CONFIG_ESP_LYRAT_V4_3_BOARD is not set
+# default:
+# CONFIG_ESP_LYRAT_V4_2_BOARD is not set
+# default:
+# CONFIG_ESP_LYRATD_MSC_V2_1_BOARD is not set
+# default:
+# CONFIG_ESP_LYRATD_MSC_V2_2_BOARD is not set
+# default:
+# CONFIG_ESP_LYRAT_MINI_V1_1_BOARD is not set
+# default:
+# CONFIG_ESP32_KORVO_DU1906_BOARD is not set
+# default:
+# CONFIG_ESP32_S2_KALUGA_1_V1_2_BOARD is not set
+# default:
+# CONFIG_ESP_AI_THINKER_ES8388_BOARD is not set
+
+#
+# Custom Audio Board
+#
+# default:
+# CONFIG_DAC_PCM51XX is not set
+# default:
+# CONFIG_DAC_PCM5102A is not set
+# default:
+CONFIG_DAC_MA120=y
+# default:
+# CONFIG_DAC_MA120X0 is not set
+# default:
+# CONFIG_DAC_ADAU1961 is not set
+# default:
+# CONFIG_DAC_MAX98357 is not set
+# default:
+# CONFIG_DAC_TAS5805M is not set
+# default:
+# CONFIG_DAC_PT8211 is not set
+
+#
+# DAC I2C control interface
+#
+# default:
+CONFIG_DAC_I2C_SDA=21
+# default:
+CONFIG_DAC_I2C_SCL=22
+# default:
+CONFIG_DAC_I2C_ADDR=0x20
+# end of DAC I2C control interface
+
+#
+# I2S master interface
+#
+# default:
+CONFIG_MASTER_I2S_MCLK_PIN=0
+# default:
+CONFIG_MASTER_I2S_BCK_PIN=23
+# default:
+CONFIG_MASTER_I2S_LRCK_PIN=2
+# default:
+CONFIG_MASTER_I2S_DATAOUT_PIN=14
+# end of I2S master interface
+
+# default:
+CONFIG_MERUS_NERR_PIN=21
+# default:
+CONFIG_MERUS_NCLIP_PIN=22
+
+#
+# Merus MA120 interface Configuration
+#
+# default:
+CONFIG_MA120_ENABLE_PIN=16
+# default:
+CONFIG_MA120_NMUTE_PIN=2
+# end of Merus MA120 interface Configuration
+
+#
+# Logic-Level-Settings
+#
+# default:
+# CONFIG_INVERT_MCLK_LEVEL is not set
+# default:
+# CONFIG_INVERT_WORD_SELECT_LEVEL is not set
+# default:
+# CONFIG_INVERT_BCLK_LEVEL is not set
+# end of Logic-Level-Settings
+# end of Custom Audio Board
+# end of Audio Board
+
+#
+# ESP32 DSP processor config
+#
+# default:
+# CONFIG_USE_DSP_PROCESSOR is not set
+# end of ESP32 DSP processor config
+
+#
+# SNTP Configuration
+#
+# default:
+CONFIG_SNTP_TIMEZONE="UTC"
+# default:
+CONFIG_SNTP_SERVER="pool.ntp.org"
+# end of SNTP Configuration
+
+#
+# Snapclient Ethernet Configuration
+#
+# default:
+CONFIG_ENV_GPIO_RANGE_MIN=0
+# default:
+CONFIG_ENV_GPIO_RANGE_MAX=48
+# default:
+CONFIG_ENV_GPIO_IN_RANGE_MAX=48
+# default:
+CONFIG_ENV_GPIO_OUT_RANGE_MAX=48
+# default:
+# CONFIG_SNAPCLIENT_USE_SPI_ETHERNET is not set
+# end of Snapclient Ethernet Configuration
+
+#
+# Wifi Configuration
+#
+# default:
+# CONFIG_ENABLE_WIFI_PROVISIONING is not set
+# default:
+CONFIG_WIFI_SSID="myssid"
+# default:
+CONFIG_WIFI_PASSWORD="mypassword"
+# default:
+# CONFIG_WIFI_AUTH_WEP is not set
+# default:
+# CONFIG_WIFI_AUTH_WPA_PSK is not set
+# default:
+# CONFIG_WIFI_AUTH_WPA2_PSK is not set
+# default:
+# CONFIG_WIFI_AUTH_WPA_WPA2_PSK is not set
+# default:
+CONFIG_WIFI_AUTH_WPA2_WPA3_PSK=y
+# default:
+# CONFIG_WIFI_AUTH_ENTERPRISE is not set
+# default:
+# CONFIG_WIFI_AUTH_WPA2_ENTERPRISE is not set
+# default:
+# CONFIG_WIFI_AUTH_WPA3_PSK is not set
+# default:
+# CONFIG_WIFI_AUTH_WPA3_ENT_192 is not set
+# default:
+# CONFIG_WIFI_AUTH_WAPI_PSK is not set
+# default:
+# CONFIG_WIFI_AUTH_OWE is not set
+# default:
+CONFIG_WIFI_MAXIMUM_RETRY=5
+# end of Wifi Configuration
+
+#
 # ESP Speech Recognition
 #
 # default:
@@ -4168,6 +4327,35 @@ CONFIG_WIFI_PROV_STA_ALL_CHANNEL_SCAN=y
 # default:
 # CONFIG_WIFI_PROV_STA_FAST_SCAN is not set
 # end of Wi-Fi Provisioning Manager
+
+#
+# esp32-udp-logger
+#
+# default:
+CONFIG_ESP32_UDP_LOGGER_ENABLED=y
+# default:
+CONFIG_ESP32_UDP_LOGGER_PORT=9999
+# default:
+CONFIG_ESP32_UDP_LOGGER_RX_PORT=9998
+# default:
+CONFIG_ESP32_UDP_LOGGER_MAX_LINE=256
+# default:
+CONFIG_ESP32_UDP_LOGGER_QUEUE_DEPTH=32
+# default:
+CONFIG_ESP32_UDP_LOGGER_TASK_STACK=3072
+# default:
+CONFIG_ESP32_UDP_LOGGER_TASK_PRIO=3
+# default:
+CONFIG_ESP32_UDP_LOGGER_DROP_ON_FULL=y
+# default:
+CONFIG_ESP32_UDP_LOGGER_PREFIX_DEVICE=y
+# default:
+CONFIG_ESP32_UDP_LOGGER_ENABLE_MDNS=y
+# default:
+CONFIG_ESP32_UDP_LOGGER_AUTOSTART_INIT_NETIF=y
+# default:
+CONFIG_ESP32_UDP_LOGGER_SERVICE=y
+# end of esp32-udp-logger
 
 #
 # cJSON
