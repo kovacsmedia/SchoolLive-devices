@@ -22,6 +22,32 @@
 
 #if SOC_I2S_SUPPORTS_APLL
 #include "clk_ctrl_os.h"
+#else
+// ESP32-S3 / C3 / C6 etc. nem támogatják az APLL-t (Audio PLL fine-tuning a
+// sample rate-en). Az APLL-alapú drift kompenzáció helyett kizárólag a
+// sample insert/drop mechanizmusra hagyatkozunk (USE_SAMPLE_INSERTION).
+// A meglévő kód APLL-hívásai itt no-op stubokkal vannak helyettesítve, hogy
+// a fordítás átmenjen, runtime-ban viszont a kódrészek "nem támogatott"
+// ágon át gyakorlatilag tétlenek lesznek.
+#define I2S_CLK_SRC_APLL I2S_CLK_SRC_DEFAULT
+static inline uint32_t rtc_clk_apll_coeff_calc(uint32_t freq_hz,
+                                                uint32_t *o_div,
+                                                uint32_t *sdm0,
+                                                uint32_t *sdm1,
+                                                uint32_t *sdm2) {
+    (void)freq_hz;
+    if (o_div) *o_div = 0;
+    if (sdm0)  *sdm0  = 0;
+    if (sdm1)  *sdm1  = 0;
+    if (sdm2)  *sdm2  = 0;
+    return 0;  // 0 = nem támogatott / nincs APLL coefficient
+}
+static inline void rtc_clk_apll_coeff_set(uint32_t o_div,
+                                           uint32_t sdm0,
+                                           uint32_t sdm1,
+                                           uint32_t sdm2) {
+    (void)o_div; (void)sdm0; (void)sdm1; (void)sdm2;
+}
 #endif
 
 #if CONFIG_PM_ENABLE
