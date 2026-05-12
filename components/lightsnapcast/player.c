@@ -63,7 +63,10 @@ static inline void rtc_clk_apll_coeff_set(uint32_t o_div,
 #include "player.h"
 #include "snapcast.h"
 
-#define USE_SAMPLE_INSERTION CONFIG_USE_SAMPLE_INSERTION
+// Sample insertion ON for ESP32-S3: APLL fine-tune (rtc_clk_apll_coeff_calc) is
+// not implemented in ESP-IDF for S3, so adjust_apll() can't compensate drift.
+// Sample insertion works on any chip.
+#define USE_SAMPLE_INSERTION 1
 
 #define SYNC_TASK_PRIORITY 20
 #define SYNC_TASK_CORE_ID 1  // tskNO_AFFINITY
@@ -1813,7 +1816,9 @@ static void player_task(void *pvParameters) {
 
       const int64_t shortOffset = SHORT_OFFSET;  // µs, softsync
       const int64_t miniOffset = MINI_OFFSET;    // µs, softsync
-      const int64_t hardResyncThreshold = 2000;  // µs, hard sync
+      // Raised from 2000us: with measurement jitter ~20-100ms (network), 2ms was
+      // unreachable and caused constant hard resyncs every ~2s (median fill).
+      const int64_t hardResyncThreshold = 50000;  // µs, hard sync
 
       if (initialSync == 1) {
         if (size == 0) {
