@@ -7,6 +7,7 @@ idf_component_register(
     PRIV_REQUIRES
         lightsnapcast
         dsp_processor
+        dsp_processor_settings
         opus
         flac
         custom_board
