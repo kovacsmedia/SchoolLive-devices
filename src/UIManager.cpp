@@ -1,4 +1,6 @@
 #include "UIManager.h"
+#include "DeviceAgent.h"
+#include "SnapcastClient.h"
 
 // --- INTERRUPT ---
 volatile bool flagL = false;
@@ -350,20 +352,48 @@ void UIManager::drawClockScreen() {
         display.print(t.tm_min);
     }
     else if (timeValid) {
-        display.setTextSize(1);
-        display.setCursor(0, 0);
-        String ssid = network.getCurrentSSID();
-        display.print(ssid);
-        int32_t rssi = network.getRSSI();
-        int quality = map(rssi, -100, -50, 0, 100);
-        if (quality < 0) quality = 0;
-        if (quality > 100) quality = 100;
-        display.print(" ");
-        display.print(quality);
-        display.print("%");
+        // ── Top-bar: WiFi piktogram + S/N állapotjelzők + bell-time / playback label ──
 
+        int32_t rssi = network.getRSSI();
+        bool wifiUp = network.isConnected();
+        drawWifiIcon(0, 0, wifiUp ? rssi : 0);
+
+        // Snap kapcsolat állapota (S betű + kör)
+        bool snapConnected = (_snap != nullptr) && _snap->isConnected();
+        drawConnIcon(18, 0, 'S', snapConnected);
+
+        // Net (backend) elérhetősége (N betű + kör)
+        bool netOnline = false;
+        if (_tel) {
+            netOnline = _tel->serverReachable
+                && (millis() - _tel->lastServerOkMs) < 60000;
+        }
+        drawConnIcon(38, 0, 'N', netOnline);
+
+        // Jobb fent: aktív lejátszás esetén MESSAGE/RADIO/SIGNAL villogás,
+        // egyébként a következő csengetés időpontja.
+        display.setTextSize(1);
+        const char* label = getPlaybackLabel();
+        if (label) {
+            // 1 Hz villogás: 500 ms látható, 500 ms üres
+            bool visible = ((millis() / 500) % 2) == 0;
+            if (visible) {
+                size_t len = strlen(label);
+                // Jobbra zárás: 6 px char széles + 1 px padding, 128 px szélesség
+                int16_t x = 128 - (int16_t)(len * 6);
+                if (x < 56) x = 56; // ne menjen az ikonok alá
+                display.setCursor(x, 1);
+                display.print(label);
+            }
+        } else {
+            display.setCursor(95, 1);
+            if (settings.bellMode == 0) display.print("MUTE");
+            else                        display.print(bell.getNextEventTimeStr());
+        }
+
+        // ── Középen: óra (változatlan stílus) ─────────────────────────────────
         display.setTextSize(3);
-        display.setCursor(0, 9);
+        display.setCursor(0, 12);
         if (t.tm_hour < 10) display.print("0");
         display.print(t.tm_hour);
         display.print((millis() % 1000) < 500 ? ":" : " ");
@@ -373,11 +403,6 @@ void UIManager::drawClockScreen() {
         display.print(":");
         if (t.tm_sec < 10) display.print("0");
         display.print(t.tm_sec);
-
-        display.setTextSize(1);
-        display.setCursor(95, 0);
-        if (settings.bellMode == 0) display.print("MUTE");
-        else display.print(bell.getNextEventTimeStr());
     }
     else {
         display.setCursor(0, 16);
@@ -469,7 +494,10 @@ void UIManager::drawSplashScreen() {
     display.println("SchoolLive!");
     display.setTextSize(1);
     display.setCursor(0, 20);
-    display.println("SmartSpeaker  V3.5");
+    // Az build-flag FW_VERSION-t használjuk (platformio.ini),
+    // hogy a tényleges firmware-verzió jelenjen meg a boot képernyőn.
+    display.print("SmartSpeaker  ");
+    display.println(FW_VERSION);
     display.display();
 }
 
@@ -520,4 +548,82 @@ void UIManager::updateProvisioningDisplay(const String& mac, const String& ip, c
 
 void UIManager::setTelemetry(DeviceTelemetry* tel) {
     _tel = tel;
+}
+
+void UIManager::setAgent(DeviceAgent* agent) {
+    _agent = agent;
+}
+
+void UIManager::setSnapClient(SnapcastClient* snap) {
+    _snap = snap;
+}
+
+// --- Top-bar piktogram helperek ---
+//
+// Egy 12x10 pixeles WiFi ikon a bal felső sarokban: legalul egy pont, fölötte
+// 3 koncentrikus ív (negyedkör), amelyek a térerő alapján kapcsolódnak be.
+// RSSI thresholdok mobiltelefon-szerű érzetért: -55, -65, -75, -85 dBm.
+void UIManager::drawWifiIcon(int16_t x, int16_t y, int32_t rssi) {
+    // Az alappont mindig látszik (kapcsolatban vagyunk valamilyen szinten).
+    int16_t cx = x + 5;
+    int16_t cy = y + 9;
+
+    display.fillCircle(cx, cy, 1, SSD1306_WHITE);
+
+    int bars = 0;
+    if (rssi == 0) {
+        // 0 = nincs WiFi információ → 0 ív
+        bars = 0;
+    } else if (rssi > -60) bars = 3;
+    else if (rssi > -70) bars = 2;
+    else if (rssi > -80) bars = 1;
+    else                 bars = 0;
+
+    // drawCircleHelper cornername: 0x01 = top-right, 0x02 = top-left.
+    // 0x03 = teljes felső félkör (a ))) ívek).
+    if (bars >= 1) display.drawCircleHelper(cx, cy, 3, 0x03, SSD1306_WHITE);
+    if (bars >= 2) display.drawCircleHelper(cx, cy, 5, 0x03, SSD1306_WHITE);
+    if (bars >= 3) display.drawCircleHelper(cx, cy, 7, 0x03, SSD1306_WHITE);
+}
+
+// 'S' / 'N' betű + kör. Aktív állapot = kitöltött kör.
+// 15 pixel széles, 9 pixel magas blokk: 6 px betű + 1 px gap + 8 px kör.
+void UIManager::drawConnIcon(int16_t x, int16_t y, char letter, bool active) {
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(x, y + 1);
+    display.print(letter);
+
+    int16_t cx = x + 11;
+    int16_t cy = y + 4;
+    if (active) {
+        display.fillCircle(cx, cy, 3, SSD1306_WHITE);
+    } else {
+        display.drawCircle(cx, cy, 3, SSD1306_WHITE);
+    }
+}
+
+// Aktív lejátszás akció címke meghatározása a DeviceAgent state-jéből.
+// Visszatérési érték nullptr = nincs aktív lejátszás (bell time látszik).
+const char* UIManager::getPlaybackLabel() const {
+    if (!_agent || !_agent->isPlaybackQuietActive()) return nullptr;
+
+    String action = _agent->getCurrentPlaybackAction();
+
+    if (action == "TTS"          ||
+        action == "PLAY_URL"     ||
+        action == "VOICE_MESSAGE"||
+        action == "PLAY_AUDIO"   ||
+        action == "MIC_AUDIO") {
+        return "MESSAGE";
+    }
+    if (action == "RADIO") {
+        return "RADIO";
+    }
+    if (action == "BELL" || action == "SIGNAL") {
+        return "SIGNAL";
+    }
+
+    // Ismeretlen audio action - fallback MESSAGE-re.
+    return "MESSAGE";
 }

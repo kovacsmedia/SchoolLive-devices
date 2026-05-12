@@ -28,6 +28,11 @@ public:
     bool isPlaybackQuietActive() const;
     unsigned long playbackQuietRemainingMs() const;
 
+    // A jelenleg játszó audio command action-je (pl. "TTS", "RADIO", "BELL").
+    // Csak akkor érvényes, ha isPlaybackQuietActive() == true; egyébként üres.
+    // A UIManager ezt használja a MESSAGE/RADIO/SIGNAL villogás felirathoz.
+    const String& getCurrentPlaybackAction() const { return _currentPlaybackAction; }
+
 private:
     SLNetworkManager* _net = nullptr;
     AudioManager* _audio = nullptr;
@@ -44,6 +49,7 @@ private:
     const unsigned long POLL_INTERVAL_MS = 1500UL;
 
     unsigned long _playbackQuietUntilMs = 0;
+    String _currentPlaybackAction;
 
     // Emergency hangerő-felülírás:
     // Egy `emergency: true` flaggel érkező audio command (TTS, PLAY_URL, stb.)

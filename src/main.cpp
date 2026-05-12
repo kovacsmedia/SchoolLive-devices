@@ -260,6 +260,12 @@ void startNormalMode() {
     agent.begin(networkManager, audioManager, *uiManager, backend, telemetry);
     agent.setFirmwareVersion(String(FW_VERSION));
 
+    // A UI top-bar állapotjelzőihez (S kör = snap connected, MESSAGE/RADIO/SIGNAL
+    // villogás aktív lejátszás esetén) szükségesek a DeviceAgent és a
+    // SnapcastClient pointerek.
+    uiManager->setAgent(&agent);
+    uiManager->setSnapClient(&snapClient);
+
     xTaskCreatePinnedToCore(
         TaskNetwork,
         "NetworkTask",

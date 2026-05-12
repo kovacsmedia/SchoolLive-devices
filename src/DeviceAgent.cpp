@@ -261,6 +261,7 @@ void DeviceAgent::enterPlaybackQuiet(JsonVariantConst payload, const String& act
     unsigned long quietMs = getPlaybackQuietMs(payload);
 
     _playbackQuietUntilMs = millis() + quietMs;
+    _currentPlaybackAction = action;
 
     /*
      * Azonnal eltoljuk a következő poll/beacon időpontokat,

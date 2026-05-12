@@ -1816,9 +1816,18 @@ static void player_task(void *pvParameters) {
 
       const int64_t shortOffset = SHORT_OFFSET;  // µs, softsync
       const int64_t miniOffset = MINI_OFFSET;    // µs, softsync
-      // Raised from 2000us: with measurement jitter ~20-100ms (network), 2ms was
-      // unreachable and caused constant hard resyncs every ~2s (median fill).
-      const int64_t hardResyncThreshold = 50000;  // µs, hard sync
+      // Raised from 2000us to 200000us:
+      // A 2ms threshold a network jitter (~20-100ms TIME message zaj) miatt
+      // soha nem volt elérhető és minden ~2s hard resync-et okozott.
+      // Az 50ms-os threshold is konzisztensen 100-120ms-os mérési jittert
+      // látott (a snap szerver oldali silence ffmpeg `-re` ütemezésének és
+      // a TIME message median filter periodikus update-jének kombinációja).
+      //
+      // A 200ms-os threshold mellett csak nagy, valódi szakadásra triggerel
+      // hard resync, a normál mérési jittert pedig a USE_SAMPLE_INSERTION
+      // alapú sample-szintű drift korrekció (1 sample/chunk = ~21us/20ms
+      // = 0.1% korrekciós sebesség) lassan, hallhatatlanul lekezeli.
+      const int64_t hardResyncThreshold = 200000;  // µs, hard sync
 
       if (initialSync == 1) {
         if (size == 0) {

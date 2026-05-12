@@ -13,6 +13,9 @@
 #include "DeviceTelemetry.h"
 #include "PersistStore.h"
 
+class DeviceAgent;
+class SnapcastClient;
+
 enum UIState { STATE_NORMAL, STATE_MENU, STATE_NETRADIO, STATE_PROVISIONING };
 enum MenuPage { MENU_MAIN, MENU_SUB };
 
@@ -35,6 +38,13 @@ public:
     void begin();
     void loop();
     void setTelemetry(DeviceTelemetry* tel);
+
+    // Új top-bar állapotjelzőkhöz: a UI olvassa a Snapcast kapcsolat
+    // állapotát (S kör) és a DeviceAgent aktív lejátszás akcióját
+    // (MESSAGE/RADIO/SIGNAL villogás a bell-time helyett).
+    void setAgent(DeviceAgent* agent);
+    void setSnapClient(SnapcastClient* snap);
+
     void drawBootStatus(String status, String details);
     void enterProvisioningMode();
     void updateProvisioningDisplay(const String& mac, const String& ip, const String& status);
@@ -50,6 +60,8 @@ private:
     MenuPage menuPage = MENU_MAIN;
     Settings settings;
     DeviceTelemetry* _tel = nullptr;
+    DeviceAgent* _agent = nullptr;
+    SnapcastClient* _snap = nullptr;
 
     int8_t mainMenuIndex = 0;
     int8_t subMenuIndex = 0;
@@ -107,6 +119,16 @@ private:
     void drawVolumeScreen();
     void drawStatusScreen();
     void drawSplashScreen();
+
+    // Új top-bar pictogram helperek:
+    // - drawWifiIcon: mobiltelefon-stílusú ))) piktogram a térerő alapján (0-3 ív)
+    // - drawConnIcon: 'S' / 'N' betű + kör (üres = inaktív, kitöltött = aktív)
+    void drawWifiIcon(int16_t x, int16_t y, int32_t rssi);
+    void drawConnIcon(int16_t x, int16_t y, char letter, bool active);
+
+    // Aktív lejátszás akció szöveg a bell-time helyén (TTS→MESSAGE, RADIO→RADIO,
+    // BELL→SIGNAL). NULL/üres = nincs aktív lejátszás, a bell time látszik.
+    const char* getPlaybackLabel() const;
 
     void applyDimming();
 };
