@@ -746,7 +746,6 @@ void handle_chunk_message(codec_type_t codec, snapcastSetting_t *scSet,
     case OPUS: {
       int frame_size = -1;
       int samples_per_frame;
-      int samples_per_frame_orig;
       opus_int16 *audio = NULL;
 
       samples_per_frame =
@@ -756,7 +755,6 @@ void handle_chunk_message(codec_type_t codec, snapcastSetting_t *scSet,
                  "couldn't get samples per frame count "
                  "of packet");
       }
-      samples_per_frame_orig = samples_per_frame;
 
       scSet->chkInFrames = samples_per_frame;
 
@@ -797,21 +795,7 @@ void handle_chunk_message(codec_type_t codec, snapcastSetting_t *scSet,
 
       pcm_chunk_message_t *new_pcmChunk = NULL;
 
-      {
-        static uint32_t s_opus_chunk_seq = 0;
-        static int64_t s_opus_last_ts_us = 0;
-        int64_t ts_us = (int64_t)wire_chnk->timestamp.sec * 1000000LL +
-                        (int64_t)wire_chnk->timestamp.usec;
-        int64_t delta_us = (s_opus_chunk_seq == 0) ? 0 : (ts_us - s_opus_last_ts_us);
-        if ((s_opus_chunk_seq < 10) || ((s_opus_chunk_seq % 50) == 0)) {
-          ESP_LOGW(TAG,
-                   "OPUS #%lu spf_hdr=%d decoded=%d alloc_bytes=%d ts_delta_us=%lld enc_bytes=%d",
-                   s_opus_chunk_seq, samples_per_frame_orig, frame_size,
-                   (int)bytes, delta_us, (int)wire_chnk->size);
-        }
-        s_opus_last_ts_us = ts_us;
-        s_opus_chunk_seq++;
-      }
+      // ESP_LOGW(TAG, "OPUS decode: %d", frame_size);
 
       if (allocate_pcm_chunk_memory(&new_pcmChunk, bytes) < 0) {
         *pcmData = NULL;
