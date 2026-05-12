@@ -736,6 +736,12 @@ void codec_header_received(char *codecPayload, uint32_t codecPayloadLen,
   // }
 }
 
+// PCM audio activity detection: a handle_chunk_message() OPUS dekódolás után
+// frissíti, a snap_app_is_audio_active() pedig olvassa. A változó deklarációja
+// itt áll a handle_chunk_message() előtt, mert a C file-scope szabály szerint
+// a statikus változót a használat helye előtt kell definiálni.
+static volatile uint32_t s_snap_last_audio_active_ms = 0;
+
 /**
  *
  */
@@ -792,6 +798,30 @@ void handle_chunk_message(codec_type_t codec, snapcastSetting_t *scSet,
 
       free(decoderChunk.inData);
       decoderChunk.inData = NULL;
+
+      // ── PCM audio activity detection ─────────────────────────────────────
+      //
+      // Egy egyszerű szint-alapú detector: ha 3 mintából (eleje/közepe/vége)
+      // bármelyik |amplitúdó| > küszöb, akkor "aktív audio" van. A küszöb
+      // 200 (16-bit -> kb. -40 dBFS) kellően alacsony hogy a halk beszédet
+      // is detektálja, de a digitális csendet (silence-ffmpeg = 0 minták)
+      // kizárja.
+      // A snap_app_is_audio_active() egy 500 ms-os hold-time-ot ad vissza,
+      // így a beszéd-szünetek (kis 100-200 ms-os gap) is "aktívnak" számítanak.
+      if (frame_size > 0 && audio != NULL) {
+        int n = frame_size * scSet->ch;
+        int16_t s0 = audio[0];
+        int16_t s1 = audio[n / 2];
+        int16_t s2 = audio[n - 1];
+        int16_t a0 = s0 < 0 ? -s0 : s0;
+        int16_t a1 = s1 < 0 ? -s1 : s1;
+        int16_t a2 = s2 < 0 ? -s2 : s2;
+        int16_t peak = (a0 > a1) ? a0 : a1;
+        if (a2 > peak) peak = a2;
+        if (peak > 200) {
+          s_snap_last_audio_active_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        }
+      }
 
       pcm_chunk_message_t *new_pcmChunk = NULL;
 
@@ -1399,6 +1429,8 @@ static void dac_control_task(audio_board_handle_t board_handle,
 static volatile bool s_snap_running = false;
 static QueueHandle_t s_snap_audioQHdl = NULL;
 static TaskHandle_t  s_snap_dac_task = NULL;
+// `s_snap_last_audio_active_ms` deklarációja a handle_chunk_message() előtt
+// található - a snap_app_is_audio_active() lent ezt olvassa.
 
 // Az aktív snap konfiguráció. snap_app_start() másolja át, a stringek
 // pointerei a hívó által biztosított storage-ra mutatnak - a hívónak
@@ -1585,3 +1617,12 @@ esp_err_t snap_app_set_local_volume(uint8_t volume) {
 
 bool snap_app_is_running(void)   { return s_snap_running; }
 bool snap_app_is_connected(void) { return s_snap_running; /* TODO: TCP state */ }
+
+bool snap_app_is_audio_active(void) {
+  uint32_t last = s_snap_last_audio_active_ms;
+  if (last == 0) return false;
+  uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+  // 500 ms hold-time: a halk beszéd-szünetek (rövid 100-300 ms-os gap-ek)
+  // is "aktívnak" számítanak, így a UI label nem villog ki-be a TTS alatt.
+  return (uint32_t)(now - last) < 500;
+}

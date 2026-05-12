@@ -608,22 +608,42 @@ void UIManager::drawConnIcon(int16_t x, int16_t y, char letter, bool active) {
 const char* UIManager::getPlaybackLabel() const {
     if (!_agent || !_agent->isPlaybackQuietActive()) return nullptr;
 
-    String action = _agent->getCurrentPlaybackAction();
+    /*
+     * A villogó címke (MESSAGE/RADIO/SIGNAL) csak akkor jelenik meg, ha:
+     *   1. A DeviceAgent quiet mode-ban van (épp aktív audio job),
+     *   2. ÉS a snap stream is ténylegesen audio-t küld (nem csendet).
+     *
+     * Az (1) feltétel kötelező, mert nem akarjuk hogy a wifi-zaj vagy a snap
+     * stream általános háttérzaja triggerelje a villogást.
+     * A (2) feltétel akkor zárja le a címkét, ha a tényleges audio már véget
+     * ért (a 60 sec quiet-default jelenleg túl hosszú a 5-15 sec-es TTS-hez).
+     *
+     * Megjegyzés: a rádió STOP_PLAYBACK parancsra az agent.exitPlaybackQuiet()
+     * (ha lesz) majd lekapcsolja az (1)-et; addig a (2) az automatikus
+     * lekapcsoló: amikor a snap stream csendet kap, a label eltűnik.
+     */
+    if (_snap && !_snap->isAudioActive()) return nullptr;
 
-    if (action == "TTS"          ||
-        action == "PLAY_URL"     ||
-        action == "VOICE_MESSAGE"||
-        action == "PLAY_AUDIO"   ||
-        action == "MIC_AUDIO") {
+    String s = _agent->getCurrentPlaybackAction();
+
+    // Direkt MESSAGE/RADIO/SIGNAL címke a backend payload.kind mezőjéből.
+    if (s == "RADIO")   return "RADIO";
+    if (s == "MESSAGE") return "MESSAGE";
+    if (s == "SIGNAL")  return "SIGNAL";
+
+    // Legacy action-eken alapuló fallback (akkor használjuk, ha a backend
+    // nem küld explicit kind/source mezőt).
+    if (s == "TTS"          ||
+        s == "PLAY_URL"     ||
+        s == "VOICE_MESSAGE"||
+        s == "PLAY_AUDIO"   ||
+        s == "MIC_AUDIO") {
         return "MESSAGE";
     }
-    if (action == "RADIO") {
-        return "RADIO";
-    }
-    if (action == "BELL" || action == "SIGNAL") {
+    if (s == "BELL") {
         return "SIGNAL";
     }
 
-    // Ismeretlen audio action - fallback MESSAGE-re.
+    // Ismeretlen audio action → fallback MESSAGE-re.
     return "MESSAGE";
 }

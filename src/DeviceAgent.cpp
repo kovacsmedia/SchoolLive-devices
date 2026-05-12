@@ -70,12 +70,22 @@ void DeviceAgent::sendBeaconIfDue() {
         _tel->fillJson(status);
     }
 
-    _backend->sendBeacon(
+    bool ok = _backend->sendBeacon(
         _audio ? _audio->getVolume() : 50,
         _audio ? _audio->isMuted() : false,
         _fw,
         status
     );
+
+    if (_tel) {
+        if (ok) {
+            _tel->beaconOk++;
+            _tel->markServerOk();
+        } else {
+            _tel->beaconErr++;
+            _tel->markServerErr("beacon failed");
+        }
+    }
 }
 
 void DeviceAgent::pollIfDue() {
@@ -89,7 +99,17 @@ void DeviceAgent::pollIfDue() {
 
     PolledCommand cmd;
 
-    if (!_backend->poll(cmd)) return;
+    bool pollOk = _backend->poll(cmd);
+    if (_tel) {
+        if (pollOk) {
+            _tel->pollOk++;
+            _tel->markServerOk();
+        } else {
+            _tel->pollErr++;
+            _tel->markServerErr("poll failed");
+        }
+    }
+    if (!pollOk) return;
     if (!cmd.hasCommand) return;
 
     executeAndAck(cmd);
@@ -261,7 +281,21 @@ void DeviceAgent::enterPlaybackQuiet(JsonVariantConst payload, const String& act
     unsigned long quietMs = getPlaybackQuietMs(payload);
 
     _playbackQuietUntilMs = millis() + quietMs;
-    _currentPlaybackAction = action;
+
+    /*
+     * UI címke választása:
+     * A backend payloadban opcionálisan küldhet egy explicit `kind` (vagy
+     * `source`) mezőt, ami a tényleges audio típust jelzi (MESSAGE/RADIO/SIGNAL).
+     * Erre azért van szükség, mert pl. a rádió streamet `PLAY_URL` action-nel
+     * küldi a backend, ugyanúgy mint a TTS-t - az action alapján nem
+     * lehetne őket megkülönböztetni.
+     * Sorrendi prioritás: payload.kind > payload.source > action.
+     */
+    String kind = payload["kind"] | "";
+    if (kind.length() == 0) {
+        kind = payload["source"] | "";
+    }
+    _currentPlaybackAction = kind.length() > 0 ? kind : action;
 
     /*
      * Azonnal eltoljuk a következő poll/beacon időpontokat,

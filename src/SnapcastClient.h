@@ -37,6 +37,11 @@ public:
     bool isStarted() const;
     bool isConnected() const;
 
+    // True, ha az utolsó ~500 ms-on belül volt non-silence audio a stream-en.
+    // A UI ezzel dönti el, hogy a MESSAGE/RADIO/SIGNAL villogást mutassa-e
+    // (a silence-ffmpeg által generált 0 minták esetén false).
+    bool isAudioActive() const;
+
     void setLocalVolume(uint8_t volume);
 
     // Helyi/offline MP3 lejátszás miatt I2S átadás az AudioManagernek.

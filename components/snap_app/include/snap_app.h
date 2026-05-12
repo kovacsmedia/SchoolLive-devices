@@ -90,6 +90,19 @@ esp_err_t snap_app_resume(void);
 bool snap_app_is_running(void);
 bool snap_app_is_connected(void);
 
+/**
+ * Audio aktivitás detektor. A snap stream PCM mintáit figyeli, és igazat ad
+ * vissza, ha az utolsó ~500 ms-on belül volt non-silence audio (peak > -40 dBFS).
+ *
+ * Akkor használjuk, amikor el akarjuk dönteni hogy "ténylegesen szól-e most
+ * üzenet/rádió/csengetés", függetlenül a backend playback-quiet idejétől.
+ * Pl. a UI label (MESSAGE/RADIO/SIGNAL villogás) csak akkor aktív, ha
+ * isPlaybackQuietActive() ÉS snap_app_is_audio_active().
+ *
+ * A silence-ffmpeg subprocess (anullsrc) 0 mintákat ad → false-t ad vissza.
+ */
+bool snap_app_is_audio_active(void);
+
 #ifdef __cplusplus
 }
 #endif
