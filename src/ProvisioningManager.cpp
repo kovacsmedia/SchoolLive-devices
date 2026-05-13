@@ -122,12 +122,25 @@ bool ProvisioningManager::doPollStatus() {
   _activatedConfig.wifiPassword = cfg["wifiPassword"].as<String>();
   _activatedConfig.deviceKey    = cfg["deviceKey"].as<String>();
 
-  // WPA2 Enterprise mezők (opcionális, default empty/PERSONAL)
-  _activatedConfig.wifiUser     = cfg["wifiUser"].as<String>();
-  _activatedConfig.wifiSecurity = cfg["wifiSecurity"].as<String>();
-  if (_activatedConfig.wifiSecurity.length() == 0) {
-    _activatedConfig.wifiSecurity = "WPA2_PERSONAL";
-  }
+  // WPA2 Enterprise mezők (opcionális, default empty/PERSONAL).
+  //
+  // FONTOS: az ArduinoJson `.as<String>()` egy `null` JSON value-ra
+  // a "null" négybetűs STRING-et adja vissza, NEM üres stringet. Tehát
+  // a backend `wifiUser: null` / `wifiSecurity: null` után nem `""`-t,
+  // hanem `"null"`-t kapnánk, ami eltörné a security típus check-et.
+  // Ezért explicit nullSafe wrapper:
+  auto safeStr = [&](const char* key, const char* fallback) -> String {
+    JsonVariantConst v = cfg[key];
+    if (v.isNull()) return String(fallback);
+    const char* s = v.as<const char*>();
+    if (s == nullptr) return String(fallback);
+    String result(s);
+    if (result == "null" || result.length() == 0) return String(fallback);
+    return result;
+  };
+
+  _activatedConfig.wifiUser     = safeStr("wifiUser",     "");
+  _activatedConfig.wifiSecurity = safeStr("wifiSecurity", "WPA2_PERSONAL");
 
   Serial.printf("[PROV] cfg parsed: ssid='%s' user='%s' security='%s'\n",
                 _activatedConfig.wifiSsid.c_str(),

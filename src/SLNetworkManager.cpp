@@ -35,8 +35,14 @@ bool SLNetworkManager::syncTimeBlocking() {
     if (knownNetworks.empty()) return false;
 
     WiFiCreds& c = knownNetworks[0];
-    if (c.security == "WPA2_ENTERPRISE") connectEnterprise(c.ssid, c.user, c.pass);
-    else                                 connectPersonal(c.ssid, c.pass);
+    if (c.security == "WPA2_ENTERPRISE" && c.user.length() > 0) {
+        connectEnterprise(c.ssid, c.user, c.pass);
+    } else {
+        if (c.security == "WPA2_ENTERPRISE") {
+            Serial.println("[WIFI] WPA2_ENTERPRISE flag van, de user üres -> fallback PERSONAL");
+        }
+        connectPersonal(c.ssid, c.pass);
+    }
 
     // Az enterprise PEAP-MSCHAPv2 handshake hosszabb is lehet (TLS + EAP),
     // ezért 30 sec total timeout (60 × 500 ms) a 20 helyett.
@@ -132,8 +138,11 @@ void SLNetworkManager::handleWiFi() {
         if (now - _lastWifiCheck > 10000) {
             Serial.println("[WIFI] Disconnected, reconnecting...");
             WiFiCreds& c = knownNetworks[0];
-            if (c.security == "WPA2_ENTERPRISE") connectEnterprise(c.ssid, c.user, c.pass);
-            else                                 connectPersonal(c.ssid, c.pass);
+            if (c.security == "WPA2_ENTERPRISE" && c.user.length() > 0) {
+                connectEnterprise(c.ssid, c.user, c.pass);
+            } else {
+                connectPersonal(c.ssid, c.pass);
+            }
             _lastWifiCheck = now;
         }
     } else {

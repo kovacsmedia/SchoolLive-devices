@@ -34,12 +34,21 @@ String PersistStore::getWifiPass() const {
 }
 
 String PersistStore::getWifiUser() const {
-  return _prefs.getString("wifiUser", "");
+  String s = _prefs.getString("wifiUser", "");
+  // Defenzív: korábbi rossz provisioning miatt az NVS-ben a "null" STRING
+  // szerepelhet (ArduinoJson `.as<String>()` null JSON value-ra a "null"
+  // négybetűs stringet adja). Ezt itt is kiszűrjük, hogy a régi NVS-ből
+  // induló eszközök se kapjanak rossz user-t.
+  if (s == "null") s = "";
+  return s;
 }
 
 String PersistStore::getWifiSecurity() const {
   // Default: WPA2 Personal. Az enterprise mód CSAK explicit beállításra fut.
-  return _prefs.getString("wifiSec", "WPA2_PERSONAL");
+  String s = _prefs.getString("wifiSec", "WPA2_PERSONAL");
+  // Defenzív null/empty fallback (lásd getWifiUser komment).
+  if (s == "null" || s.length() == 0) s = "WPA2_PERSONAL";
+  return s;
 }
 
 bool PersistStore::setWifi(const String& ssid, const String& pass) {
