@@ -12,6 +12,17 @@ struct PolledCommand {
     JsonDocument payload;
 };
 
+// A backend /firmware/check válasza, ha új firmware érhető el.
+struct FirmwareCheckResult {
+    bool   updateAvailable = false;
+    String version;        // pl. "S4.5"
+    String url;            // .bin URL
+    int    sizeBytes  = 0;
+    String sha256;         // hexa string, lehet üres ha nincs sha
+    bool   mandatory  = false;
+    String notes;
+};
+
 class BackendClient {
 public:
     void begin(const String& baseUrl);
@@ -45,6 +56,28 @@ public:
         String& outDeviceKey,
         String& outWifiSsid,
         String& outWifiPass
+    );
+
+    // ── OTA (firmware update) ──────────────────────────────────────────────
+    //
+    // GET /firmware/check?version=<curr>&deviceClass=SPEAKER&hwModel=ESP32_S3
+    // Header: x-device-key
+    // Válasz: { updateAvailable, latest: { version, url, sizeBytes, sha256, mandatory, notes } }
+    bool checkFirmware(
+        const String& currentVersion,
+        const String& deviceClass,
+        const String& hwModel,
+        FirmwareCheckResult& outResult
+    );
+
+    // POST /firmware/ota-status
+    // Header: x-device-key
+    // Body: { version, status: "DOWNLOADING"|"INSTALLING"|"SUCCESS"|"FAILED"|"ROLLBACK", progress?, error? }
+    bool reportOtaStatus(
+        const String& version,
+        const String& status,
+        int progress,
+        const String& errorMsg
     );
 
     // ── Snapcast konfiguráció a backend beacon válaszából ────────────────

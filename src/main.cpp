@@ -15,6 +15,7 @@
 #include "DeviceAgent.h"
 #include "DeviceTelemetry.h"
 #include "SnapcastClient.h"
+#include "OtaManager.h"
 
 // --- Globális objektumok ---
 SLNetworkManager networkManager;
@@ -25,6 +26,7 @@ BellManager bellManager(audioManager, networkManager, backend);
 DeviceAgent agent;
 DeviceTelemetry telemetry;
 SnapcastClient snapClient;
+OtaManager otaManager;
 
 // --- Pointerek – setup()-ban példányosítjuk ---
 UIManager* uiManager = nullptr;
@@ -191,6 +193,11 @@ void TaskNetwork(void* pvParameters) {
             }
         }
 
+        // OTA check - csak akkor fut, ha nincs aktív audio lejátszás.
+        // A `runCheckAndMaybeUpdate()` belül leállítja a snap stream-et a flash
+        // előtt, és sikeres flash után automatikusan ESP.restart() történik.
+        otaManager.loop();
+
         vTaskDelay(100 / portTICK_PERIOD_MS);
     }
 }
@@ -265,6 +272,19 @@ void startNormalMode() {
     // SnapcastClient pointerek.
     uiManager->setAgent(&agent);
     uiManager->setSnapClient(&snapClient);
+
+    // OTA manager - 30 percenként ellenőrzi a backend-en az új release-eket,
+    // és ha mandatory frissítés érhető el, automatikusan flash-eli.
+    // A snap stream először leáll, hogy a flash közben semmi se ütközzön.
+    otaManager.begin(
+        networkManager,
+        backend,
+        snapClient,
+        telemetry,
+        String(FW_VERSION),
+        "SPEAKER",
+        "ESP32_S3"
+    );
 
     xTaskCreatePinnedToCore(
         TaskNetwork,

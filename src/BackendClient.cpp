@@ -540,3 +540,71 @@ bool BackendClient::confirmProvisioning(
 
     return outDeviceKey.length() > 0;
 }
+
+// ---------------------------------------------------------------------------
+// OTA — firmware verziócheck
+// ---------------------------------------------------------------------------
+
+bool BackendClient::checkFirmware(
+    const String& currentVersion,
+    const String& deviceClass,
+    const String& hwModel,
+    FirmwareCheckResult& outResult
+) {
+    outResult = FirmwareCheckResult();
+
+    if (!isReady()) return false;
+
+    // Query paraméterek URL-encode-olása minimális (csak alfanumerikus értékek
+    // várhatók itt - verzió string mint "S4.4", deviceClass "SPEAKER", hwModel "ESP32_S3").
+    String path = "/firmware/check?version=" + currentVersion
+                + "&deviceClass=" + deviceClass;
+    if (hwModel.length() > 0) {
+        path += "&hwModel=" + hwModel;
+    }
+
+    JsonDocument resp;
+    int code = 0;
+    if (!getJson(path, resp, code)) {
+        return false;
+    }
+
+    outResult.updateAvailable = resp["updateAvailable"] | false;
+
+    if (outResult.updateAvailable && resp["latest"].is<JsonObject>()) {
+        JsonObject latest = resp["latest"];
+        outResult.version   = latest["version"]   | "";
+        outResult.url       = latest["url"]       | "";
+        outResult.sizeBytes = latest["sizeBytes"] | 0;
+        outResult.sha256    = latest["sha256"]    | "";
+        outResult.mandatory = latest["mandatory"] | false;
+        outResult.notes     = latest["notes"]     | "";
+    }
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// OTA — folyamatos státuszjelentés a backendre
+// ---------------------------------------------------------------------------
+
+bool BackendClient::reportOtaStatus(
+    const String& version,
+    const String& status,
+    int progress,
+    const String& errorMsg
+) {
+    if (!isReady()) return false;
+
+    JsonDocument req;
+    req["version"]  = version;
+    req["status"]   = status;
+    req["progress"] = progress;
+    if (errorMsg.length() > 0) {
+        req["error"] = errorMsg;
+    }
+
+    JsonDocument resp;
+    int code = 0;
+    return postJson("/firmware/ota-status", req, resp, code);
+}
