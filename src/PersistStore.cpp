@@ -37,6 +37,11 @@ String PersistStore::getWifiUser() const {
   return _prefs.getString("wifiUser", "");
 }
 
+String PersistStore::getWifiSecurity() const {
+  // Default: WPA2 Personal. Az enterprise mód CSAK explicit beállításra fut.
+  return _prefs.getString("wifiSec", "WPA2_PERSONAL");
+}
+
 bool PersistStore::setWifi(const String& ssid, const String& pass) {
   if (ssid.length() == 0) return false;
   _prefs.putString("wifiSsid", ssid);
@@ -49,10 +54,16 @@ bool PersistStore::setWifiUser(const String& user) {
   return true;
 }
 
+bool PersistStore::setWifiSecurity(const String& security) {
+  _prefs.putString("wifiSec", security);
+  return true;
+}
+
 void PersistStore::clearWifi() {
   _prefs.remove("wifiSsid");
   _prefs.remove("wifiPass");
   _prefs.remove("wifiUser");
+  _prefs.remove("wifiSec");
 }
 
 void PersistStore::factoryReset() {

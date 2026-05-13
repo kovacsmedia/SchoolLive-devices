@@ -122,12 +122,26 @@ bool ProvisioningManager::doPollStatus() {
   _activatedConfig.wifiPassword = cfg["wifiPassword"].as<String>();
   _activatedConfig.deviceKey    = cfg["deviceKey"].as<String>();
 
+  // WPA2 Enterprise mezők (opcionális, default empty/PERSONAL)
+  _activatedConfig.wifiUser     = cfg["wifiUser"].as<String>();
+  _activatedConfig.wifiSecurity = cfg["wifiSecurity"].as<String>();
+  if (_activatedConfig.wifiSecurity.length() == 0) {
+    _activatedConfig.wifiSecurity = "WPA2_PERSONAL";
+  }
+
+  Serial.printf("[PROV] cfg parsed: ssid='%s' user='%s' security='%s'\n",
+                _activatedConfig.wifiSsid.c_str(),
+                _activatedConfig.wifiUser.c_str(),
+                _activatedConfig.wifiSecurity.c_str());
+
   return _activatedConfig.deviceKey.length() > 0;
 }
 
 void ProvisioningManager::applyAndReboot() {
   // NVS mentés
   _store.setWifi(_activatedConfig.wifiSsid, _activatedConfig.wifiPassword);
+  _store.setWifiUser(_activatedConfig.wifiUser);
+  _store.setWifiSecurity(_activatedConfig.wifiSecurity);
   _store.setDeviceKey(_activatedConfig.deviceKey);
 
   // wifi.txt írása – SLNetworkManager ebből olvas

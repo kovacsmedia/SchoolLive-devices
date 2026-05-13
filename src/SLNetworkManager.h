@@ -13,13 +13,17 @@
 #include <HTTPUpdate.h>
 #include <LittleFS.h>
 #include <vector>
-#include "esp_wpa2.h"
+// Modern WPA2 Enterprise (EAP-PEAP/MSCHAPv2) API. ESP-IDF v5.x-en az `esp_wpa2.h`
+// deprecated; a hivatalos felület most az `esp_eap_client.h` + `esp_wifi.h`
+// `esp_wifi_sta_enterprise_enable()`.
+#include "esp_eap_client.h"
 #include "Config.h"
 
 struct WiFiCreds {
     String ssid;
     String user;
     String pass;
+    String security;   // "WPA2_PERSONAL" vagy "WPA2_ENTERPRISE"
 };
 
 class SLNetworkManager {

@@ -1,0 +1,20 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		},
+		{
+			"path": "../../SchoolLive repos/SchoolLive-backend"
+		},
+		{
+			"path": "../../SchoolLive repos/SchoolLive-frontend"
+		},
+		{
+			"path": "../../SchoolLive repos/SchoolLive-windows"
+		},
+		{
+			"path": "../../SchoolLive repos/SchoolLive-linux"
+		}
+	],
+	"settings": {}
+}

@@ -54,3 +54,9 @@ CONFIG_I2S_SKIP_LEGACY_CONFLICT_CHECK=y
 # E két flag nélkül a Snapcast stream MINDIG max hangerőn szól.
 CONFIG_USE_DSP_PROCESSOR=y
 CONFIG_SNAPCLIENT_USE_SOFT_VOL=y
+
+# WPA2 Enterprise (EAP-PEAP/MSCHAPv2) támogatás az eduroam-szerű hálózatokhoz.
+# A SLNetworkManager::connectEnterprise() használja az esp_eap_client.h API-t.
+# Plus a server cert validáció kikapcsolva (disable_time_check=true), mert a
+# provisioning UI-ból "CA tanúsítvány nem szükséges" beállítást kapunk.
+CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT=y

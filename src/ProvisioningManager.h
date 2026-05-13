@@ -24,7 +24,9 @@ struct ProvConfig {
   String deviceName;
   String wifiSsid;
   String wifiPassword;
-  String deviceKey;  // ← ÚJ
+  String wifiUser;       // WPA2 Enterprise: felhasználónév (email)
+  String wifiSecurity;   // "WPA2_PERSONAL" | "WPA2_ENTERPRISE"
+  String deviceKey;
 };
 
 class ProvisioningManager {

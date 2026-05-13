@@ -19,9 +19,11 @@ public:
   bool hasWifi() const;
   String getWifiSsid() const;
   String getWifiPass() const;
-  String getWifiUser() const;           // ÚJ: WPA2 Enterprise user
+  String getWifiUser() const;           // WPA2 Enterprise username (EAP)
+  String getWifiSecurity() const;       // "WPA2_PERSONAL" | "WPA2_ENTERPRISE"
   bool setWifi(const String& ssid, const String& pass);
-  bool setWifiUser(const String& user); // ÚJ
+  bool setWifiUser(const String& user);
+  bool setWifiSecurity(const String& security);
   void clearWifi();
 
   void factoryReset(); 

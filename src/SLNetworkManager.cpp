@@ -20,10 +20,14 @@ void SLNetworkManager::loadFromNVS() {
     if (!store.hasWifi()) return;
 
     WiFiCreds creds;
-    creds.ssid = store.getWifiSsid();
-    creds.pass = store.getWifiPass();
-    creds.user = store.getWifiUser(); // Enterprise user (lehet üres)
+    creds.ssid     = store.getWifiSsid();
+    creds.pass     = store.getWifiPass();
+    creds.user     = store.getWifiUser();
+    creds.security = store.getWifiSecurity();
     knownNetworks.push_back(creds);
+
+    Serial.printf("[WIFI] Loaded creds: ssid='%s' user='%s' security='%s'\n",
+                  creds.ssid.c_str(), creds.user.c_str(), creds.security.c_str());
 }
 
 bool SLNetworkManager::syncTimeBlocking() {
@@ -31,11 +35,13 @@ bool SLNetworkManager::syncTimeBlocking() {
     if (knownNetworks.empty()) return false;
 
     WiFiCreds& c = knownNetworks[0];
-    if (c.user.length() > 0) connectEnterprise(c.ssid, c.user, c.pass);
-    else connectPersonal(c.ssid, c.pass);
+    if (c.security == "WPA2_ENTERPRISE") connectEnterprise(c.ssid, c.user, c.pass);
+    else                                 connectPersonal(c.ssid, c.pass);
 
+    // Az enterprise PEAP-MSCHAPv2 handshake hosszabb is lehet (TLS + EAP),
+    // ezért 30 sec total timeout (60 × 500 ms) a 20 helyett.
     int retries = 0;
-    while (WiFi.status() != WL_CONNECTED && retries < 40) {
+    while (WiFi.status() != WL_CONNECTED && retries < 60) {
         delay(500);
         retries++;
     }
@@ -56,12 +62,54 @@ bool SLNetworkManager::syncTimeBlocking() {
 }
 
 void SLNetworkManager::connectEnterprise(String ssid, String user, String pass) {
+    /*
+     * WPA2 Enterprise (eduroam) — PEAP / MSCHAPv2.
+     *
+     * Konfiguráció a provisioning UI alapján:
+     *   - Hitelesítés:        védett EAP (PEAP)
+     *   - Névtelen identity:  NINCS (clear)
+     *   - CA tanúsítvány:     NEM szükséges (server cert validation kikapcsolva)
+     *   - PEAP verzió:        automatikus (default)
+     *   - Belső auth:         MSCHAPv2 (PEAP default phase2)
+     *   - Felhasználónév:     `user` (email formátum)
+     *   - Jelszó:             `pass`
+     *
+     * A modern API (`esp_eap_client.h`) az ESP-IDF v5.x-től, a régi
+     * `esp_wpa2.h` deprecated.
+     */
+    Serial.printf("[WIFI] Connecting Enterprise: ssid=%s user=%s\n",
+                  ssid.c_str(), user.c_str());
+
     WiFi.disconnect(true);
     WiFi.mode(WIFI_STA);
-    esp_wifi_sta_wpa2_ent_set_identity((uint8_t*)user.c_str(), user.length());
-    esp_wifi_sta_wpa2_ent_set_username((uint8_t*)user.c_str(), user.length());
-    esp_wifi_sta_wpa2_ent_set_password((uint8_t*)pass.c_str(), pass.length());
-    esp_wifi_sta_wpa2_ent_enable();
+
+    // 1) Identity-t NEM állítunk (provisioning UI: "nincs névtelen személyazonosság"),
+    //    minden inner és outer azonosítás az `username` mezőből megy.
+    esp_eap_client_clear_identity();
+
+    // 2) Username + password.
+    esp_eap_client_set_username((const uint8_t*)user.c_str(), user.length());
+    esp_eap_client_set_password((const uint8_t*)pass.c_str(), pass.length());
+
+    // 3) CA cert nincs - egyrészt clearelünk, másrészt kikapcsoljuk a
+    //    server cert validation időbeli ellenőrzését (egyébként a CA cert
+    //    hiánya miatt a handshake amúgy is fail-ne).
+    esp_eap_client_clear_ca_cert();
+    esp_eap_client_clear_certificate_and_key();
+    esp_eap_client_set_disable_time_check(true);
+
+    // 4) PEAP phase2 = MSCHAPv2 (default, explicit nem kell, de a tisztaság
+    //    kedvéért beállítjuk - a PEAP esetén ezt a stack ismeri).
+    // Megjegyzés: esp_eap_client_set_ttls_phase2_method() csak EAP-TTLS-re,
+    // PEAP-re nincs külön phase2 method beállítás (PEAP belső MSCHAPv2 default).
+
+    // 5) Enterprise mód bekapcsolása. Az új API: `esp_wifi_sta_enterprise_enable()`.
+    esp_err_t err = esp_wifi_sta_enterprise_enable();
+    if (err != ESP_OK) {
+        Serial.printf("[WIFI] esp_wifi_sta_enterprise_enable failed: %d\n", (int)err);
+    }
+
+    // 6) WiFi.begin SSID-vel — password mezőt NEM adunk (a credentials az EAP-ban van).
     WiFi.begin(ssid.c_str());
 }
 
@@ -84,8 +132,8 @@ void SLNetworkManager::handleWiFi() {
         if (now - _lastWifiCheck > 10000) {
             Serial.println("[WIFI] Disconnected, reconnecting...");
             WiFiCreds& c = knownNetworks[0];
-            if (c.user.length() > 0) connectEnterprise(c.ssid, c.user, c.pass);
-            else connectPersonal(c.ssid, c.pass);
+            if (c.security == "WPA2_ENTERPRISE") connectEnterprise(c.ssid, c.user, c.pass);
+            else                                 connectPersonal(c.ssid, c.pass);
             _lastWifiCheck = now;
         }
     } else {
