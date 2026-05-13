@@ -389,7 +389,14 @@ void BackendClient::parseBeaconResponse(const JsonDocument& resp) {
 // ---------------------------------------------------------------------------
 
 bool BackendClient::poll(PolledCommand& outCmd) {
-    outCmd = PolledCommand{};
+    // Mezőszintű reset.
+    // A `PolledCommand{}` rvalue-aggregate initialization az ArduinoJson v7.4+
+    // alatt warning-ot generál, mert a JsonDocument explicit konstruktor egy
+    // Allocator* paraméterrel - a brace-list inicializátoron át hívva ez
+    // nem zero-arg konstrukció. Ezért explicit nullázzuk a mezőket.
+    outCmd.hasCommand = false;
+    outCmd.id         = "";
+    outCmd.payload.clear();
 
     JsonDocument req;
     req["ping"] = static_cast<uint32_t>(millis());
