@@ -487,8 +487,8 @@ int dsp_processor_worker(void *p_pcmChnk, const void *p_scSet) {
       return -1;
     }
 
-    // Csatorna-mód alkalmazása (MIXED/LEFT/RIGHT) – minden stereo chunkra
-    if (ch == 2) {
+    // Csatorna-mód alkalmazása (MIXED/LEFT/RIGHT) – sztereó pass-through esetén kihagyva
+    if (ch == 2 && s_channel_mode != DSP_CHANNEL_STEREO) {
       dsp_channel_mode_t cmode = s_channel_mode;
       for (int k = 0; k < len; k += DSP_PROCESSOR_LEN) {
         volatile uint32_t *tmp = (uint32_t *)(&audio_tmp[k]);

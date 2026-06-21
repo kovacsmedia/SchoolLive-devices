@@ -24,9 +24,10 @@ enum filtertypes {
 
 
 typedef enum {
-    DSP_CHANNEL_MIXED = 0,  // (L+R)/2 → mono mix (alapértelmezett)
-    DSP_CHANNEL_LEFT  = 1,  // bal csatorna mindkét kimenetbe
-    DSP_CHANNEL_RIGHT = 2,  // jobb csatorna mindkét kimenetbe
+    DSP_CHANNEL_MIXED  = 0,  // (L+R)/2 mindkét kimenetbe – mono DAC (MAX98357A)
+    DSP_CHANNEL_LEFT   = 1,  // bal csatorna mindkét kimenetbe
+    DSP_CHANNEL_RIGHT  = 2,  // jobb csatorna mindkét kimenetbe
+    DSP_CHANNEL_STEREO = 3,  // pass-through, nincs módosítás – sztereó DAC
 } dsp_channel_mode_t;
 
 void dsp_processor_init(void);

@@ -106,7 +106,7 @@ bool PersistStore::setVolume(uint8_t vol) {
 
 dsp_channel_mode_t PersistStore::getChannelMode() const {
   uint8_t v = _prefs.getUChar("chanMode", (uint8_t)DSP_CHANNEL_MIXED);
-  if (v > (uint8_t)DSP_CHANNEL_RIGHT) v = (uint8_t)DSP_CHANNEL_MIXED;
+  if (v > (uint8_t)DSP_CHANNEL_STEREO) v = (uint8_t)DSP_CHANNEL_MIXED;
   return (dsp_channel_mode_t)v;
 }
 

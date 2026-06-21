@@ -265,9 +265,10 @@ bool DeviceAgent::handleSetChannelMode(JsonVariantConst payload, String& err) {
     String mode = payload["mode"] | "";
     mode.toUpperCase();
     dsp_channel_mode_t m;
-    if      (mode == "LEFT")  m = DSP_CHANNEL_LEFT;
-    else if (mode == "RIGHT") m = DSP_CHANNEL_RIGHT;
-    else if (mode == "MIXED") m = DSP_CHANNEL_MIXED;
+    if      (mode == "LEFT")   m = DSP_CHANNEL_LEFT;
+    else if (mode == "RIGHT")  m = DSP_CHANNEL_RIGHT;
+    else if (mode == "MIXED")  m = DSP_CHANNEL_MIXED;
+    else if (mode == "STEREO") m = DSP_CHANNEL_STEREO;
     else { err = "Invalid mode: " + mode; return false; }
 
     if (_snap) _snap->setChannelMode(m);
