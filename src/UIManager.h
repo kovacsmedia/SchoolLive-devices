@@ -49,6 +49,9 @@ public:
     void enterProvisioningMode();
     void updateProvisioningDisplay(const String& mac, const String& ip, const String& status);
 
+    // Remote hangerőállításkor is mutassa a volume-képernyőt (mint gombnyomáskor)
+    void showVolumeScreen();
+
 private:
     AudioManager &audio;
     SLNetworkManager &network;

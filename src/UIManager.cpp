@@ -546,6 +546,11 @@ void UIManager::updateProvisioningDisplay(const String& mac, const String& ip, c
     display.display();
 }
 
+void UIManager::showVolumeScreen() {
+    volumeDisplayUntil = millis() + VOLUME_DISPLAY_TIME;
+    updateDisplay();
+}
+
 void UIManager::setTelemetry(DeviceTelemetry* tel) {
     _tel = tel;
 }
@@ -626,10 +631,11 @@ const char* UIManager::getPlaybackLabel() const {
 
     String s = _agent->getCurrentPlaybackAction();
 
-    // Direkt MESSAGE/RADIO/SIGNAL címke a backend payload.kind mezőjéből.
-    if (s == "RADIO")   return "RADIO";
-    if (s == "MESSAGE") return "MESSAGE";
-    if (s == "SIGNAL")  return "SIGNAL";
+    // Direkt MESSAGE/RADIO/SIGNAL/EMERGENCY címke a backend payload.kind mezőjéből.
+    if (s == "EMERGENCY") return "EMERGENCY";
+    if (s == "RADIO")     return "RADIO";
+    if (s == "MESSAGE")   return "MESSAGE";
+    if (s == "SIGNAL")    return "SIGNAL";
 
     // Legacy action-eken alapuló fallback (akkor használjuk, ha a backend
     // nem küld explicit kind/source mezőt).

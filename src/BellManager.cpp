@@ -513,9 +513,9 @@ int BellManager::getSecondsToNextEvent() {
 // getNextEventTimeStr
 // ---------------------------------------------------------------------------
 String BellManager::getNextEventTimeStr() {
-    if (!network.isTimeSynced()) return "--:--";
+    if (!network.isTimeSynced()) return "";
     if (_mode == BELL_MODE_OFF)  return "OFF";
-    if (_entryCount == 0)        return "--:--";
+    if (_entryCount == 0)        return "";
 
     struct tm t  = network.getTimeInfo();
     int curMin   = t.tm_hour * 60 + t.tm_min;
@@ -526,7 +526,7 @@ String BellManager::getNextEventTimeStr() {
         if (eMin > curMin && eMin < nextMin) nextMin = eMin;
     }
 
-    if (nextMin == 9999) return "--:--";
+    if (nextMin == 9999) return "";
     char buf[16];
     snprintf(buf, sizeof(buf), "%02d:%02d", nextMin / 60, nextMin % 60);
     return String(buf);

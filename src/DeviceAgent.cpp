@@ -260,6 +260,7 @@ bool DeviceAgent::handleSetVolume(JsonVariantConst payload, String& err) {
     if (!payload["volume"].is<int>()) { err = "No volume"; return false; }
     int vol = payload["volume"].as<int>();
     if (_audio) _audio->setVolume(vol);
+    if (_ui)    _ui->showVolumeScreen();
     return true;
 }
 
@@ -298,6 +299,7 @@ void DeviceAgent::enterPlaybackQuiet(JsonVariantConst payload, const String& act
     if (emergency && _audio) {
         _audio->setVolumeOverride(10);
         _emergencyOverrideActive = true;
+        _currentPlaybackAction = "EMERGENCY";   // felülírja a kind/action értéket
         Serial.println("[AGENT] EMERGENCY: volume override -> 10");
     }
 
