@@ -50,15 +50,15 @@ dependencies:
       type: service
     version: 1.8.0
   espressif/esp-modbus:
-    component_hash: 5d5e90b9e55721a8a194b301ad8102d4affb647f47b74cd413ff7d1ce2c1169c
+    component_hash: 56be3df9f436ce30ee513b9c4a77db13b0c3d6c1f52ee48f2198e7aba4319d3c
     dependencies:
     - name: idf
       require: private
-      version: '>=4.3'
+      version: '>=5.0'
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 1.0.18
+    version: 2.1.2
   espressif/esp-serial-flasher:
     component_hash: dcc42a16712a1a636509cf0bf90e14032d7f2141784b533613b267b6aa318d52
     dependencies: []
@@ -67,7 +67,7 @@ dependencies:
       type: service
     version: 0.0.11
   espressif/esp-sr:
-    component_hash: e89fce9c0afe1b6782a9fbc65b5fc2ba5841ed4a39704d08414aad891ccce1a3
+    component_hash: aa58d6a13a49600314a50a27240ccbd17e407f608216a3086d4868e0da2e8053
     dependencies:
     - name: espressif/cjson
       registry_url: https://components.espressif.com
@@ -87,7 +87,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 2.4.4
+    version: 2.4.6
   espressif/esp-zboss-lib:
     component_hash: 321883d142421f65009972408287441794250057668a11abbdfd8bec77c3309a
     dependencies:
@@ -161,7 +161,7 @@ dependencies:
       type: service
     version: 1.2.2
   espressif/esp_modem:
-    component_hash: f4fa6dab2496af2673a68881132bb7ce0f05bf62e30e5bd0d45b607066378a28
+    component_hash: 475c2185273ddedff2bb0d21a8ab196a9d0ef60595f73d634edf2d8be03a5f54
     dependencies:
     - name: idf
       require: private
@@ -169,7 +169,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 2.0.1
+    version: 2.0.2
   espressif/esp_rainmaker:
     component_hash: f6fe458fc7a0102ee2879f0247da4b41419e6c07de12031f66e5e9454d25baaa
     dependencies:
@@ -293,7 +293,7 @@ dependencies:
       type: service
     version: 1.0.22
   espressif/mdns:
-    component_hash: 8bcf12e37c58c1d584aef32a02b92548124c7a3a9fcf548d3235c844a035e0f0
+    component_hash: 291732b5df4d181eb75eba9042799a508c4c124503a0c0573132a0a48d2e3fbe
     dependencies:
     - name: idf
       require: private
@@ -301,7 +301,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 1.11.1
+    version: 1.11.2
   espressif/network_provisioning:
     component_hash: ef2e10182fd1861e68b821491916327c25416ca7ae70e5a6e43313dbc71fe993
     dependencies:
@@ -331,7 +331,7 @@ dependencies:
       type: idf
     version: 5.5.4
   joltwallet/littlefs:
-    component_hash: 29eff7921c4e8bce021aeb7fff2723bfcafed661756de700646ea0f6223c2a32
+    component_hash: 01faa388c6305fe77fd6962cda6171e753033458f24f8fae9e9d932e3d817a4c
     dependencies:
     - name: idf
       require: private
@@ -339,7 +339,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 1.21.1
+    version: 1.22.1
 direct_dependencies:
 - chmorgan/esp-libhelix-mp3
 - espressif/cbor
@@ -360,6 +360,6 @@ direct_dependencies:
 - espressif/rmaker_common
 - idf
 - joltwallet/littlefs
-manifest_hash: 2e3b54493d3e57f06362ee321c9c48e687de4742e5567d5ac185bee6ae545075
+manifest_hash: cc40af8dd25ba93a4227183981928375aee119a519c4d7496df876d05084ca95
 target: esp32s3
 version: 2.0.0
