@@ -23,8 +23,18 @@ enum filtertypes {
 };
 
 
+typedef enum {
+    DSP_CHANNEL_MIXED = 0,  // (L+R)/2 → mono mix (alapértelmezett)
+    DSP_CHANNEL_LEFT  = 1,  // bal csatorna mindkét kimenetbe
+    DSP_CHANNEL_RIGHT = 2,  // jobb csatorna mindkét kimenetbe
+} dsp_channel_mode_t;
+
 void dsp_processor_init(void);
 void dsp_processor_uninit(void);
+
+/** Futásidőben állítható csatorna-mód (thread-safe). */
+void dsp_processor_set_channel_mode(dsp_channel_mode_t mode);
+dsp_channel_mode_t dsp_processor_get_channel_mode(void);
 int dsp_processor_worker(void *pcmChnk, const void *scSet);
 esp_err_t dsp_processor_update_filter_params(filterParams_t *params);
 

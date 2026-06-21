@@ -24,6 +24,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "dsp_processor.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -89,6 +90,9 @@ esp_err_t snap_app_resume(void);
  */
 bool snap_app_is_running(void);
 bool snap_app_is_connected(void);
+
+/** Csatorna-mód beállítás futásidőben (hatása a következő PCM chunk-tól). */
+void snap_app_set_channel_mode(dsp_channel_mode_t mode);
 
 /**
  * Audio aktivitás detektor. A snap stream PCM mintáit figyeli, és igazat ad

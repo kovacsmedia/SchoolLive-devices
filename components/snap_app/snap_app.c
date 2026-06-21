@@ -1618,6 +1618,12 @@ esp_err_t snap_app_set_local_volume(uint8_t volume) {
 bool snap_app_is_running(void)   { return s_snap_running; }
 bool snap_app_is_connected(void) { return s_snap_running; /* TODO: TCP state */ }
 
+void snap_app_set_channel_mode(dsp_channel_mode_t mode) {
+#if CONFIG_USE_DSP_PROCESSOR
+    dsp_processor_set_channel_mode(mode);
+#endif
+}
+
 bool snap_app_is_audio_active(void) {
   uint32_t last = s_snap_last_audio_active_ms;
   if (last == 0) return false;

@@ -94,6 +94,10 @@ bool SnapcastClient::isAudioActive() const {
     return snap_app_is_audio_active();
 }
 
+void SnapcastClient::setChannelMode(dsp_channel_mode_t mode) {
+    snap_app_set_channel_mode(mode);
+}
+
 void SnapcastClient::setLocalVolume(uint8_t volume) {
     if (volume < 1) volume = 1;
     if (volume > 10) volume = 10;

@@ -7,7 +7,9 @@ void DeviceAgent::begin(
     BackendClient& backend,
     DeviceTelemetry& tel,
     WsClient& ws,
-    BellManager& bells
+    BellManager& bells,
+    SnapcastClient& snap,
+    PersistStore& store
 ) {
     _net     = &net;
     _audio   = &audio;
@@ -16,6 +18,8 @@ void DeviceAgent::begin(
     _tel     = &tel;
     _ws      = &ws;
     _bells   = &bells;
+    _snap    = &snap;
+    _store   = &store;
 }
 
 // ── loop ──────────────────────────────────────────────────────────────────────
@@ -172,8 +176,9 @@ bool DeviceAgent::executeCommand(const String& commandId, JsonVariantConst paylo
     } else if (action == "SHOW_MESSAGE") {
         ok = handleShowMessage(payload, err);
     } else if (action == "SYNC_BELLS") {
-        // A BellManager onScheduleSync-kel dolgozza fel; itt csak ACK
         ok = true;
+    } else if (action == "SET_CHANNEL_MODE") {
+        ok = handleSetChannelMode(payload, err);
     } else {
         err = "Unknown action: " + action;
     }
@@ -254,6 +259,21 @@ bool DeviceAgent::looksLikeAudioCommand(JsonVariantConst payload, const String& 
         if (text.length() > 0) return true;
     }
     return false;
+}
+
+bool DeviceAgent::handleSetChannelMode(JsonVariantConst payload, String& err) {
+    String mode = payload["mode"] | "";
+    mode.toUpperCase();
+    dsp_channel_mode_t m;
+    if      (mode == "LEFT")  m = DSP_CHANNEL_LEFT;
+    else if (mode == "RIGHT") m = DSP_CHANNEL_RIGHT;
+    else if (mode == "MIXED") m = DSP_CHANNEL_MIXED;
+    else { err = "Invalid mode: " + mode; return false; }
+
+    if (_snap) _snap->setChannelMode(m);
+    if (_store) _store->setChannelMode(m);
+    Serial.printf("[AGENT] SET_CHANNEL_MODE: %s\n", mode.c_str());
+    return true;
 }
 
 bool DeviceAgent::handleSetVolume(JsonVariantConst payload, String& err) {

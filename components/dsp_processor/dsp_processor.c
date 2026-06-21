@@ -51,6 +51,18 @@ static double dynamic_vol = 1.0;
 
 static bool init = false;
 
+// Futásidős csatorna-mód (thread-safe: atomic read/write elég, 32-bit aligned)
+static volatile dsp_channel_mode_t s_channel_mode = DSP_CHANNEL_MIXED;
+
+void dsp_processor_set_channel_mode(dsp_channel_mode_t mode) {
+    s_channel_mode = mode;
+    ESP_LOGI(TAG, "channel mode set to %d", (int)mode);
+}
+
+dsp_channel_mode_t dsp_processor_get_channel_mode(void) {
+    return s_channel_mode;
+}
+
 static float *sbuffer0 = NULL;
 static float *sbufout0 = NULL;
 
@@ -475,27 +487,30 @@ int dsp_processor_worker(void *p_pcmChnk, const void *p_scSet) {
       return -1;
     }
 
-#if CONFIG_SNAPCLIENT_MIX_LR_TO_MONO
+    // Csatorna-mód alkalmazása (MIXED/LEFT/RIGHT) – minden stereo chunkra
     if (ch == 2) {
+      dsp_channel_mode_t cmode = s_channel_mode;
       for (int k = 0; k < len; k += DSP_PROCESSOR_LEN) {
         volatile uint32_t *tmp = (uint32_t *)(&audio_tmp[k]);
         uint32_t max = DSP_PROCESSOR_LEN;
         uint32_t test = len - k;
-
-        if (test < DSP_PROCESSOR_LEN) {
-          max = test;
-        }
+        if (test < DSP_PROCESSOR_LEN) max = test;
 
         for (i = 0; i < max; i++) {
-          int16_t channel0 = (int16_t)((tmp[i] & 0xFFFF0000) >> 16);
-          int16_t channel1 = (int16_t)(tmp[i] & 0x0000FFFF);
-          int16_t mixMono = ((int32_t)channel0 + (int32_t)channel1) / 2;
-
-          tmp[i] = ((uint32_t)mixMono << 16) | ((uint32_t)mixMono & 0x0000FFFF);
+          int16_t left  = (int16_t)((tmp[i] & 0xFFFF0000) >> 16);
+          int16_t right = (int16_t)(tmp[i] & 0x0000FFFF);
+          int16_t out;
+          switch (cmode) {
+            case DSP_CHANNEL_LEFT:  out = left;  break;
+            case DSP_CHANNEL_RIGHT: out = right; break;
+            default:  // DSP_CHANNEL_MIXED
+              out = (int16_t)(((int32_t)left + (int32_t)right) / 2);
+              break;
+          }
+          tmp[i] = ((uint32_t)(uint16_t)out << 16) | (uint32_t)(uint16_t)out;
         }
       }
     }
-#endif
 
     switch (dspFlow) {
       case dspfEQBassTreble: {

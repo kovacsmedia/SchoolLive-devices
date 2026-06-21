@@ -2,6 +2,10 @@
 #include <Arduino.h>
 #include <Preferences.h>
 
+extern "C" {
+#include "dsp_processor.h"
+}
+
 class PersistStore {
 public:
   bool begin();
@@ -26,9 +30,12 @@ public:
   bool setWifiSecurity(const String& security);
   void clearWifi();
 
-  void factoryReset(); 
+  void factoryReset();
   uint8_t getVolume(uint8_t defaultVal = 9) const;
   bool    setVolume(uint8_t vol);
+
+  dsp_channel_mode_t getChannelMode() const;
+  bool               setChannelMode(dsp_channel_mode_t mode);
 
 
 private:

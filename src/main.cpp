@@ -18,6 +18,10 @@
 #include "SnapcastClient.h"
 #include "OtaManager.h"
 
+extern "C" {
+#include "snap_app.h"
+}
+
 // --- Globális objektumok ---
 SLNetworkManager networkManager;
 AudioManager audioManager;
@@ -233,7 +237,14 @@ void startNormalMode() {
     // WS kapcsolat indítása – a HELLO üzenetből érkezik majd a Snapcast konfig
     startWsConnection(dk);
 
-    agent.begin(networkManager, audioManager, *uiManager, backend, telemetry, wsClient, bellManager);
+    // Mentett csatorna-mód alkalmazása (a snap_app_start után kell)
+    {
+        dsp_channel_mode_t cm = store.getChannelMode();
+        snap_app_set_channel_mode(cm);
+        Serial.printf("[MAIN] Channel mode loaded from NVS: %d\n", (int)cm);
+    }
+
+    agent.begin(networkManager, audioManager, *uiManager, backend, telemetry, wsClient, bellManager, snapClient, store);
     agent.setFirmwareVersion(String(FW_VERSION));
 
     // A UI top-bar állapotjelzőihez (S kör = snap connected, MESSAGE/RADIO/SIGNAL

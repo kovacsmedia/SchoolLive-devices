@@ -10,6 +10,8 @@
 #include "BellManager.h"
 #include "UIManager.h"
 #include "WsClient.h"
+#include "SnapcastClient.h"
+#include "PersistStore.h"
 
 class DeviceAgent {
 public:
@@ -20,7 +22,9 @@ public:
         BackendClient& backend,
         DeviceTelemetry& tel,
         WsClient& ws,
-        BellManager& bells
+        BellManager& bells,
+        SnapcastClient& snap,
+        PersistStore& store
     );
 
     void loop();
@@ -43,6 +47,8 @@ private:
     DeviceTelemetry*  _tel      = nullptr;
     WsClient*         _ws       = nullptr;
     BellManager*      _bells    = nullptr;
+    SnapcastClient*   _snap     = nullptr;
+    PersistStore*     _store    = nullptr;
 
     String _fw            = "dev";
     String _deviceId;                   // a szerver által kiosztott Device.id (HELLO-ból)
@@ -69,6 +75,7 @@ private:
     bool executeCommand(const String& commandId, JsonVariantConst payload);
 
     bool handleSetVolume(JsonVariantConst payload, String& err);
+    bool handleSetChannelMode(JsonVariantConst payload, String& err);
     bool handleShowMessage(JsonVariantConst payload, String& err);
 
     String detectAction(JsonVariantConst payload) const;

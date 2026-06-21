@@ -20,6 +20,10 @@
 #include <Arduino.h>
 #include "Config.h"
 
+extern "C" {
+#include "dsp_processor.h"
+}
+
 class SnapcastClient {
 public:
     SnapcastClient();
@@ -43,6 +47,7 @@ public:
     bool isAudioActive() const;
 
     void setLocalVolume(uint8_t volume);
+    void setChannelMode(dsp_channel_mode_t mode);
 
     // Helyi/offline MP3 lejátszás miatt I2S átadás az AudioManagernek.
     // A snap_app jelenleg no-op pause/resume-ot ad - a tényleges I2S
