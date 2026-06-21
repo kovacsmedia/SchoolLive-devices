@@ -5,145 +5,163 @@ void DeviceAgent::begin(
     AudioManager& audio,
     UIManager& ui,
     BackendClient& backend,
-    DeviceTelemetry& tel
+    DeviceTelemetry& tel,
+    WsClient& ws,
+    BellManager& bells
 ) {
-    _net = &net;
-    _audio = &audio;
-    _ui = &ui;
+    _net     = &net;
+    _audio   = &audio;
+    _ui      = &ui;
     _backend = &backend;
-    _tel = &tel;
+    _tel     = &tel;
+    _ws      = &ws;
+    _bells   = &bells;
 }
+
+// ── loop ──────────────────────────────────────────────────────────────────────
 
 void DeviceAgent::loop() {
-    /*
-     * Lejátszás közben semmilyen HTTP aktivitás nem futhat.
-     * Ez védi a Snapcast TCP streamet és az I2S audio taskot.
-     */
-    if (isPlaybackQuietActive()) {
-        return;
-    }
+    if (isPlaybackQuietActive()) return;
 
-    // Ha a quiet mode lejárt és vészhelyzeti override volt aktív, töröljük.
-    // Itt biztos vagyunk, hogy a lejátszás is befejeződött (a quiet mode a
-    // payload duration + safety margin), tehát ekkor visszaadhatjuk a
-    // hangerő-vezérlést a manuálisnak.
     maybeClearEmergencyOverride();
 
-    if (_audio && _audio->isInCooldown()) {
-        return;
-    }
+    if (_audio && _audio->isInCooldown()) return;
 
-    bool audioBusy = _audio && _audio->isBusy();
-
-    if (!audioBusy) {
+    if (!(_audio && _audio->isBusy())) {
         sendBeaconIfDue();
-        pollIfDue();
     }
 }
 
-bool DeviceAgent::isPlaybackQuietActive() const {
-    if (_playbackQuietUntilMs == 0) return false;
+// ── WS üzenet dispatch ────────────────────────────────────────────────────────
 
-    long remaining = (long)(_playbackQuietUntilMs - millis());
+void DeviceAgent::onWsMessage(const JsonDocument& msg) {
+    String type = msg["type"] | "";
+    String phase = msg["phase"] | "";
 
-    return remaining > 0;
+    if (type == "HELLO") {
+        handleHello(msg);
+    } else if (phase == "PREPARE") {
+        handlePrepare(msg);
+    } else if (phase == "PLAY") {
+        handlePlay(msg);
+    } else if (type == "COMMAND") {
+        handleCommand(msg);
+    } else if (type == "BEACON_ACK") {
+        handleBeaconAck(msg);
+    } else if (type == "SCHEDULE_SYNC") {
+        if (_bells) _bells->onScheduleSync(msg);
+    }
+    // TIME_SYNC_RESPONSE, stb. egyelőre ignorálva
 }
 
-unsigned long DeviceAgent::playbackQuietRemainingMs() const {
-    if (!isPlaybackQuietActive()) return 0;
+// ── HELLO ─────────────────────────────────────────────────────────────────────
 
-    return _playbackQuietUntilMs - millis();
-}
+void DeviceAgent::handleHello(const JsonDocument& msg) {
+    _deviceId = msg["deviceId"] | "";
 
-void DeviceAgent::sendBeaconIfDue() {
-    unsigned long now = millis();
+    String snapHost = msg["snapHost"] | "";
+    int    snapPort = msg["snapPort"] | 0;
 
-    if ((now - _lastBeaconMs) < BEACON_INTERVAL_MS) return;
-
-    _lastBeaconMs = now;
-
-    if (!_net || !_net->isConnected()) return;
-
-    JsonDocument status;
-
-    if (_tel) {
-        _tel->fillJson(status);
+    if (snapHost.length() > 0 && snapPort > 0 && _deviceId.length() > 0) {
+        _backend->setSnapConfig(snapHost, (uint16_t)snapPort, _deviceId);
+        Serial.printf("[AGENT] HELLO: snapHost=%s port=%d deviceId=%s\n",
+                      snapHost.c_str(), snapPort, _deviceId.c_str());
     }
 
-    bool ok = _backend->sendBeacon(
-        _audio ? _audio->getVolume() : 50,
-        _audio ? _audio->isMuted() : false,
-        _fw,
-        status
-    );
+    if (_bells) _bells->setOnlineMode(true);
 
-    if (_tel) {
-        if (ok) {
-            _tel->beaconOk++;
-            _tel->markServerOk();
-        } else {
-            _tel->beaconErr++;
-            _tel->markServerErr("beacon failed");
+    Serial.printf("[AGENT] HELLO fogadva – szerver online\n");
+}
+
+// ── PREPARE ───────────────────────────────────────────────────────────────────
+
+void DeviceAgent::handlePrepare(const JsonDocument& msg) {
+    String commandId = msg["commandId"] | "";
+    if (commandId.isEmpty()) return;
+
+    // Ellenőrzés: ez az eszköz szerepel-e az unmutedDeviceIds-ben?
+    // Ha az unmutedDeviceIds üres, mindenki lejátszik.
+    bool shouldPlay = false;
+    JsonArrayConst unmuted = msg["unmutedDeviceIds"].as<JsonArrayConst>();
+    if (unmuted.isNull() || unmuted.size() == 0) {
+        shouldPlay = true;
+    } else {
+        for (JsonVariantConst id : unmuted) {
+            if (id.as<String>() == _deviceId) { shouldPlay = true; break; }
         }
     }
-}
 
-void DeviceAgent::pollIfDue() {
-    unsigned long now = millis();
+    String action = msg["action"] | "";
+    Serial.printf("[AGENT] PREPARE: cmd=%s action=%s shouldPlay=%d\n",
+                  commandId.c_str(), action.c_str(), shouldPlay ? 1 : 0);
 
-    if ((now - _lastPollMs) < POLL_INTERVAL_MS) return;
-
-    _lastPollMs = now;
-
-    if (!_net || !_net->isConnected()) return;
-
-    PolledCommand cmd;
-
-    bool pollOk = _backend->poll(cmd);
-    if (_tel) {
-        if (pollOk) {
-            _tel->pollOk++;
-            _tel->markServerOk();
-        } else {
-            _tel->pollErr++;
-            _tel->markServerErr("poll failed");
-        }
+    if (shouldPlay && looksLikeAudioCommand(msg.as<JsonVariantConst>(), action)) {
+        enterPlaybackQuiet(msg.as<JsonVariantConst>(), action);
     }
-    if (!pollOk) return;
-    if (!cmd.hasCommand) return;
 
-    executeAndAck(cmd);
+    // READY_ACK küldése – a Snapcast buffer ~1000ms
+    if (_ws && _ws->isConnected()) {
+        JsonDocument ack;
+        ack["type"]      = "READY_ACK";
+        ack["commandId"] = commandId;
+        ack["deviceId"]  = _deviceId;
+        ack["bufferMs"]  = 1000;
+        char ts[32];
+        snprintf(ts, sizeof(ts), "%llu", (unsigned long long)millis());
+        ack["readyAt"]   = ts;
+        _ws->sendJson(ack);
+    }
 }
 
-bool DeviceAgent::executeAndAck(const PolledCommand& cmd) {
-    JsonVariantConst payload = cmd.payload;
+// ── PLAY ──────────────────────────────────────────────────────────────────────
 
+void DeviceAgent::handlePlay(const JsonDocument& msg) {
+    // Snapcast maga kezeli az időzítést; nekünk nincs teendőnk.
+    // A playback quiet mód már a PREPARE-kor be lett állítva.
+    Serial.printf("[AGENT] PLAY: cmd=%s playAt=%s\n",
+                  (msg["commandId"] | ""), (msg["playAt"] | ""));
+}
+
+// ── COMMAND (WS-push) ────────────────────────────────────────────────────────
+
+void DeviceAgent::handleCommand(const JsonDocument& msg) {
+    String commandId = msg["commandId"] | "";
+    if (commandId.isEmpty()) return;
+
+    JsonVariantConst payload = msg["payload"].as<JsonVariantConst>();
+    String action = detectAction(payload);
+    Serial.printf("[AGENT] COMMAND push: id=%s action=%s\n",
+                  commandId.c_str(), action.c_str());
+
+    executeCommand(commandId, payload);
+}
+
+// ── BEACON_ACK ────────────────────────────────────────────────────────────────
+
+void DeviceAgent::handleBeaconAck(const JsonDocument& msg) {
+    String snapHost = msg["snapHost"] | "";
+    int    snapPort = msg["snapPort"] | 0;
+    if (snapHost.length() > 0 && snapPort > 0 && _deviceId.length() > 0) {
+        _backend->setSnapConfig(snapHost, (uint16_t)snapPort, _deviceId);
+    }
+}
+
+// ── executeCommand ────────────────────────────────────────────────────────────
+
+bool DeviceAgent::executeCommand(const String& commandId, JsonVariantConst payload) {
     String action = detectAction(payload);
 
-    Serial.printf(
-        "[AGENT] Command received: id=%s action=%s hasUrl=%d hasText=%d hasDuration=%d\n",
-        cmd.id.c_str(),
-        action.c_str(),
-        payload["url"].is<const char*>() ? 1 : 0,
-        payload["text"].is<const char*>() ? 1 : 0,
-        payload["durationMs"].is<long>() ? 1 : 0
-    );
-
-    /*
-     * Kritikus:
-     * Ha ez hangos parancs, ELŐBB lépünk playback quiet módba,
-     * és csak utána ACK-olunk.
-     *
-     * Így az ACK HTTP hívás után már nem indulhat újabb poll/beacon/bell sync.
-     */
     if (looksLikeAudioCommand(payload, action)) {
-        enterPlaybackQuiet(payload, action.length() > 0 ? action : "SNAP_AUDIO");
+        enterPlaybackQuiet(payload, action.length() > 0 ? action : "AUDIO");
 
-        Serial.println("[AGENT] Snapcast audio command acknowledged");
-
-        bool ackOk = _backend->ack(cmd.id, true, "Snapcast audio command accepted");
-
-        return ackOk;
+        if (_ws && _ws->isConnected()) {
+            JsonDocument ack;
+            ack["type"]      = "CMD_ACK";
+            ack["commandId"] = commandId;
+            ack["ok"]        = true;
+            _ws->sendJson(ack);
+        }
+        return true;
     }
 
     String err;
@@ -153,189 +171,143 @@ bool DeviceAgent::executeAndAck(const PolledCommand& cmd) {
         ok = handleSetVolume(payload, err);
     } else if (action == "SHOW_MESSAGE") {
         ok = handleShowMessage(payload, err);
+    } else if (action == "SYNC_BELLS") {
+        // A BellManager onScheduleSync-kel dolgozza fel; itt csak ACK
+        ok = true;
     } else {
         err = "Unknown action: " + action;
-        ok = false;
     }
 
-    bool ackOk = _backend->ack(cmd.id, ok, err);
+    if (_ws && _ws->isConnected()) {
+        JsonDocument ack;
+        ack["type"]      = "CMD_ACK";
+        ack["commandId"] = commandId;
+        ack["ok"]        = ok;
+        if (!ok) ack["error"] = err;
+        _ws->sendJson(ack);
+    }
 
-    return ackOk && ok;
+    return ok;
 }
+
+// ── Beacon küldése WS-en ──────────────────────────────────────────────────────
+
+void DeviceAgent::sendBeaconIfDue() {
+    if (!_ws || !_ws->isConnected()) return;
+
+    unsigned long now = millis();
+    if ((now - _lastBeaconMs) < BEACON_INTERVAL_MS) return;
+    _lastBeaconMs = now;
+
+    JsonDocument beacon;
+    beacon["type"]            = "BEACON";
+    beacon["volume"]          = _audio ? _audio->getVolume() : 50;
+    beacon["muted"]           = _audio ? _audio->isMuted()   : false;
+    beacon["firmwareVersion"] = _fw;
+
+    if (_tel) {
+        JsonDocument statusDoc;
+        _tel->fillJson(statusDoc);
+        beacon["statusPayload"] = statusDoc;
+    }
+
+    bool ok = _ws->sendJson(beacon);
+    if (_tel) {
+        if (ok) { _tel->beaconOk++; _tel->markServerOk(); }
+        else    { _tel->beaconErr++; _tel->markServerErr("beacon ws failed"); }
+    }
+}
+
+// ── isPlaybackQuietActive / playbackQuietRemainingMs ─────────────────────────
+
+bool DeviceAgent::isPlaybackQuietActive() const {
+    if (_playbackQuietUntilMs == 0) return false;
+    return (long)(_playbackQuietUntilMs - millis()) > 0;
+}
+
+unsigned long DeviceAgent::playbackQuietRemainingMs() const {
+    if (!isPlaybackQuietActive()) return 0;
+    return _playbackQuietUntilMs - millis();
+}
+
+// ── Segédfüggvények ───────────────────────────────────────────────────────────
 
 String DeviceAgent::detectAction(JsonVariantConst payload) const {
     String action = payload["action"] | "";
-
-    if (action.length() > 0) {
-        return action;
-    }
-
-    /*
-     * Régi polling kompatibilitás:
-     * a backend sok esetben csak url/text mezőket küld explicit action nélkül.
-     */
-    if (payload["url"].is<const char*>()) {
-        return "PLAY_URL";
-    }
-
-    if (payload["text"].is<const char*>()) {
-        return "TTS";
-    }
-
+    if (action.length() > 0) return action;
+    if (payload["url"].is<const char*>()) return "PLAY_URL";
+    if (payload["text"].is<const char*>()) return "TTS";
     return "";
 }
 
-bool DeviceAgent::looksLikeAudioCommand(
-    JsonVariantConst payload,
-    const String& action
-) const {
-    if (
-        action == "PLAY_URL" ||
-        action == "TTS" ||
-        action == "BELL" ||
-        action == "PLAY_AUDIO" ||
-        action == "MIC_AUDIO" ||
-        action == "VOICE_MESSAGE"
-    ) {
+bool DeviceAgent::looksLikeAudioCommand(JsonVariantConst payload, const String& action) const {
+    if (action == "PLAY_URL" || action == "TTS" || action == "BELL" ||
+        action == "PLAY_AUDIO" || action == "MIC_AUDIO" || action == "VOICE_MESSAGE") {
         return true;
     }
-
-    /*
-     * Action nélküli hangos parancs fallback.
-     */
     if (payload["url"].is<const char*>()) {
         String url = payload["url"].as<const char*>();
-
-        if (
-            url.endsWith(".wav") ||
-            url.endsWith(".mp3") ||
-            url.indexOf("/audio/") >= 0
-        ) {
-            return true;
-        }
+        if (url.endsWith(".wav") || url.endsWith(".mp3") || url.indexOf("/audio/") >= 0) return true;
     }
-
     if (payload["text"].is<const char*>()) {
         String text = payload["text"].as<const char*>();
-
-        if (text.length() > 0) {
-            return true;
-        }
+        if (text.length() > 0) return true;
     }
-
     return false;
 }
 
 bool DeviceAgent::handleSetVolume(JsonVariantConst payload, String& err) {
-    if (!payload["volume"].is<int>()) {
-        err = "No volume";
-        return false;
-    }
-
+    if (!payload["volume"].is<int>()) { err = "No volume"; return false; }
     int vol = payload["volume"].as<int>();
-
-    if (_audio) {
-        _audio->setVolume(vol);
-    }
-
+    if (_audio) _audio->setVolume(vol);
     return true;
 }
 
 bool DeviceAgent::handleShowMessage(JsonVariantConst payload, String& err) {
     String msg = payload["message"] | "";
-
-    if (msg.isEmpty()) {
-        err = "No message";
-        return false;
-    }
-
+    if (msg.isEmpty()) { err = "No message"; return false; }
     Serial.printf("[AGENT] SHOW_MESSAGE: %s\n", msg.c_str());
-
     return true;
 }
 
 unsigned long DeviceAgent::getPlaybackQuietMs(JsonVariantConst payload) const {
     long durationMs = 0;
+    if      (payload["durationMs"].is<long>())          durationMs = payload["durationMs"].as<long>();
+    else if (payload["duration"].is<long>())             durationMs = payload["duration"].as<long>();
+    else if (payload["estimatedDurationMs"].is<long>())  durationMs = payload["estimatedDurationMs"].as<long>();
 
-    if (payload["durationMs"].is<long>()) {
-        durationMs = payload["durationMs"].as<long>();
-    } else if (payload["duration"].is<long>()) {
-        durationMs = payload["duration"].as<long>();
-    } else if (payload["estimatedDurationMs"].is<long>()) {
-        durationMs = payload["estimatedDurationMs"].as<long>();
-    }
-
-    if (durationMs <= 0) {
-        return DEFAULT_PLAYBACK_QUIET_MS;
-    }
+    if (durationMs <= 0) return DEFAULT_PLAYBACK_QUIET_MS;
 
     unsigned long quietMs = (unsigned long)durationMs + PLAYBACK_SAFETY_MS;
-
-    if (quietMs < 20000UL) quietMs = 20000UL;
+    if (quietMs < 20000UL)  quietMs = 20000UL;
     if (quietMs > 300000UL) quietMs = 300000UL;
-
     return quietMs;
 }
 
 void DeviceAgent::enterPlaybackQuiet(JsonVariantConst payload, const String& action) {
     unsigned long quietMs = getPlaybackQuietMs(payload);
-
     _playbackQuietUntilMs = millis() + quietMs;
 
-    /*
-     * UI címke választása:
-     * A backend payloadban opcionálisan küldhet egy explicit `kind` (vagy
-     * `source`) mezőt, ami a tényleges audio típust jelzi (MESSAGE/RADIO/SIGNAL).
-     * Erre azért van szükség, mert pl. a rádió streamet `PLAY_URL` action-nel
-     * küldi a backend, ugyanúgy mint a TTS-t - az action alapján nem
-     * lehetne őket megkülönböztetni.
-     * Sorrendi prioritás: payload.kind > payload.source > action.
-     */
     String kind = payload["kind"] | "";
-    if (kind.length() == 0) {
-        kind = payload["source"] | "";
-    }
+    if (kind.length() == 0) kind = payload["source"] | "";
     _currentPlaybackAction = kind.length() > 0 ? kind : action;
 
-    /*
-     * Azonnal eltoljuk a következő poll/beacon időpontokat,
-     * hogy a quiet mód lejárta után se induljanak egyszerre azonnal.
-     */
-    _lastPollMs = millis();
     _lastBeaconMs = millis();
 
-    /*
-     * Vészhelyzeti hangerő-override:
-     * a backend `emergency: true` flagjére az AudioManager-ben max hangerőt
-     * forszírozunk a teljes quiet mode idejére. A callback a Snapcast
-     * streamre is azonnal érvényesíti.
-     * A manuális hangerő (currentVolume) változatlan marad - a felhasználó
-     * tovább nyomhatja a gombokat, csak nem érvényesül a riasztás alatt.
-     */
     bool emergency = payload["emergency"].is<bool>() && payload["emergency"].as<bool>();
-
     if (emergency && _audio) {
         _audio->setVolumeOverride(10);
         _emergencyOverrideActive = true;
-        Serial.println("[AGENT] EMERGENCY flag set: volume override -> 10");
+        Serial.println("[AGENT] EMERGENCY: volume override -> 10");
     }
 
-    Serial.printf(
-        "[AGENT] Playback quiet mode: action=%s quietMs=%lu emergency=%d\n",
-        action.c_str(),
-        quietMs,
-        emergency ? 1 : 0
-    );
+    Serial.printf("[AGENT] Playback quiet: action=%s quietMs=%lu\n",
+                  action.c_str(), quietMs);
 }
 
 void DeviceAgent::maybeClearEmergencyOverride() {
     if (!_emergencyOverrideActive) return;
-
-    // Csak akkor töröljük, ha a quiet mode lejárt - a quiet mode aktív
-    // állapotot a fenti `if (isPlaybackQuietActive()) return;` szűrte.
-    if (_audio) {
-        _audio->clearVolumeOverride();
-    }
+    if (_audio) _audio->clearVolumeOverride();
     _emergencyOverrideActive = false;
-    Serial.println("[AGENT] EMERGENCY override cleared after playback quiet expired");
+    Serial.println("[AGENT] EMERGENCY override törölve");
 }

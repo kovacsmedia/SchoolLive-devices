@@ -12,6 +12,7 @@
 #include "BellManager.h"
 #include "UIManager.h"
 #include "BackendClient.h"
+#include "WsClient.h"
 #include "DeviceAgent.h"
 #include "DeviceTelemetry.h"
 #include "SnapcastClient.h"
@@ -22,6 +23,7 @@ SLNetworkManager networkManager;
 AudioManager audioManager;
 PersistStore store;
 BackendClient backend;
+WsClient wsClient;
 BellManager bellManager(audioManager, networkManager, backend);
 DeviceAgent agent;
 DeviceTelemetry telemetry;
@@ -66,31 +68,17 @@ void tryStartSnapcastClient() {
     snapClient.start();
 }
 
-// --- Induláskori beacon, hogy a Snapcast config még poll előtt meglegyen ---
+// --- WS kapcsolat indítása (beacon és poll helyett) ---
 
-void sendInitialBeaconAndStartSnapcast() {
-    JsonDocument status;
-    status["boot"] = true;
-    status["mode"] = "normal";
-    status["ip"] = WiFi.localIP().toString();
-    status["mac"] = WiFi.macAddress();
-    status["snapcast"] = "requested";
+void startWsConnection(const String& deviceKey) {
+    // wss://api.schoollive.hu:443/sync?deviceKey=<key>
+    wsClient.begin("api.schoollive.hu", 443, deviceKey);
 
-    Serial.println("[MAIN] Sending initial beacon before polling");
+    wsClient.onMessage([](const JsonDocument& msg) {
+        agent.onWsMessage(msg);
+    });
 
-    bool ok = backend.sendBeacon(
-        audioManager.getVolume(),
-        false,
-        String(FW_VERSION),
-        status
-    );
-
-    if (!ok) {
-        Serial.println("[MAIN] Initial beacon failed, Snapcast config not available yet");
-        return;
-    }
-
-    tryStartSnapcastClient();
+    Serial.println("[MAIN] WsClient indítva");
 }
 
 // --- Provisioning task (core 0) ---
@@ -151,51 +139,36 @@ void TaskNetwork(void* pvParameters) {
     for (;;) {
         networkManager.loop();
 
+        // WS loop – event feldolgozás + automata reconnect
+        wsClient.loop();
+
         tryStartSnapcastClient();
 
-        /*
-         * Lejátszás közben:
-         * - nincs polling;
-         * - nincs beacon;
-         * - nincs bell sync;
-         * - nem futtatunk semmilyen extra HTTP kérést.
-         *
-         * Ekkor a Snapcast hálózati task és az audio task kap prioritást.
-         */
         if (agent.isPlaybackQuietActive()) {
             vTaskDelay(100 / portTICK_PERIOD_MS);
             continue;
         }
 
-        /*
-         * Ha Snapcast kapcsolat él, a bell syncet akkor sem futtatjuk.
-         * A hangos üzemmódot Snapcast viszi, az offline bell sync ráér,
-         * vagy csak akkor fontos, ha nincs Snapcast kapcsolat.
-         */
         bool snapConnected = snapClient.isConnected();
+        bool wsConnected   = wsClient.isConnected();
 
-        /*
-         * Polling csak akkor megy, ha éppen nincs védett lejátszási időszak.
-         * A pollingból jön a célzott régi kompatibilitási parancs,
-         * amit ACK-olunk, majd DeviceAgent playback quiet módba lép.
-         */
+        // Agent loop: beacon küldés WS-en, playback quiet kezelés
         agent.loop();
 
         tryStartSnapcastClient();
 
-        /*
-         * Bell sync / offline bell kezelés csak akkor,
-         * ha nincs Snapcast kapcsolat.
-         */
-        if (!snapConnected) {
+        // Offline bell lejátszás: csak ha nincs WS kapcsolat ÉS nincs Snapcast
+        if (!wsConnected && !snapConnected) {
             if (!audioManager.isBusy() && !audioManager.isInCooldown()) {
                 bellManager.loop();
             }
         }
 
-        // OTA check - csak akkor fut, ha nincs aktív audio lejátszás.
-        // A `runCheckAndMaybeUpdate()` belül leállítja a snap stream-et a flash
-        // előtt, és sikeres flash után automatikusan ESP.restart() történik.
+        // Ha WS lecsatlakozott, az online módot töröljük → BellManager lokálisan játszhat
+        if (!wsConnected) {
+            bellManager.setOnlineMode(false);
+        }
+
         otaManager.loop();
 
         vTaskDelay(100 / portTICK_PERIOD_MS);
@@ -257,14 +230,10 @@ void startNormalMode() {
     telemetry.firmwareVersion = String(FW_VERSION);
     telemetry.deviceId = WiFi.macAddress();
 
-    /*
-     * Kritikus:
-     * még az agent.begin() és a polling előtt kérünk Snapcast configot,
-     * majd elindítjuk a Snapcast klienst.
-     */
-    sendInitialBeaconAndStartSnapcast();
+    // WS kapcsolat indítása – a HELLO üzenetből érkezik majd a Snapcast konfig
+    startWsConnection(dk);
 
-    agent.begin(networkManager, audioManager, *uiManager, backend, telemetry);
+    agent.begin(networkManager, audioManager, *uiManager, backend, telemetry, wsClient, bellManager);
     agent.setFirmwareVersion(String(FW_VERSION));
 
     // A UI top-bar állapotjelzőihez (S kör = snap connected, MESSAGE/RADIO/SIGNAL
@@ -289,7 +258,7 @@ void startNormalMode() {
     xTaskCreatePinnedToCore(
         TaskNetwork,
         "NetworkTask",
-        12000,
+        16000,
         NULL,
         1,
         &TaskNetworkHandle,

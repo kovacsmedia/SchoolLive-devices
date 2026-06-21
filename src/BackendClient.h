@@ -6,12 +6,6 @@
 #include <WiFiClientSecure.h>
 #include <LittleFS.h>
 
-struct PolledCommand {
-    bool hasCommand = false;
-    String id;
-    JsonDocument payload;
-};
-
 // A backend /firmware/check válasza, ha új firmware érhető el.
 struct FirmwareCheckResult {
     bool   updateAvailable = false;
@@ -30,15 +24,8 @@ public:
 
     bool isReady() const;
 
-    bool sendBeacon(
-        uint8_t volume,
-        bool muted,
-        const String& firmwareVersion,
-        const JsonDocument& statusPayload
-    );
-
-    bool poll(PolledCommand& outCmd);
-    bool ack(const String& commandId, bool ok, const String& errorMsg);
+    // Snapcast konfiguráció frissítése – WS HELLO/BEACON_ACK után hívandó
+    void setSnapConfig(const String& host, uint16_t port, const String& deviceId);
 
     // GET kérés JSON válasszal
     bool getJson(const String& path, JsonDocument& resp, int& httpCode);
@@ -127,5 +114,4 @@ private:
     );
 
     void addCommonHeaders(HTTPClient& http);
-    void parseBeaconResponse(const JsonDocument& resp);
 };

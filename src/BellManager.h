@@ -58,6 +58,14 @@ public:
     String getScheduleSource()  const { return _scheduleSource; }
     bool   isSyncedFromServer() const { return _syncedFromServer; }
 
+    // WS SCHEDULE_SYNC üzenet érkezett: frissítjük a helyi cache-t a push-olt adatokból
+    void onScheduleSync(const JsonDocument& msg);
+
+    // Online/offline mód jelzése a DeviceAgent-től:
+    // ha online=true, a checkSchedule() NEM játszik lokálisan
+    // (a backend PREPARE/PLAY gondoskodik a csengetésről Snapcast-on)
+    void setOnlineMode(bool online) { _onlineMode = online; }
+
 private:
     AudioManager&   audio;
     SLNetworkManager& network;
@@ -80,6 +88,9 @@ private:
     unsigned long _lastVersionCheckMs = 0;
     bool          _syncedToday        = false;
     bool          _syncedFromServer   = false;
+
+    // Online mód: ha true, a checkSchedule() nem játszik lokálisan
+    bool          _onlineMode         = false;
 
     const unsigned long VERSION_CHECK_MS = 60000UL;  // 1 perc
 

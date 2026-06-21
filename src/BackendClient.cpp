@@ -313,139 +313,16 @@ bool BackendClient::downloadFile(
 }
 
 // ---------------------------------------------------------------------------
-// sendBeacon
+// setSnapConfig – WS HELLO / BEACON_ACK után hívja a DeviceAgent
 // ---------------------------------------------------------------------------
 
-bool BackendClient::sendBeacon(
-    uint8_t volume,
-    bool muted,
-    const String& firmwareVersion,
-    const JsonDocument& statusPayload
-) {
-    JsonDocument req;
-
-    req["volume"] = volume;
-    req["muted"] = muted;
-    req["firmwareVersion"] = firmwareVersion;
-    req["statusPayload"].set(statusPayload.as<JsonVariantConst>());
-
-    JsonDocument resp;
-    int code = 0;
-
-    bool ok = postJson("/devices/beacon", req, resp, code);
-
-    if (!ok) {
-        return false;
-    }
-
-    parseBeaconResponse(resp);
-
-    return true;
-}
-
-void BackendClient::parseBeaconResponse(const JsonDocument& resp) {
-    if (resp["deviceId"].is<const char*>()) {
-        _deviceId = resp["deviceId"].as<const char*>();
-    } else if (resp["device"]["id"].is<const char*>()) {
-        _deviceId = resp["device"]["id"].as<const char*>();
-    }
-
-    if (resp["snapHost"].is<const char*>()) {
-        _snapHost = resp["snapHost"].as<const char*>();
-    }
-
-    if (resp["snapPort"].is<int>()) {
-        int port = resp["snapPort"].as<int>();
-
-        if (port > 0 && port <= 65535) {
-            _snapPort = static_cast<uint16_t>(port);
-        }
-    }
-
-    _snapConfigValid =
-        _deviceId.length() > 0 &&
-        _snapHost.length() > 0 &&
-        _snapPort > 0;
-
-    if (_snapConfigValid) {
-        Serial.printf(
-            "[SNAPCFG] deviceId=%s host=%s port=%u\n",
-            _deviceId.c_str(),
-            _snapHost.c_str(),
-            _snapPort
-        );
-    } else {
-        Serial.printf(
-            "[SNAPCFG] incomplete: deviceId=%s host=%s port=%u\n",
-            _deviceId.c_str(),
-            _snapHost.c_str(),
-            _snapPort
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// poll
-// ---------------------------------------------------------------------------
-
-bool BackendClient::poll(PolledCommand& outCmd) {
-    // Mezőszintű reset.
-    // A `PolledCommand{}` rvalue-aggregate initialization az ArduinoJson v7.4+
-    // alatt warning-ot generál, mert a JsonDocument explicit konstruktor egy
-    // Allocator* paraméterrel - a brace-list inicializátoron át hívva ez
-    // nem zero-arg konstrukció. Ezért explicit nullázzuk a mezőket.
-    outCmd.hasCommand = false;
-    outCmd.id         = "";
-    outCmd.payload.clear();
-
-    JsonDocument req;
-    req["ping"] = static_cast<uint32_t>(millis());
-
-    JsonDocument resp;
-    int code = 0;
-
-    bool ok = postJson("/devices/poll", req, resp, code);
-
-    if (!ok) return false;
-    if (!resp["ok"].is<bool>() || !resp["ok"].as<bool>()) return false;
-
-    if (resp["command"].isNull()) {
-        outCmd.hasCommand = false;
-        return true;
-    }
-
-    JsonObject cmd = resp["command"].as<JsonObject>();
-
-    outCmd.hasCommand = true;
-    outCmd.id = cmd["id"].as<String>();
-    outCmd.payload.clear();
-    outCmd.payload.set(cmd["payload"].as<JsonVariantConst>());
-
-    return true;
-}
-
-// ---------------------------------------------------------------------------
-// ack
-// ---------------------------------------------------------------------------
-
-bool BackendClient::ack(
-    const String& commandId,
-    bool ok,
-    const String& errorMsg
-) {
-    JsonDocument req;
-
-    req["commandId"] = commandId;
-    req["ok"] = ok;
-
-    if (!ok) {
-        req["error"] = errorMsg;
-    }
-
-    JsonDocument resp;
-    int code = 0;
-
-    return postJson("/devices/ack", req, resp, code);
+void BackendClient::setSnapConfig(const String& host, uint16_t port, const String& deviceId) {
+    _snapHost       = host;
+    _snapPort       = port;
+    _deviceId       = deviceId;
+    _snapConfigValid = host.length() > 0 && port > 0 && deviceId.length() > 0;
+    Serial.printf("[SNAPCFG] set → deviceId=%s host=%s port=%u\n",
+                  deviceId.c_str(), host.c_str(), port);
 }
 
 // ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@
 #include <Preferences.h>
 #include <LittleFS.h>
 #include <string.h>
+#include <ArduinoJson.h>
 
 // ---------------------------------------------------------------------------
 // Hardcoded fallback
@@ -437,6 +438,10 @@ void BellManager::loadHardcodedDefault() {
 // checkSchedule
 // ---------------------------------------------------------------------------
 void BellManager::checkSchedule() {
+    // Online módban a backend Snapcast-on keresztül gondoskodik a csengetésről.
+    // Lokálisan csak offline esetén játszunk.
+    if (_onlineMode) return;
+
     struct tm t = network.getTimeInfo();
 
     int curMin = t.tm_hour * 60 + t.tm_min;
@@ -536,4 +541,141 @@ String BellManager::getTodayDateStr() {
     snprintf(buf, sizeof(buf), "%04d-%02d-%02d",
              t.tm_year + 1900, t.tm_mon + 1, t.tm_mday);
     return String(buf);
+}
+
+// ---------------------------------------------------------------------------
+// onScheduleSync – WS push feldolgozása
+// ---------------------------------------------------------------------------
+// A szerver SCHEDULE_SYNC üzenetben elküldi az összes szükséges adatot.
+// Feldolgozzuk a mai és a default menetrendet, frissítjük az NVS cache-t,
+// majd letöltjük a hangfájlokat ha szükséges.
+// Ez a metódus a fetchFullSync() adataival teljesen egyenértékű, csak
+// a forrás a WS push helyett HTTP.
+void BellManager::onScheduleSync(const JsonDocument& msg) {
+    Serial.println("[BELL] WS SCHEDULE_SYNC fogadva – schedule frissítés");
+
+    String todayVer   = msg["todayVersion"]   | "";
+    String defaultVer = msg["defaultVersion"] | "";
+    bool   isHoliday  = msg["isHoliday"]      | false;
+
+    // ── Mai schedule ──
+    _entryCount = 0;
+    if (isHoliday) {
+        _scheduleSource = "ws-holiday";
+        Serial.println("[BELL] SCHEDULE_SYNC: ma ünnepnap, nincs csengetés");
+    } else {
+        JsonArrayConst bells = msg["bells"].as<JsonArrayConst>();
+        if (!bells.isNull()) {
+            for (JsonVariantConst b : bells) {
+                if (_entryCount >= MAX_BELL_ENTRIES) break;
+                BellEntry& e = _entries[_entryCount];
+                e.hour   = b["hour"]   | 0;
+                e.minute = b["minute"] | 0;
+                String t  = b["type"]  | "MAIN";
+                e.type    = (t == "SIGNAL") ? BellType::SIGNAL : BellType::MAIN;
+                String sf = b["soundFile"] | "kibecsengo.mp3";
+                strncpy(e.soundFile, sf.c_str(), sizeof(e.soundFile) - 1);
+                e.soundFile[sizeof(e.soundFile) - 1] = '\0';
+                _entryCount++;
+            }
+        }
+        _scheduleSource = "ws";
+        Serial.printf("[BELL] SCHEDULE_SYNC: %d bejegyzés (ver: %s)\n",
+                      _entryCount, todayVer.c_str());
+    }
+
+    String today = getTodayDateStr();
+    saveTodayToNVS(today, todayVer);
+    _todayVersionKnown = todayVer;
+    _loadedDate        = today;
+    _syncedToday       = true;
+    _syncedFromServer  = true;
+
+    // ── Default schedule ──
+    JsonArrayConst defaultBells = msg["defaultBells"].as<JsonArrayConst>();
+    if (!defaultBells.isNull() && defaultVer != _defaultVersionKnown) {
+        BellEntry defEntries[MAX_BELL_ENTRIES];
+        uint8_t defCount = 0;
+        for (JsonVariantConst b : defaultBells) {
+            if (defCount >= MAX_BELL_ENTRIES) break;
+            BellEntry& e = defEntries[defCount];
+            e.hour   = b["hour"]   | 0;
+            e.minute = b["minute"] | 0;
+            String t  = b["type"]  | "MAIN";
+            e.type    = (t == "SIGNAL") ? BellType::SIGNAL : BellType::MAIN;
+            String sf = b["soundFile"] | "kibecsengo.mp3";
+            strncpy(e.soundFile, sf.c_str(), sizeof(e.soundFile) - 1);
+            e.soundFile[sizeof(e.soundFile) - 1] = '\0';
+            defCount++;
+        }
+        saveDefaultToNVS(defaultVer, defEntries, defCount);
+        _defaultVersionKnown = defaultVer;
+        Serial.printf("[BELL] SCHEDULE_SYNC: default mentve NVS-be (%d bejegyzés)\n", defCount);
+    }
+
+    // ── Hangfájlok szinkronizálása ──
+    // Ugyanaz a logika mint fetchFullSync-ben
+    JsonArrayConst sounds = msg["sounds"].as<JsonArrayConst>();
+    if (!sounds.isNull()) {
+        String serverFiles[MAX_BELL_ENTRIES];
+        uint8_t serverFileCount = 0;
+        for (JsonVariantConst s : sounds) {
+            String fn = s["filename"] | "";
+            if (fn.isEmpty()) continue;
+            if (fn[0] != '/') fn = "/" + fn;
+            if (serverFileCount < MAX_BELL_ENTRIES) serverFiles[serverFileCount++] = fn;
+        }
+
+        // LittleFS cleanup
+        File root = LittleFS.open("/");
+        if (root && root.isDirectory()) {
+            File entry = root.openNextFile();
+            while (entry) {
+                String entryName = "/" + String(entry.name());
+                entry.close();
+                if (entryName.endsWith(".mp3")) {
+                    bool found = false;
+                    for (uint8_t i = 0; i < serverFileCount; i++) {
+                        if (serverFiles[i] == entryName) { found = true; break; }
+                    }
+                    if (!found) {
+                        LittleFS.remove(entryName);
+                        Serial.printf("[BELL] Törölt hang: %s\n", entryName.c_str());
+                    }
+                }
+                entry = root.openNextFile();
+            }
+            root.close();
+        }
+
+        // Letöltés
+        int dlOk = 0, dlSkip = 0, dlFail = 0;
+        for (JsonVariantConst s : sounds) {
+            String filename  = s["filename"]  | "";
+            String url       = s["url"]       | "";
+            size_t sizeBytes = s["sizeBytes"] | 0;
+            if (filename.isEmpty() || url.isEmpty()) continue;
+
+            String localPath = filename.startsWith("/") ? filename : "/" + filename;
+
+            // Teljes URL összeállítása ha relatív
+            if (url.startsWith("/")) {
+                url = String(BACKEND_BASE_URL) + url;
+            }
+
+            if (sizeBytes > 0 && LittleFS.exists(localPath)) {
+                File f = LittleFS.open(localPath, "r");
+                if (f && (size_t)f.size() == sizeBytes) { f.close(); dlSkip++; continue; }
+                if (f) f.close();
+            }
+
+            bool ok = backend.downloadFile(url, localPath, sizeBytes);
+            if (ok) dlOk++; else dlFail++;
+        }
+        Serial.printf("[BELL] Hangok: %d ok, %d skip, %d fail\n", dlOk, dlSkip, dlFail);
+    }
+
+    // Visszajelzés törlése: ha az eszköz mostanáig version-check-et futtatott,
+    // a jövőbeli check-ek tudják, hogy a szinkron friss
+    _lastVersionCheckMs = millis();
 }
