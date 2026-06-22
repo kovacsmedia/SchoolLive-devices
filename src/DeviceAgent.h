@@ -51,7 +51,7 @@ private:
     PersistStore*     _store    = nullptr;
 
     String _fw            = "dev";
-    String _deviceId;                   // a szerver által kiosztott Device.id (HELLO-ból)
+    String _deviceId;
 
     unsigned long _lastBeaconMs   = 0;
     const unsigned long BEACON_INTERVAL_MS = 30000UL;

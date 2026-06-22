@@ -5,6 +5,18 @@
 		},
 		{
 			"path": "."
+		},
+		{
+			"path": "../SchoolLive-frontend"
+		},
+		{
+			"path": "../SchoolLive-multidevices"
+		},
+		{
+			"path": "../SchoolLive-linux"
+		},
+		{
+			"path": "../SchoolLive-windows"
 		}
 	],
 	"settings": {}
