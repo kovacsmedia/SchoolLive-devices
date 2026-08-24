@@ -55,6 +55,7 @@ void BellManager::begin() {
     _loadedDate          = "";
     _todayVersionKnown   = "";
     _defaultVersionKnown = "";
+    _fullYearVersionKnown = "";
 }
 
 // ---------------------------------------------------------------------------
@@ -138,6 +139,21 @@ void BellManager::maybeSyncSchedule() {
         _syncedToday    = true;
         _scheduleSource = "nvs";
         Serial.printf("[BELL] Offline: loaded NVS cache (%d entries)\n", _entryCount);
+        return;
+    }
+
+    // A napi "ma" cache csak arra az egy napra érvényes, amikor mentődött –
+    // ha a dátum időközben (offline állapotban) fordult, ez itt már meghal.
+    // A teljes tanévnyi naptárból viszont BÁRMELYIK napra fel tudjuk oldani
+    // a helyes csengetési rendet (naptár-kivétel/ünnepnap/hétvége/default),
+    // nem csak a legutóbb cache-elt napra.
+    bool fyIsHoliday = false;
+    if (resolveFullYearForDate(today, fyIsHoliday)) {
+        _loadedDate     = today;
+        _syncedToday    = true;
+        _scheduleSource = fyIsHoliday ? "nvs-fullyear-holiday" : "nvs-fullyear";
+        Serial.printf("[BELL] Offline: full-year calendar resolved for %s (%d entries, holiday=%d)\n",
+                      today.c_str(), _entryCount, fyIsHoliday ? 1 : 0);
         return;
     }
 
@@ -243,6 +259,18 @@ bool BellManager::fetchFullSync() {
         _defaultVersionKnown = defaultVer;
         Serial.printf("[BELL] Default schedule saved to NVS (%d entries, ver: %s)\n",
                       defCount, defaultVer.c_str());
+    }
+
+    // ── Teljes tanévnyi naptár (sablonok + naptár-kivételek) ──
+    // Additív mezők a /bells/sync válaszban (régi backend ezeket nem küldi,
+    // ilyenkor resp["fullYearVersion"] üres marad és kimarad a mentés –
+    // a régi napi/default cache-mechanizmus változatlanul működik).
+    String fullYearVer = resp["fullYearVersion"] | "";
+    if (fullYearVer.length() > 0 && fullYearVer != _fullYearVersionKnown) {
+        saveFullYearToNVS(fullYearVer, resp);
+        _fullYearVersionKnown = fullYearVer;
+        Serial.printf("[BELL] Full-year calendar saved to NVS (ver: %s)\n",
+                      fullYearVer.c_str());
     }
 
     // ── Hangfájlok szinkronizálása LittleFS-re ──
@@ -424,6 +452,115 @@ bool BellManager::loadDefaultFromNVS(const String& version) {
     _entryCount          = count;
     _defaultVersionKnown = ver;
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// NVS – teljes tanévnyi naptár
+// ---------------------------------------------------------------------------
+void BellManager::saveFullYearToNVS(const String& version, const JsonDocument& src) {
+    // Csak a szükséges almezőket mentjük (nem a teljes /bells/sync választ,
+    // ami a "ma" nézetet is tartalmazza – azt a napi cache már kezeli).
+    JsonDocument fy;
+    fy["templates"]          = src["templates"];
+    fy["calendar"]           = src["calendar"];
+    fy["defaultTemplateId"]  = src["defaultTemplateId"];
+
+    String json;
+    serializeJson(fy, json);
+
+    // Védőháló: ha valamiért kirívóan nagy lenne (pl. sok naptár-kivétel +
+    // sok sablon), inkább kihagyjuk a mentést, mint hogy egy sérült/csonka
+    // NVS bejegyzés keletkezzen. ESP-IDF NVS blob/string egy bejegyzésben
+    // több oldalra is szétosztható, de a gyakorlatban egy tanév naptára
+    // (max 6 sablon × 40 bejegyzés + néhány tucat kivétel-nap) jóval e
+    // limit alatt marad.
+    const size_t MAX_FY_JSON_BYTES = 24 * 1024;
+    if (json.length() > MAX_FY_JSON_BYTES) {
+        Serial.printf("[BELL] Full-year JSON túl nagy (%d byte) – mentés kihagyva\n",
+                      json.length());
+        return;
+    }
+
+    Preferences prefs;
+    if (!prefs.begin(NVS_BELL_FY_NS, false)) return;
+    prefs.putString(NVS_BELL_FY_VER,  version);
+    prefs.putString(NVS_BELL_FY_DATA, json);
+    prefs.end();
+}
+
+bool BellManager::resolveFullYearForDate(const String& dateStr, bool& outIsHoliday) {
+    outIsHoliday = false;
+
+    Preferences prefs;
+    if (!prefs.begin(NVS_BELL_FY_NS, true)) return false;
+    String json = prefs.getString(NVS_BELL_FY_DATA, "");
+    prefs.end();
+    if (json.isEmpty()) return false;
+
+    JsonDocument fy;
+    if (deserializeJson(fy, json) != DeserializationError::Ok) return false;
+
+    JsonArray calendar  = fy["calendar"].as<JsonArray>();
+    JsonArray templates = fy["templates"].as<JsonArray>();
+    String defaultTemplateId = fy["defaultTemplateId"] | "";
+
+    // 1. Van-e explicit naptár-kivétel erre a napra (ünnepnap vagy egyedi sablon)?
+    String targetTemplateId;
+    bool   hasCalendarEntry = false;
+    if (!calendar.isNull()) {
+        for (JsonObject d : calendar) {
+            String date = d["date"] | "";
+            if (date != dateStr) continue;
+            hasCalendarEntry = true;
+            if (d["isHoliday"] | false) {
+                outIsHoliday = true;
+                _entryCount  = 0;
+                return true;
+            }
+            targetTemplateId = d["templateId"] | "";
+            break;
+        }
+    }
+
+    // 2. Nincs naptár-kivétel → hétvégén nincs csengetés (egyezően a backend
+    //    online bell.scheduler.ts viselkedésével), egyébként a default sablon.
+    if (!hasCalendarEntry) {
+        struct tm t = network.getTimeInfo();
+        if (t.tm_wday == 0 || t.tm_wday == 6) {
+            outIsHoliday = true;
+            _entryCount  = 0;
+            return true;
+        }
+        targetTemplateId = defaultTemplateId;
+    }
+
+    if (targetTemplateId.isEmpty() || templates.isNull()) return false;
+
+    // 3. A célzott sablon megkeresése és bells másolása _entries-be.
+    for (JsonObject tpl : templates) {
+        String tid = tpl["id"] | "";
+        if (tid != targetTemplateId) continue;
+
+        JsonArray bells = tpl["bells"].as<JsonArray>();
+        _entryCount = 0;
+        if (!bells.isNull()) {
+            for (JsonObject b : bells) {
+                if (_entryCount >= MAX_BELL_ENTRIES) break;
+                BellEntry& e = _entries[_entryCount];
+                e.hour   = b["hour"]   | 0;
+                e.minute = b["minute"] | 0;
+                String t = b["type"]   | "MAIN";
+                e.type   = (t == "SIGNAL") ? BellType::SIGNAL : BellType::MAIN;
+                String sf = b["soundFile"] | "kibecsengo.mp3";
+                strncpy(e.soundFile, sf.c_str(), sizeof(e.soundFile) - 1);
+                e.soundFile[sizeof(e.soundFile) - 1] = '\0';
+                _entryCount++;
+            }
+        }
+        return true;
+    }
+
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -611,6 +748,16 @@ void BellManager::onScheduleSync(const JsonDocument& msg) {
         saveDefaultToNVS(defaultVer, defEntries, defCount);
         _defaultVersionKnown = defaultVer;
         Serial.printf("[BELL] SCHEDULE_SYNC: default mentve NVS-be (%d bejegyzés)\n", defCount);
+    }
+
+    // ── Teljes tanévnyi naptár ──
+    // Ld. fetchFullSync() – ugyanaz az additív mező-kezelés, csak WS forrásból.
+    String fullYearVer = msg["fullYearVersion"] | "";
+    if (fullYearVer.length() > 0 && fullYearVer != _fullYearVersionKnown) {
+        saveFullYearToNVS(fullYearVer, msg);
+        _fullYearVersionKnown = fullYearVer;
+        Serial.printf("[BELL] SCHEDULE_SYNC: teljes tanévnyi naptár mentve (ver: %s)\n",
+                      fullYearVer.c_str());
     }
 
     // ── Hangfájlok szinkronizálása ──

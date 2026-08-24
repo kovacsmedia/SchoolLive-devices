@@ -41,6 +41,16 @@ struct BellEntry {
 #define NVS_BELL_DEF_DATA   "data"
 #define NVS_BELL_DEF_VER    "ver"
 
+// NVS kulcsok – teljes tanévnyi naptár (sablonok + naptár-kivételek).
+// A /bells/sync válasz `templates`/`calendar`/`defaultTemplateId` mezőit
+// nyers JSON string-ként tároljuk (ArduinoJson v7 JsonDocument, nincs
+// fix méretkorlát mint a napi/default cache-nél) – így egy teljesen offline
+// eszköz is helyesen fel tudja oldani BÁRMELYIK jövőbeli nap csengetési
+// rendjét, nem csak a legutóbb cache-elt "ma"-t.
+#define NVS_BELL_FY_NS      "bellfy"
+#define NVS_BELL_FY_DATA    "data"
+#define NVS_BELL_FY_VER     "ver"
+
 class BellManager {
 public:
     BellManager(AudioManager& audioMgr, SLNetworkManager& netMgr, BackendClient& backend);
@@ -83,6 +93,7 @@ private:
     // Verziókövetés
     String _todayVersionKnown;    // amit az eszköz már betöltött
     String _defaultVersionKnown;  // default amit az eszköz már betöltött
+    String _fullYearVersionKnown; // teljes tanévnyi naptár amit már elmentett
 
     // Szinkronizáció állapot
     unsigned long _lastVersionCheckMs = 0;
@@ -115,6 +126,14 @@ private:
     bool loadDefaultFromNVS(const String& version);
     void saveDefaultToNVS(const String& version,
                           const BellEntry* entries, uint8_t count);
+
+    // NVS – teljes tanévnyi naptár
+    void saveFullYearToNVS(const String& version, const JsonDocument& src);
+    // Adott napra (YYYY-MM-DD) feloldja a csengetési rendet a tárolt
+    // naptárból: explicit naptár-kivétel (ünnepnap / egyedi sablon) > hétvégi
+    // csendes nap (ha nincs kivétel) > default sablon. Sikeres feloldáskor
+    // az _entries/_entryCount-ot frissíti (holiday/hétvége esetén 0 elemre).
+    bool resolveFullYearForDate(const String& dateStr, bool& outIsHoliday);
 
     void loadHardcodedDefault();
     void checkSchedule();
