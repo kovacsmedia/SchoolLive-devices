@@ -244,7 +244,7 @@ void startNormalMode() {
         Serial.printf("[MAIN] Channel mode loaded from NVS: %d\n", (int)cm);
     }
 
-    agent.begin(networkManager, audioManager, *uiManager, backend, telemetry, wsClient, bellManager, snapClient, store);
+    agent.begin(networkManager, audioManager, *uiManager, backend, telemetry, wsClient, bellManager, snapClient, store, otaManager);
     agent.setFirmwareVersion(String(FW_VERSION));
 
     // A UI top-bar állapotjelzőihez (S kör = snap connected, MESSAGE/RADIO/SIGNAL

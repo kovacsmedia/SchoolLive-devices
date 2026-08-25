@@ -9,7 +9,8 @@ void DeviceAgent::begin(
     WsClient& ws,
     BellManager& bells,
     SnapcastClient& snap,
-    PersistStore& store
+    PersistStore& store,
+    OtaManager& ota
 ) {
     _net     = &net;
     _audio   = &audio;
@@ -20,6 +21,7 @@ void DeviceAgent::begin(
     _bells   = &bells;
     _snap    = &snap;
     _store   = &store;
+    _ota     = &ota;
 }
 
 // ── loop ──────────────────────────────────────────────────────────────────────
@@ -54,6 +56,11 @@ void DeviceAgent::onWsMessage(const JsonDocument& msg) {
         handleBeaconAck(msg);
     } else if (type == "SCHEDULE_SYNC") {
         if (_bells) _bells->onScheduleSync(msg);
+    } else if (type == "OTA_UPDATE") {
+        // Admin friss firmware-t töltött fel – a 30 perces auto-check helyett
+        // azonnal ránézünk. A tényleges verzió/mandatory döntést az OtaManager
+        // saját GET /firmware/check hívása hozza meg, ez csak egy ébresztő.
+        if (_ota) _ota->forceCheckNow();
     }
     // TIME_SYNC_RESPONSE, stb. egyelőre ignorálva
 }

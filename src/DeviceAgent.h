@@ -12,6 +12,7 @@
 #include "WsClient.h"
 #include "SnapcastClient.h"
 #include "PersistStore.h"
+#include "OtaManager.h"
 
 class DeviceAgent {
 public:
@@ -24,7 +25,8 @@ public:
         WsClient& ws,
         BellManager& bells,
         SnapcastClient& snap,
-        PersistStore& store
+        PersistStore& store,
+        OtaManager& ota
     );
 
     void loop();
@@ -49,6 +51,7 @@ private:
     BellManager*      _bells    = nullptr;
     SnapcastClient*   _snap     = nullptr;
     PersistStore*     _store    = nullptr;
+    OtaManager*       _ota      = nullptr;
 
     String _fw            = "dev";
     String _deviceId;
