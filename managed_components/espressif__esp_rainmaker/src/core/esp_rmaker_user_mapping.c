@@ -1,16 +1,8 @@
-// Copyright 2020 Espressif Systems (Shanghai) PTE LTD
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * SPDX-FileCopyrightText: 2020-2026 Espressif Systems (Shanghai) CO LTD
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 #include <string.h>
 #include <esp_log.h>
@@ -18,6 +10,7 @@
 #include <nvs.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <freertos/timers.h>
 #include <json_generator.h>
 #include <esp_rmaker_work_queue.h>
 #include <esp_rmaker_core.h>
@@ -28,11 +21,7 @@
 #include "esp_rmaker_user_mapping.pb-c.h"
 #include "esp_rmaker_internal.h"
 #include "esp_rmaker_mqtt_topics.h"
-#if RMAKER_USING_NETWORK_PROV
 #include <network_provisioning/manager.h>
-#else
-#include <wifi_provisioning/manager.h>
-#endif
 
 static const char *TAG = "esp_rmaker_user_mapping";
 
@@ -47,6 +36,10 @@ static const char *TAG = "esp_rmaker_user_mapping";
  */
 #define SEMAPHORE_DELAY_MSEC         5000
 
+/* User mapping queue retry configuration */
+#define USER_MAPPING_RETRY_DELAY_SECONDS  5
+#define USER_MAPPING_MAX_RETRIES          5
+
 typedef struct {
     char *user_id;
     char *secret_key;
@@ -54,9 +47,22 @@ typedef struct {
     bool sent;
 } esp_rmaker_user_mapping_data_t;
 
+/* User mapping queue retry state management structure */
+typedef struct {
+    unsigned int retry_count;
+    bool retry_in_progress;
+    TimerHandle_t retry_timer;
+} user_mapping_retry_state_t;
+
 static esp_rmaker_user_mapping_data_t *rmaker_user_mapping_data;
 esp_rmaker_user_mapping_state_t rmaker_user_mapping_state;
 SemaphoreHandle_t esp_rmaker_user_mapping_lock = NULL;
+static user_mapping_retry_state_t g_user_mapping_retry_state = {0};
+
+/* Forward declarations */
+static void esp_rmaker_user_mapping_cb(void *priv_data);
+static void user_mapping_retry_cleanup(void);
+static void user_mapping_schedule_retry(void);
 
 static void esp_rmaker_user_mapping_cleanup_data(void)
 {
@@ -72,10 +78,83 @@ static void esp_rmaker_user_mapping_cleanup_data(void)
     }
 }
 
+/* Helper functions for user mapping queue retry */
+static void user_mapping_retry_cleanup(void)
+{
+    if (g_user_mapping_retry_state.retry_timer) {
+        xTimerStop(g_user_mapping_retry_state.retry_timer, portMAX_DELAY);
+        xTimerDelete(g_user_mapping_retry_state.retry_timer, portMAX_DELAY);
+        g_user_mapping_retry_state.retry_timer = NULL;
+    }
+
+    /* Reset state for next use */
+    memset(&g_user_mapping_retry_state, 0, sizeof(g_user_mapping_retry_state));
+}
+
+static void user_mapping_retry_timer_cb(TimerHandle_t xTimer)
+{
+    ESP_LOGI(TAG, "Retrying user mapping task queue (attempt %u/%u)",
+             g_user_mapping_retry_state.retry_count, USER_MAPPING_MAX_RETRIES);
+
+    g_user_mapping_retry_state.retry_in_progress = false;
+
+    /* Try to queue the user mapping task again */
+    if (esp_rmaker_work_queue_add_task(esp_rmaker_user_mapping_cb, NULL) != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to queue user mapping task on retry %u", g_user_mapping_retry_state.retry_count);
+        /* Schedule another retry if we haven't exceeded max attempts */
+        user_mapping_schedule_retry();
+    } else {
+        ESP_LOGI(TAG, "Successfully queued user mapping task on retry %u", g_user_mapping_retry_state.retry_count);
+        user_mapping_retry_cleanup();
+    }
+}
+
+static void user_mapping_schedule_retry(void)
+{
+    g_user_mapping_retry_state.retry_count++;
+
+    if (g_user_mapping_retry_state.retry_count > USER_MAPPING_MAX_RETRIES) {
+        ESP_LOGE(TAG, "User mapping task queue failed after %u attempts. Giving up.", USER_MAPPING_MAX_RETRIES);
+        user_mapping_retry_cleanup();
+        return;
+    }
+
+    if (g_user_mapping_retry_state.retry_in_progress) {
+        ESP_LOGW(TAG, "User mapping retry already in progress. Skipping.");
+        return;
+    }
+
+    g_user_mapping_retry_state.retry_in_progress = true;
+
+    ESP_LOGI(TAG, "Scheduling user mapping retry %u/%u in %d seconds",
+             g_user_mapping_retry_state.retry_count, USER_MAPPING_MAX_RETRIES, USER_MAPPING_RETRY_DELAY_SECONDS);
+
+    /* Check if timer already exists and clean it up to prevent resource leak */
+    if (g_user_mapping_retry_state.retry_timer) {
+        xTimerStop(g_user_mapping_retry_state.retry_timer, portMAX_DELAY);
+        xTimerDelete(g_user_mapping_retry_state.retry_timer, portMAX_DELAY);
+        g_user_mapping_retry_state.retry_timer = NULL;
+    }
+
+    /* Create retry timer */
+    g_user_mapping_retry_state.retry_timer = xTimerCreate("user_mapping_retry",
+                                                          pdMS_TO_TICKS(USER_MAPPING_RETRY_DELAY_SECONDS * 1000),
+                                                          pdFALSE, NULL, user_mapping_retry_timer_cb);
+    if (!g_user_mapping_retry_state.retry_timer) {
+        ESP_LOGE(TAG, "Failed to create user mapping retry timer");
+        user_mapping_retry_cleanup();
+        return;
+    }
+
+    if (xTimerStart(g_user_mapping_retry_state.retry_timer, 0) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to start user mapping retry timer");
+        user_mapping_retry_cleanup();
+    }
+}
+
 static void esp_rmaker_user_mapping_event_handler(void* arg, esp_event_base_t event_base,
                           int32_t event_id, void* event_data)
 {
-#if RMAKER_USING_NETWORK_PROV
     if (event_base == NETWORK_PROV_EVENT) {
         switch (event_id) {
             case NETWORK_PROV_INIT: {
@@ -92,24 +171,6 @@ static void esp_rmaker_user_mapping_event_handler(void* arg, esp_event_base_t ev
             default:
                 break;
         }
-#else
-    if (event_base == WIFI_PROV_EVENT) {
-        switch (event_id) {
-            case WIFI_PROV_INIT: {
-                if (esp_rmaker_user_mapping_endpoint_create() != ESP_OK) {
-                    ESP_LOGE(TAG, "Failed to create user mapping end point.");
-                }
-                break;
-            }
-            case WIFI_PROV_START:
-                if (esp_rmaker_user_mapping_endpoint_register() != ESP_OK) {
-                    ESP_LOGE(TAG, "Failed to register user mapping end point.");
-                }
-                break;
-            default:
-                break;
-        }
-#endif
     } else if ((event_base == RMAKER_COMMON_EVENT) && (event_id == RMAKER_MQTT_EVENT_PUBLISHED)) {
         /* Checking for the PUBACK for the user node association message to be sure that the message
          * has indeed reached the RainMaker cloud.
@@ -143,6 +204,26 @@ static void esp_rmaker_user_mapping_event_handler(void* arg, esp_event_base_t ev
                     &esp_rmaker_user_mapping_event_handler);
         }
         xSemaphoreGive(esp_rmaker_user_mapping_lock);
+    }
+}
+
+static void esp_rmaker_user_mapping_config_reported_event_handler(void* arg, esp_event_base_t event_base,
+                        int32_t event_id, void* priv_data)
+{
+    if (event_base == RMAKER_EVENT && event_id == RMAKER_EVENT_CONFIG_REPORTED) {
+        ESP_LOGI(TAG, "RainMaker config reported, queuing pending user mapping task.");
+
+        /* Unregister this event handler as we only need it once */
+        esp_event_handler_unregister(RMAKER_EVENT, RMAKER_EVENT_CONFIG_REPORTED,
+                &esp_rmaker_user_mapping_config_reported_event_handler);
+
+        /* Queue the user mapping task now that RainMaker config is reported */
+        if (esp_rmaker_work_queue_add_task(esp_rmaker_user_mapping_cb, NULL) != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to queue user mapping task after RainMaker config reported. Starting retry mechanism.");
+            user_mapping_schedule_retry();
+        } else {
+            ESP_LOGI(TAG, "Successfully queued user mapping task after RainMaker config reported.");
+        }
     }
 }
 
@@ -186,6 +267,12 @@ static void esp_rmaker_user_mapping_cb(void *priv_data)
     return;
 }
 
+/* This function only runs when esp_rmaker_start_user_node_mapping() is called,
+ * which happens either during:
+ * 1. Actual provisioning (when user provides credentials)
+ * 2. Factory reset reporting (with dummy USER_RESET_ID)
+ * It never runs during normal MQTT operation without provisioning.
+ */
 static bool esp_rmaker_user_mapping_detect_reset(const char *user_id)
 {
 #ifdef CONFIG_ESP_RMAKER_USER_ID_CHECK
@@ -216,6 +303,13 @@ static bool esp_rmaker_user_mapping_detect_reset(const char *user_id)
     nvs_close(handle);
     return reset_state;
 #else
+    /* If factory reset reporting is enabled but user ID check is disabled,
+     * detect reset by checking if this is the dummy reset user ID */
+#ifdef CONFIG_ESP_RMAKER_FACTORY_RESET_REPORTING
+    if (strcmp(user_id, USER_RESET_ID) == 0) {
+        return true;  /* This is a factory reset */
+    }
+#endif
     return false;
 #endif
 }
@@ -256,9 +350,23 @@ esp_err_t esp_rmaker_start_user_node_mapping(char *user_id, char *secret_key)
     } else {
         rmaker_user_mapping_state = ESP_RMAKER_USER_MAPPING_DONE;
     }
-    if (esp_rmaker_work_queue_add_task(esp_rmaker_user_mapping_cb, NULL) != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to queue user mapping task.");
-        goto user_mapping_error;
+
+    /* Try to queue the task immediately if RainMaker config is already reported or started */
+    esp_rmaker_state_t state = esp_rmaker_get_state();
+    if (state == ESP_RMAKER_STATE_CONFIG_REPORTED || state == ESP_RMAKER_STATE_STARTED) {
+        if (esp_rmaker_work_queue_add_task(esp_rmaker_user_mapping_cb, NULL) != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to queue user mapping task. Starting retry mechanism.");
+            user_mapping_schedule_retry();
+        }
+    } else {
+        /* RainMaker config is not reported, register for config reported event */
+        ESP_LOGI(TAG, "RainMaker config is not reported, waiting for the event before retrying user mapping.");
+        esp_err_t err = esp_event_handler_register(RMAKER_EVENT, RMAKER_EVENT_CONFIG_REPORTED,
+                                   &esp_rmaker_user_mapping_config_reported_event_handler, NULL);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to register for config reported event: %d", err);
+            goto user_mapping_error;
+        }
     }
     esp_rmaker_user_mapping_prov_deinit();
     xSemaphoreGive(esp_rmaker_user_mapping_lock);
@@ -270,10 +378,12 @@ user_mapping_error:
     return ESP_FAIL;
 }
 
+#ifdef CONFIG_ESP_RMAKER_FACTORY_RESET_REPORTING
 esp_err_t esp_rmaker_reset_user_node_mapping(void)
 {
     return esp_rmaker_start_user_node_mapping(USER_RESET_ID, USER_RESET_KEY);
 }
+#endif
 
 int esp_rmaker_user_mapping_handler(uint32_t session_id, const uint8_t *inbuf, ssize_t inlen, uint8_t **outbuf, ssize_t *outlen, void *priv_data)
 {
@@ -325,51 +435,30 @@ int esp_rmaker_user_mapping_handler(uint32_t session_id, const uint8_t *inbuf, s
 }
 esp_err_t esp_rmaker_user_mapping_endpoint_create(void)
 {
-#if RMAKER_USING_NETWORK_PROV
     esp_err_t err = network_prov_mgr_endpoint_create(USER_MAPPING_ENDPOINT);
-#else
-    esp_err_t err = wifi_prov_mgr_endpoint_create(USER_MAPPING_ENDPOINT);
-#endif
     return err;
 }
 
 esp_err_t esp_rmaker_user_mapping_endpoint_register(void)
 {
-#if RMAKER_USING_NETWORK_PROV
     return network_prov_mgr_endpoint_register(USER_MAPPING_ENDPOINT, esp_rmaker_user_mapping_handler, NULL);
-#else
-    return wifi_prov_mgr_endpoint_register(USER_MAPPING_ENDPOINT, esp_rmaker_user_mapping_handler, NULL);
-#endif
 }
 
 esp_err_t esp_rmaker_user_mapping_prov_init(void)
 {
     int ret = ESP_OK;
-#if RMAKER_USING_NETWORK_PROV
     ret = esp_event_handler_register(NETWORK_PROV_EVENT, NETWORK_PROV_INIT, &esp_rmaker_user_mapping_event_handler, NULL);
-#else
-    ret = esp_event_handler_register(WIFI_PROV_EVENT, WIFI_PROV_INIT,&esp_rmaker_user_mapping_event_handler, NULL);
-#endif
     if (ret != ESP_OK) {
         return ret;
     }
-#if RMAKER_USING_NETWORK_PROV
     ret = esp_event_handler_register(NETWORK_PROV_EVENT, NETWORK_PROV_START, &esp_rmaker_user_mapping_event_handler, NULL);
-#else
-    ret = esp_event_handler_register(WIFI_PROV_EVENT, WIFI_PROV_START,&esp_rmaker_user_mapping_event_handler, NULL);
-#endif
     return ret;
 }
 
 esp_err_t esp_rmaker_user_mapping_prov_deinit(void)
 {
-#if RMAKER_USING_NETWORK_PROV
     esp_event_handler_unregister(NETWORK_PROV_EVENT, NETWORK_PROV_INIT, &esp_rmaker_user_mapping_event_handler);
     esp_event_handler_unregister(NETWORK_PROV_EVENT, NETWORK_PROV_START, &esp_rmaker_user_mapping_event_handler);
-#else
-    esp_event_handler_unregister(WIFI_PROV_EVENT, WIFI_PROV_INIT, &esp_rmaker_user_mapping_event_handler);
-    esp_event_handler_unregister(WIFI_PROV_EVENT, WIFI_PROV_START, &esp_rmaker_user_mapping_event_handler);
-#endif
     return ESP_OK;
 }
 
@@ -406,6 +495,13 @@ esp_err_t esp_rmaker_user_node_mapping_init(void)
 
 esp_err_t esp_rmaker_user_node_mapping_deinit(void)
 {
+    /* Clean up retry state */
+    user_mapping_retry_cleanup();
+
+    /* Unregister any pending MQTT event handlers to prevent resource leak */
+    esp_event_handler_unregister(RMAKER_EVENT, RMAKER_EVENT_CONFIG_REPORTED,
+            &esp_rmaker_user_mapping_config_reported_event_handler);
+
     if (esp_rmaker_user_mapping_lock) {
         vSemaphoreDelete(esp_rmaker_user_mapping_lock);
         esp_rmaker_user_mapping_lock = NULL;

@@ -1,16 +1,9 @@
-// Copyright 2020 Espressif Systems (Shanghai) PTE LTD
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * SPDX-FileCopyrightText: 2020-2026 Espressif Systems (Shanghai) CO LTD
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #include <stdint.h>
 #include <string.h>
 #include <json_parser.h>
@@ -20,10 +13,13 @@
 #include <esp_log.h>
 #include <esp_system.h>
 #include <nvs.h>
+#include <string.h>
 #include <esp_rmaker_work_queue.h>
 #include <esp_rmaker_core.h>
 #include <esp_rmaker_ota.h>
 #include <esp_rmaker_utils.h>
+#include <esp_rmaker_common_events.h>
+#include <time.h>
 
 #include "esp_rmaker_internal.h"
 #include "esp_rmaker_ota_internal.h"
@@ -31,15 +27,105 @@
 #include "esp_rmaker_mqtt_topics.h"
 
 #ifdef CONFIG_ESP_RMAKER_OTA_AUTOFETCH
-#include <esp_timer.h>
-static esp_timer_handle_t ota_autofetch_timer;
+/* Use FreeRTOS timer instead */
+static TimerHandle_t ota_autofetch_timer;
 /* Autofetch period in hours */
 #define OTA_AUTOFETCH_PERIOD   CONFIG_ESP_RMAKER_OTA_AUTOFETCH_PERIOD
-/* Autofetch period in micro-seconds */
-static uint64_t ota_autofetch_period = (OTA_AUTOFETCH_PERIOD * 60 * 60 * 1000000LL);
+/* Convert hours directly to ticks in 64-bit. Going through pdMS_TO_TICKS()
+ * overflows uint32_t for periods >= ~12 h at a 100 Hz tick rate.
+ */
+#define OTA_AUTOFETCH_PERIOD_TICKS \
+    ((TickType_t)((uint64_t)OTA_AUTOFETCH_PERIOD * 3600ULL * configTICK_RATE_HZ))
 #endif /* CONFIG_ESP_RMAKER_OTA_AUTOFETCH */
 
 static const char *TAG = "esp_rmaker_ota_using_topics";
+
+/* OTA fetch retry configuration */
+#define OTA_FETCH_TIMEOUT_SECONDS   60
+#define OTA_FETCH_RETRY_BASE_DELAY  30
+#define OTA_FETCH_MAX_RETRIES       5
+
+
+
+/* OTA fetch state management structure */
+typedef struct {
+    int expected_msg_id;
+    unsigned int retry_count;
+    bool fetch_in_progress;
+    esp_event_handler_instance_t published_handler_instance;
+    TimerHandle_t timeout_timer;  /* Timer for PUBACK timeout */
+} ota_fetch_state_t;
+
+static ota_fetch_state_t g_ota_fetch_state = {0};
+
+/* Forward declarations */
+static void ota_fetch_schedule_retry(void);
+#ifdef CONFIG_ESP_RMAKER_OTA_AUTOFETCH
+static void esp_rmaker_ota_autofetch_cleanup(void);
+#endif
+
+/* Helper functions for OTA fetch reliability */
+static void ota_fetch_cleanup(void)
+{
+    if (g_ota_fetch_state.timeout_timer) {
+        xTimerStop(g_ota_fetch_state.timeout_timer, portMAX_DELAY);
+        xTimerDelete(g_ota_fetch_state.timeout_timer, portMAX_DELAY);
+        g_ota_fetch_state.timeout_timer = NULL;
+    }
+
+    if (g_ota_fetch_state.published_handler_instance) {
+        esp_event_handler_instance_unregister(RMAKER_COMMON_EVENT, RMAKER_MQTT_EVENT_PUBLISHED,
+                                             g_ota_fetch_state.published_handler_instance);
+        g_ota_fetch_state.published_handler_instance = NULL;
+    }
+
+    /* Reset state for next use instead of freeing */
+    memset(&g_ota_fetch_state, 0, sizeof(g_ota_fetch_state));
+}
+
+static void ota_fetch_timeout_timer_cb(TimerHandle_t xTimer)
+{
+    /* Timeout case: No PUBACK received within timeout period */
+    ESP_LOGW(TAG, "OTA fetch timeout - no PUBACK received");
+    g_ota_fetch_state.fetch_in_progress = false;
+
+    /* Delete the one-shot timer that just fired; otherwise the next attempt's
+     * xTimerCreate() in __esp_rmaker_ota_fetch() leaks this handle.
+     */
+    if (g_ota_fetch_state.timeout_timer) {
+        xTimerDelete(g_ota_fetch_state.timeout_timer, 0);
+        g_ota_fetch_state.timeout_timer = NULL;
+    }
+
+    /* Clean up current attempt */
+    if (g_ota_fetch_state.published_handler_instance) {
+        esp_event_handler_instance_unregister(RMAKER_COMMON_EVENT, RMAKER_MQTT_EVENT_PUBLISHED,
+                                             g_ota_fetch_state.published_handler_instance);
+        g_ota_fetch_state.published_handler_instance = NULL;
+    }
+
+    /* Schedule retry using common retry logic */
+    ota_fetch_schedule_retry();
+}
+
+
+
+static void ota_fetch_mqtt_event_handler(void *arg, esp_event_base_t event_base,
+                                          int32_t event_id, void *event_data)
+{
+    if (!event_data || event_base != RMAKER_COMMON_EVENT) {
+        return;
+    }
+
+    if (event_id == RMAKER_MQTT_EVENT_PUBLISHED) {
+        int received_msg_id = *((int*)event_data);
+        if (received_msg_id != g_ota_fetch_state.expected_msg_id) {
+            return;
+        }
+
+        ota_fetch_cleanup();
+    }
+}
 
 esp_err_t esp_rmaker_ota_report_status_using_topics(esp_rmaker_ota_handle_t ota_handle, ota_status_t status, char *additional_info)
 {
@@ -75,7 +161,15 @@ esp_err_t esp_rmaker_ota_report_status_using_topics(esp_rmaker_ota_handle_t ota_
         }
     }
     json_gen_obj_set_string(&jstr, "status", esp_rmaker_ota_status_to_string(status));
+    char *network_id = esp_rmaker_get_network_id();
+    if (network_id) {
+        json_gen_obj_set_string(&jstr, "network_id", network_id);
+    }
     json_gen_obj_set_string(&jstr, "additional_info", additional_info);
+    /* Add timestamp field 'ts' */
+    time_t current_time;
+    time(&current_time);
+    json_gen_obj_set_int(&jstr, "ts", (int)current_time);
     json_gen_end_object(&jstr);
     json_gen_str_end(&jstr);
 
@@ -97,6 +191,12 @@ void esp_rmaker_ota_finish_using_topics(esp_rmaker_ota_t *ota)
         free(ota->url);
         ota->url = NULL;
     }
+#ifdef CONFIG_ESP_RMAKER_OTA_USE_MQTT
+    if (ota->stream_id) {
+        free(ota->stream_id);
+        ota->stream_id = NULL;
+    }
+#endif
     ota->filesize = 0;
     if (ota->transient_priv) {
         free(ota->transient_priv);
@@ -109,6 +209,10 @@ void esp_rmaker_ota_finish_using_topics(esp_rmaker_ota_t *ota)
     if (ota->fw_version) {
         free(ota->fw_version);
         ota->fw_version = NULL;
+    }
+    if (ota->file_md5) {
+        free(ota->file_md5);
+        ota->file_md5 = NULL;
     }
     ota->ota_in_progress = false;
 }
@@ -130,12 +234,16 @@ static void ota_url_handler(const char *topic, void *payload, size_t payload_len
        {
        "ota_job_id": "<ota_job_id>",
        "url": "<fw_url>",
+       "file_md5": "<file_md5>",
        "fw_version": "<fw_version>",
        "filesize": <size_in_bytes>
        }
     */
     jparse_ctx_t jctx;
-    char *url = NULL, *ota_job_id = NULL, *fw_version = NULL;
+    char *url = NULL, *ota_job_id = NULL, *fw_version = NULL, *file_md5 = NULL;
+#ifdef CONFIG_ESP_RMAKER_OTA_USE_MQTT
+    char *stream_id = NULL;
+#endif
     int ret = json_parse_start(&jctx, (char *)payload, (int) payload_len);
     if (ret != 0) {
         ESP_LOGE(TAG, "Invalid JSON received: %s", (char *)payload);
@@ -182,11 +290,40 @@ static void ota_url_handler(const char *topic, void *payload, size_t payload_len
     }
     json_obj_get_string(&jctx, "url", url, len);
     ESP_LOGI(TAG, "URL: %s", url);
-
+    len = 0;
+    ret = json_obj_get_strlen(&jctx, "file_md5", &len);
+    if (ret == ESP_OK) {
+        len++; /* Increment for NULL character */
+        file_md5 = MEM_CALLOC_EXTRAM(1, len);
+        if (!file_md5) {
+            ESP_LOGE(TAG, "Aborted. File MD5 memory allocation failed");
+            esp_rmaker_ota_report_status(ota_handle, OTA_STATUS_FAILED, "Aborted. File MD5 memory allocation failed");
+            goto end;
+        }
+        json_obj_get_string(&jctx, "file_md5", file_md5, len);
+        ESP_LOGI(TAG, "File MD5: %s", file_md5);
+    }
+#ifdef CONFIG_ESP_RMAKER_OTA_USE_MQTT
+    len = 0;
+    ret = json_obj_get_strlen(&jctx, "stream_id", &len);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Aborted. Stream ID not found in JSON");
+        esp_rmaker_ota_report_status(ota_handle, OTA_STATUS_FAILED, "Aborted. Stream ID not found in JSON");
+        goto end;
+    }
+    len++; /* Increment for NULL character */
+    stream_id = calloc(1, len);
+    if (!stream_id) {
+        ESP_LOGE(TAG, "Aborted. Stream ID memory allocation failed");
+        esp_rmaker_ota_report_status(ota_handle, OTA_STATUS_FAILED, "Aborted. Stream ID memory allocation failed");
+        goto end;
+    }
+    json_obj_get_string(&jctx, "stream_id", stream_id, len);
+    ESP_LOGI(TAG, "Stream ID: %s", stream_id);
+#endif
     int filesize = 0;
     json_obj_get_int(&jctx, "file_size", &filesize);
     ESP_LOGI(TAG, "File Size: %d", filesize);
-
     len = 0;
     ret = json_obj_get_strlen(&jctx, "fw_version", &len);
     if (ret == ESP_OK && len > 0) {
@@ -221,7 +358,11 @@ static void ota_url_handler(const char *topic, void *payload, size_t payload_len
         free(ota->url);
     }
     ota->url = url;
+#ifdef CONFIG_ESP_RMAKER_OTA_USE_MQTT
+    ota->stream_id = stream_id;
+#endif
     ota->fw_version = fw_version;
+    ota->file_md5 = file_md5;
     ota->filesize = filesize;
     ota->ota_in_progress = true;
     if (esp_rmaker_work_queue_add_task(esp_rmaker_ota_common_cb, ota) != ESP_OK) {
@@ -232,44 +373,175 @@ end:
     if (url) {
         free(url);
     }
+#ifdef CONFIG_ESP_RMAKER_OTA_USE_MQTT
+    if (stream_id) {
+        free(stream_id);
+    }
+#endif
     if (fw_version) {
         free(fw_version);
+    }
+    if (file_md5) {
+        free(file_md5);
     }
     esp_rmaker_ota_finish_using_topics(ota);
     json_parse_end(&jctx);
     return;
 }
 
-esp_err_t esp_rmaker_ota_fetch(void)
+static esp_err_t __esp_rmaker_ota_fetch(void)
 {
+    /* Check if fetch already in progress */
+    if (g_ota_fetch_state.fetch_in_progress) {
+        ESP_LOGW(TAG, "OTA fetch already in progress. Skipping.");
+        /* Returning success since OTA fetch is already in progress */
+        return ESP_OK;
+    }
+
+    /* Verify MQTT connection */
+    if (!esp_rmaker_is_mqtt_connected()) {
+        ESP_LOGW(TAG, "MQTT not connected. Cannot fetch OTA.");
+        return ESP_ERR_INVALID_STATE;
+    }
+
     ESP_LOGI(TAG, "Fetching OTA details, if any.");
     esp_rmaker_node_info_t *info = esp_rmaker_node_get_info(esp_rmaker_get_node());
     if (!info) {
         ESP_LOGE(TAG, "Node info not found. Cant send otafetch request");
         return ESP_FAIL;
     }
+
+    /* Initialize per-attempt state. retry_count is owned by
+     * ota_fetch_schedule_retry() (incremented on failure) and reset by
+     * ota_fetch_cleanup() on success — do not touch it here, or the
+     * exponential backoff resets to 1 on every retry.
+     */
+    g_ota_fetch_state.expected_msg_id = -1;
+
     char publish_payload[150];
     json_gen_str_t jstr;
     json_gen_str_start(&jstr, publish_payload, sizeof(publish_payload), NULL, NULL);
     json_gen_start_object(&jstr);
     json_gen_obj_set_string(&jstr, "node_id", esp_rmaker_get_node_id());
     json_gen_obj_set_string(&jstr, "fw_version", info->fw_version);
+    char *network_id = esp_rmaker_get_network_id();
+    if (network_id) {
+        json_gen_obj_set_string(&jstr, "network_id", network_id);
+    }
     json_gen_end_object(&jstr);
     json_gen_str_end(&jstr);
     char publish_topic[MQTT_TOPIC_BUFFER_SIZE];
     esp_rmaker_create_mqtt_topic(publish_topic, sizeof(publish_topic), OTAFETCH_TOPIC_SUFFIX, OTAFETCH_TOPIC_RULE);
+
+    int msg_id = -1;
     esp_err_t err = esp_rmaker_mqtt_publish(publish_topic, publish_payload, strlen(publish_payload),
-                        RMAKER_MQTT_QOS1, NULL);
+                        RMAKER_MQTT_QOS1, &msg_id);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "OTA Fetch Publish Error %d", err);
+        return err;
     }
+
+    if (msg_id == -1) {
+        ESP_LOGE(TAG, "Failed to get message ID for OTA fetch");
+        return ESP_FAIL;
+    }
+
+    /* Track the message for enhanced delivery */
+    g_ota_fetch_state.expected_msg_id = msg_id;
+    g_ota_fetch_state.fetch_in_progress = true;
+
+    /* Register event handler for MQTT PUBLISHED event */
+    err = esp_event_handler_instance_register(RMAKER_COMMON_EVENT, RMAKER_MQTT_EVENT_PUBLISHED,
+                                            ota_fetch_mqtt_event_handler, NULL,
+                                            &g_ota_fetch_state.published_handler_instance);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register MQTT PUBLISHED event handler: %s", esp_err_to_name(err));
+        ota_fetch_cleanup();
+        return err;
+    }
+
+    /* Create timeout timer for PUBACK confirmation */
+    g_ota_fetch_state.timeout_timer = xTimerCreate("ota_timeout",
+                                                   pdMS_TO_TICKS(OTA_FETCH_TIMEOUT_SECONDS * 1000),
+                                                   pdFALSE, NULL, ota_fetch_timeout_timer_cb);
+    if (!g_ota_fetch_state.timeout_timer) {
+        ESP_LOGE(TAG, "Failed to create timeout timer");
+        ota_fetch_cleanup();
+        return ESP_ERR_NO_MEM;
+    }
+
+    if (xTimerStart(g_ota_fetch_state.timeout_timer, 0) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to start timeout timer");
+        ota_fetch_cleanup();
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
+
+static void ota_fetch_schedule_retry(void)
+{
+    g_ota_fetch_state.retry_count++;
+
+    /* Calculate delay with exponential backoff, but cap at maximum */
+    int delay;
+    if (g_ota_fetch_state.retry_count <= OTA_FETCH_MAX_RETRIES) {
+        delay = OTA_FETCH_RETRY_BASE_DELAY * (1 << (g_ota_fetch_state.retry_count - 1));
+        ESP_LOGI(TAG, "OTA fetch failed, retry %u in %d seconds",
+                 g_ota_fetch_state.retry_count, delay);
+    } else {
+        /* Continue retrying at maximum interval indefinitely */
+        delay = OTA_FETCH_RETRY_BASE_DELAY * (1 << (OTA_FETCH_MAX_RETRIES - 1));
+        ESP_LOGI(TAG, "OTA fetch failed, persistent retry %u at max interval (%d seconds)",
+                 g_ota_fetch_state.retry_count, delay);
+    }
+
+    /* Use existing delay function for retry scheduling */
+    esp_err_t err = esp_rmaker_ota_fetch_with_delay(delay);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to schedule OTA retry: %s", esp_err_to_name(err));
+        ota_fetch_cleanup();
+    }
+}
+
+esp_err_t esp_rmaker_ota_fetch(void)
+{
+    esp_err_t err = __esp_rmaker_ota_fetch();
+
+    /* If the fetch attempt failed (including publish failures), schedule retry */
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "OTA fetch attempt failed: %s", esp_err_to_name(err));
+
+        /* Reset transient publish state. retry_count is preserved so the
+         * backoff in ota_fetch_schedule_retry() keeps growing across
+         * consecutive publish failures.
+         */
+        g_ota_fetch_state.expected_msg_id = -1;
+        g_ota_fetch_state.fetch_in_progress = false;
+
+        /* Schedule retry with exponential backoff */
+        ota_fetch_schedule_retry();
+    }
+
     return err;
 }
 
-void esp_rmaker_ota_autofetch_timer_cb(void *priv)
+#ifdef CONFIG_ESP_RMAKER_OTA_AUTOFETCH
+static void esp_rmaker_ota_autofetch_timer_cb(TimerHandle_t xTimer)
 {
     esp_rmaker_ota_fetch();
+    /* Restart for next autofetch period */
+    xTimerStart(xTimer, 0);
 }
+static void esp_rmaker_ota_autofetch_cleanup(void)
+{
+    if (ota_autofetch_timer) {
+        xTimerStop(ota_autofetch_timer, portMAX_DELAY);
+        xTimerDelete(ota_autofetch_timer, portMAX_DELAY);
+        ota_autofetch_timer = NULL;
+    }
+}
+#endif
 
 static esp_err_t esp_rmaker_ota_subscribe(void *priv_data)
 {
@@ -292,7 +564,64 @@ static void esp_rmaker_ota_work_fn(void *priv_data)
     esp_rmaker_ota_t *ota = (esp_rmaker_ota_t *)priv_data;
     /* If the firmware was rolled back, indicate that first */
     if (ota->rolled_back) {
-        esp_rmaker_ota_report_status((esp_rmaker_ota_handle_t )ota, OTA_STATUS_REJECTED, "Firmware rolled back");
+        char *rollback_fail_job_id = NULL;
+        char *rollback_fail_reason = NULL;
+
+        /* Check if there's a failure job_id stored (from new firmware with ROLLBACK_REPORT_FAILED enabled).
+         * The presence of ota_fail_jid is the primary indicator that we should report "failed" instead of "rejected".
+         */
+        nvs_handle nvs_handle_fail;
+        esp_err_t err = nvs_open_from_partition(ESP_RMAKER_NVS_PART_NAME, RMAKER_OTA_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle_fail);
+        if (err == ESP_OK) {
+            size_t job_id_len = 0;
+            if (nvs_get_str(nvs_handle_fail, RMAKER_OTA_FAIL_JOB_ID_NVS_NAME, NULL, &job_id_len) == ESP_OK) {
+                rollback_fail_job_id = MEM_CALLOC_EXTRAM(1, job_id_len);
+                if (rollback_fail_job_id) {
+                    nvs_get_str(nvs_handle_fail, RMAKER_OTA_FAIL_JOB_ID_NVS_NAME, rollback_fail_job_id, &job_id_len);
+                    ESP_LOGI(TAG, "Rollback failure job_id found: %s", rollback_fail_job_id);
+                }
+
+                /* Also try to read the failure reason if available */
+                size_t fail_reason_len = 0;
+                if (nvs_get_str(nvs_handle_fail, RMAKER_OTA_FAIL_REASON_NVS_NAME, NULL, &fail_reason_len) == ESP_OK) {
+                    rollback_fail_reason = MEM_CALLOC_EXTRAM(1, fail_reason_len);
+                    if (rollback_fail_reason) {
+                        nvs_get_str(nvs_handle_fail, RMAKER_OTA_FAIL_REASON_NVS_NAME, rollback_fail_reason, &fail_reason_len);
+                        ESP_LOGI(TAG, "Rollback failure reason found: %s", rollback_fail_reason);
+                    }
+                }
+            }
+            nvs_close(nvs_handle_fail);
+        }
+
+        if (rollback_fail_job_id) {
+            /* Report "failed" - presence of rollback_fail_job_id indicates new firmware had the feature enabled */
+            ota->transient_priv = rollback_fail_job_id;
+            /* Use stored reason if available, else use default */
+            const char *fail_reason = rollback_fail_reason ?
+                    rollback_fail_reason : "Firmware verification failed";
+            esp_rmaker_ota_report_status((esp_rmaker_ota_handle_t )ota, OTA_STATUS_FAILED, (char *)fail_reason);
+
+            /* Erase NVS keys after successful reporting */
+            err = nvs_open_from_partition(ESP_RMAKER_NVS_PART_NAME, RMAKER_OTA_NVS_NAMESPACE, NVS_READWRITE, &nvs_handle_fail);
+            if (err == ESP_OK) {
+                nvs_erase_key(nvs_handle_fail, RMAKER_OTA_FAIL_JOB_ID_NVS_NAME);
+                nvs_erase_key(nvs_handle_fail, RMAKER_OTA_FAIL_REASON_NVS_NAME);
+                /* Also erase the main job_id key for safety, in case it wasn't erased before rollback */
+                nvs_erase_key(nvs_handle_fail, RMAKER_OTA_JOB_ID_NVS_NAME);
+                nvs_commit(nvs_handle_fail);
+                nvs_close(nvs_handle_fail);
+            }
+
+            /* Clean up memory */
+            free(rollback_fail_job_id);
+            if (rollback_fail_reason) {
+                free(rollback_fail_reason);
+            }
+            ota->transient_priv = NULL;
+        } else {
+            esp_rmaker_ota_report_status((esp_rmaker_ota_handle_t )ota, OTA_STATUS_REJECTED, "Firmware rolled back");
+        }
         ota->rolled_back = false;
     }
     esp_rmaker_ota_subscribe(priv_data);
@@ -302,26 +631,44 @@ static void esp_rmaker_ota_work_fn(void *priv_data)
             ESP_LOGE(TAG, "Failed to create OTA Fetch timer.");
         }
     }
-    if (ota_autofetch_period > 0) {
-        esp_timer_create_args_t autofetch_timer_conf = {
-            .callback = esp_rmaker_ota_autofetch_timer_cb,
-            .arg = priv_data,
-            .dispatch_method = ESP_TIMER_TASK,
-            .name = "ota_autofetch_tm"
-        };
-        if (esp_timer_create(&autofetch_timer_conf, &ota_autofetch_timer) == ESP_OK) {
-            esp_timer_start_periodic(ota_autofetch_timer, ota_autofetch_period);
-        } else {
+    if (OTA_AUTOFETCH_PERIOD > 0) {
+        /* Clean up any existing timer first */
+        esp_rmaker_ota_autofetch_cleanup();
+
+        ota_autofetch_timer = xTimerCreate("ota_autofetch_tm",
+                                         OTA_AUTOFETCH_PERIOD_TICKS,
+                                         pdFALSE, NULL, esp_rmaker_ota_autofetch_timer_cb);
+        if (ota_autofetch_timer == NULL) {
             ESP_LOGE(TAG, "Failed to create OTA Autofetch timer");
+        } else {
+            xTimerStart(ota_autofetch_timer, 0);
         }
     }
 #endif /* CONFIG_ESP_RMAKER_OTA_AUTOFETCH */
 }
 
+/* Event handler to queue OTA work function after RainMaker is started */
+static void esp_rmaker_ota_started_handler(void* arg, esp_event_base_t event_base,
+                                           int32_t event_id, void* event_data)
+{
+    esp_rmaker_ota_t *ota = (esp_rmaker_ota_t *)arg;
+    if (event_base == RMAKER_EVENT && event_id == RMAKER_EVENT_STARTED) {
+        esp_event_handler_unregister(RMAKER_EVENT, RMAKER_EVENT_STARTED,
+                                     &esp_rmaker_ota_started_handler);
+        if (esp_rmaker_work_queue_add_task(esp_rmaker_ota_work_fn, ota) != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to queue OTA work function");
+        }
+    }
+}
+
 /* Enable the ESP RainMaker specific OTA */
 esp_err_t esp_rmaker_ota_enable_using_topics(esp_rmaker_ota_t *ota)
 {
-    esp_err_t err = esp_rmaker_work_queue_add_task(esp_rmaker_ota_work_fn, ota);
+    /* Register event handler to queue OTA work after RainMaker is started.
+     * This ensures OTA subscriptions happen only after node config is published.
+     */
+    esp_err_t err = esp_event_handler_register(RMAKER_EVENT, RMAKER_EVENT_STARTED,
+                                               &esp_rmaker_ota_started_handler, ota);
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "OTA enabled with Topics");
     }
@@ -336,7 +683,15 @@ static void esp_rmaker_ota_fetch_timer_cb(TimerHandle_t xTimer)
 
 esp_err_t esp_rmaker_ota_fetch_with_delay(int time)
 {
-    TimerHandle_t timer = xTimerCreate(NULL, (time * 1000) / portTICK_PERIOD_MS, pdFALSE, NULL, esp_rmaker_ota_fetch_timer_cb);
+    /* Compute seconds -> ticks in 64-bit. We deliberately do not use
+     * pdMS_TO_TICKS() here: it casts the input to TickType_t (uint32_t)
+     * internally and does the multiply in 32-bit, so widening the input
+     * on the outside has no effect. Doing the multiply directly in
+     * uint64_t keeps it safe for any int input (matches the autofetch
+     * period handling).
+     */
+    TickType_t timer_ticks_to_wait = (TickType_t)((uint64_t)time * configTICK_RATE_HZ);
+    TimerHandle_t timer = xTimerCreate(NULL, timer_ticks_to_wait, pdFALSE, NULL, esp_rmaker_ota_fetch_timer_cb);
     if (timer == NULL) {
         return ESP_ERR_NO_MEM;
     } else {

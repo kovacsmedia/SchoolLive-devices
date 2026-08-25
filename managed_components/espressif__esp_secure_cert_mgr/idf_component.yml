@@ -4,7 +4,7 @@ dependencies:
 description: ESP Secure Cert Manager
 repository: git://github.com/espressif/esp_secure_cert_mgr.git
 repository_info:
-  commit_sha: bd1a5586be31145bac235ff1a4ca97100d18053e
+  commit_sha: f54b81c7a396ca2d2e91f0e18273926f1fd83bec
   path: .
 url: https://github.com/espressif/esp_secure_cert_mgr
-version: 2.9.2
+version: 2.9.3

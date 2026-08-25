@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: 2021-2023 Espressif Systems (Shanghai) CO LTD
+ * SPDX-FileCopyrightText: 2021-2026 Espressif Systems (Shanghai) CO LTD
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -79,6 +79,8 @@ bool port_close_connection(mb_node_info_t *info_ptr)
     queue_flush(info_ptr->rx_queue);
     queue_flush(info_ptr->tx_queue);
 
+    mb_set_linger(info_ptr->sock_id, 0);  // RST, avoid TIME_WAIT blocking
+
     if (shutdown(info_ptr->sock_id, SHUT_RDWR) == -1) {
         ESP_LOGV(TAG, "Shutdown failed sock %d, errno=%d", info_ptr->sock_id, (int)errno);
     }
@@ -108,23 +110,29 @@ int port_enqueue_packet(QueueHandle_t queue, uint8_t *buf, uint16_t len)
     esp_err_t ret = ESP_ERR_INVALID_STATE;
 
     if (queue && buf) {
+        if (len > MB_TCP_BUFF_MAX_SIZE || len <= MB_TCP_UID) {
+            ESP_LOGE(TAG, "Enqueue: bad actual length %u (max %d)", (unsigned)len, MB_TCP_BUFF_MAX_SIZE);
+            return ERR_BUF;
+        }
         frame_info.tid = MB_TCP_MBAP_GET_FIELD(buf, MB_TCP_TID);
         frame_info.uid = buf[MB_TCP_UID];
         frame_info.pid = MB_TCP_MBAP_GET_FIELD(buf, MB_TCP_PID);
-        frame_info.len = MB_TCP_MBAP_GET_FIELD(buf, MB_TCP_LEN) + MB_TCP_UID;
-        if (len != frame_info.len) {
-            ESP_LOGE(TAG, "Packet TID (%x), length in frame %u != %u expected.", frame_info.tid, frame_info.len, len);
+        uint16_t derived_len = MB_TCP_MBAP_GET_FIELD(buf, MB_TCP_LEN) + MB_TCP_UID;
+        if (derived_len != len) {
+            // Header can disagree with actual bytes (truncated read, clamp, or bad peer).
+            ESP_LOGW(TAG, "Packet TID 0x%x: MBAP len %u != actual %u, using actual.",
+                     (unsigned)frame_info.tid, (unsigned)derived_len, (unsigned)len);
         }
-        assert(xPortGetFreeHeapSize() > frame_info.len);
+        frame_info.len = len;
 
-        ret = queue_push(queue, buf, frame_info.len, &frame_info);
+        ret = queue_push(queue, buf, len, &frame_info);
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "Packet TID (%x), data enqueue failed.", frame_info.tid);
             // The packet send fail or the task which is waiting for event is already unblocked
             return ERR_BUF;
         }
-        ESP_LOGD(TAG, "Enqueue data, length=%d, TID=0x%" PRIx16, frame_info.len, frame_info.tid);
-        return (int)frame_info.len;
+        ESP_LOGD(TAG, "Enqueue data, length=%d, TID=0x%" PRIx16, (int)len, frame_info.tid);
+        return (int)len;
     }
     ESP_LOGE(TAG, "Enqueue data fail, %p, length=%d.", buf, len);
     return ERR_BUF;
@@ -166,7 +174,12 @@ static int port_get_buf(mb_node_info_t *info_ptr, uint8_t *pdst_buf, uint16_t le
 
     // blocking read of data from socket
     ret = recv(info_ptr->sock_id, buf, bytes_left, 0);
+    if (ret == 0) {
+        return ERR_CONN;  // FIN received, peer closed
+    }
     if (ret < 0) {
+        ESP_LOGD(TAG, "socket(#%d)(%s) recv return, ret=%d, errno=%d.",
+                 info_ptr->sock_id, info_ptr->addr_info.ip_addr_str, ret, (int)errno);
         if (errno == EINPROGRESS || errno == EAGAIN || errno == EWOULDBLOCK) {
             // Read timeout occurred, check the timeout and return
             return 0;
@@ -196,6 +209,12 @@ int port_read_packet(mb_node_info_t *info_ptr)
         MB_RETURN_ON_FALSE((info_ptr->sock_id > 0), -1, TAG, "try to read incorrect socket = #%d", info_ptr->sock_id);
         // Read packet header
         ret = port_get_buf(info_ptr, ptemp_buf, MB_TCP_UID, MB_READ_TICK);
+        if (ret == 0) {
+            ESP_LOGD(TAG, "node #%d, Socket (#%d)(%s), socket connection is closed or timeout, err=%d, ",
+                     info_ptr->fd, info_ptr->sock_id, info_ptr->addr_info.ip_addr_str, ret);
+            return ERR_CONN;
+        }
+
         if (ret < 0) {
             info_ptr->recv_err = ret;
             return ret;
@@ -216,21 +235,24 @@ int port_read_packet(mb_node_info_t *info_ptr)
 
         // If we have received the MBAP header we can analyze it and calculate
         // the number of bytes left to complete the current response.
+        // Second chunk is stored from ptemp_buf[MB_TCP_UID], so temp must be
+        // <= (MB_TCP_BUFF_MAX_SIZE - MB_TCP_UID) to fit in ptemp_buf[].
         temp = MB_TCP_MBAP_GET_FIELD(ptemp_buf, MB_TCP_LEN);
-        if (temp > MB_TCP_BUFF_MAX_SIZE) {
-            ESP_LOGD(TAG, "Incorrect packet length: %d", temp);
+        const uint16_t mbap_payload_max = (uint16_t)(MB_TCP_BUFF_MAX_SIZE - MB_TCP_UID);
+        if (temp > mbap_payload_max) {
+            ESP_LOGD(TAG, "Incorrect packet length: %u (max %u)", (unsigned)temp, (unsigned)mbap_payload_max);
             ESP_LOG_BUFFER_HEX_LEVEL(TAG, ptemp_buf, MB_TCP_FUNC, ESP_LOG_DEBUG);
             info_ptr->recv_err = ERR_BUF;
-            temp = MB_TCP_BUFF_MAX_SIZE; // read all remaining data from buffer
+            temp = mbap_payload_max; // read all remaining data from buffer
         }
-
+        // Sequential frame read with minimal timeout to reduce delays
         ret = port_get_buf(info_ptr, &ptemp_buf[MB_TCP_UID], temp, MB_READ_TICK);
         if (ret < 0) {
             info_ptr->recv_err = ret;
             return ret;
         }
 
-        if (ret != temp) {
+        if ((ret < temp) || (ret < MB_PDU_SIZE_MIN)) {
             info_ptr->recv_err = ERR_VAL;
             return ERR_VAL;
         }
@@ -271,6 +293,18 @@ err_t port_set_blocking(mb_node_info_t *info_ptr, bool is_blocking)
     return ERR_OK;
 }
 
+int mb_set_linger(int sock, int tout)
+{
+    int res = -1;
+#if LWIP_SO_LINGER
+    struct linger sl;
+    sl.l_onoff = 1;
+    sl.l_linger = tout;
+    res = setsockopt(sock, SOL_SOCKET, SO_LINGER, &sl, sizeof(sl));
+#endif
+    return res;
+}
+
 int port_keep_alive_enable(int sock, int timeout_sec)
 {
     if ((timeout_sec > 7200) || (timeout_sec < 1)) {
@@ -308,7 +342,7 @@ int port_keep_alive_enable(int sock, int timeout_sec)
     return 0;
 }
 
-// Check connection for timeout helper
+// Check if connection is alive
 err_t port_check_alive(mb_node_info_t *info_ptr, uint32_t timeout_ms)
 {
     fd_set write_set;
@@ -316,44 +350,46 @@ err_t port_check_alive(mb_node_info_t *info_ptr, uint32_t timeout_ms)
     err_t err = -1;
     struct timeval time_val;
 
-    if (info_ptr && info_ptr->sock_id != -1) {
-        FD_ZERO(&write_set);
-        FD_ZERO(&err_set);
-        FD_SET(info_ptr->sock_id, &write_set);
-        FD_SET(info_ptr->sock_id, &err_set);
-        port_ms_to_tv(timeout_ms, &time_val);
-        // Check if the socket is writable
-        err = select(info_ptr->sock_id + 1, NULL, &write_set, &err_set, &time_val);
-        if ((err < 0) || FD_ISSET(info_ptr->sock_id, &err_set)) {
-            if (errno == EINPROGRESS) {
-                err = ERR_INPROGRESS;
-            } else {
-                ESP_LOGV(TAG, MB_NODE_FMT(" connection, select write err(errno) = %d(%d)."),
-                         info_ptr->index, info_ptr->sock_id, info_ptr->addr_info.ip_addr_str, err, (int)errno);
-                err = ERR_CONN;
-            }
-        } else if (err == 0) {
-            ESP_LOGV(TAG, "Socket(#%d)(%s), connection timeout occurred, err(errno) = %d(%d).",
-                     info_ptr->sock_id, info_ptr->addr_info.ip_addr_str, err, (int)errno);
-            return ERR_INPROGRESS;
-        } else {
-            int opt_err = 0;
-            uint32_t opt_len = sizeof(opt_err);
-            // Check socket error
-            err = getsockopt(info_ptr->sock_id, SOL_SOCKET, SO_ERROR, (void *)&opt_err, (socklen_t *)&opt_len);
-            if (opt_err != 0) {
-                ESP_LOGD(TAG, "Socket(#%d)(%s), sock error occurred (%d).",
-                         info_ptr->sock_id, info_ptr->addr_info.ip_addr_str, opt_err);
-                return ERR_CONN;
-            }
-            ESP_LOGV(TAG, "Socket(#%d)(%s), is alive.",
-                     info_ptr->sock_id, info_ptr->addr_info.ip_addr_str);
-            return ERR_OK;
-        }
-    } else {
-        err = ERR_CONN;
+    if (!info_ptr || info_ptr->sock_id == -1) {
+        return ERR_VAL;
     }
-    return err;
+    FD_ZERO(&write_set);
+    FD_ZERO(&err_set);
+    FD_SET(info_ptr->sock_id, &write_set);
+    FD_SET(info_ptr->sock_id, &err_set);
+    port_ms_to_tv(timeout_ms, &time_val);
+    // Check if the socket is writable and no errors
+    err = select(info_ptr->sock_id + 1, NULL, &write_set, &err_set, &time_val);
+    if (err < 0 || FD_ISSET(info_ptr->sock_id, &err_set)) {
+        ESP_LOGV(TAG, MB_NODE_FMT(" connection, select write err(errno) = %d(%d)."),
+                 info_ptr->index, info_ptr->sock_id, info_ptr->addr_info.ip_addr_str, err, (int)errno);
+        return ERR_CONN;
+    }
+    if (err == 0) {
+        ESP_LOGV(TAG, "Socket(#%d)(%s), connection timeout occurred, err(errno) = %d(%d).",
+                 info_ptr->sock_id, info_ptr->addr_info.ip_addr_str, err, (int)errno);
+        return ERR_INPROGRESS;
+    }
+    int opt_err = 0;
+    socklen_t opt_len = sizeof(opt_err);
+    // Check socket error
+    if (getsockopt(info_ptr->sock_id, SOL_SOCKET, SO_ERROR, &opt_err, &opt_len) < 0) {
+        ESP_LOGV(TAG, "Socket(#%d)(%s), sock error occurred (%d).",
+                 info_ptr->sock_id, info_ptr->addr_info.ip_addr_str, opt_err);
+        return ERR_CONN;
+    }
+    if (opt_err == 0) {
+        ESP_LOGV(TAG, "Socket(#%d)(%s), is alive.",
+                 info_ptr->sock_id, info_ptr->addr_info.ip_addr_str);
+        return ERR_OK;
+    }
+    if (opt_err == EINPROGRESS || opt_err == EALREADY) {
+        return ERR_INPROGRESS;
+    }
+    ESP_LOGV(TAG, "Socket(#%d)(%s), sock error occurred (%d).",
+             info_ptr->sock_id, info_ptr->addr_info.ip_addr_str, opt_err);
+    errno = opt_err; // optional, only for logging
+    return ERR_CONN;
 }
 
 // Unblocking connect function
@@ -364,7 +400,7 @@ err_t port_connect(void *ctx, mb_node_info_t *info_ptr)
     }
     port_driver_t *drv_obj = MB_GET_DRV_PTR(ctx);
     err_t err = ERR_OK;
-    char str[MDNS_NAME_BUF_LEN];
+    char str[MDNS_NAME_BUF_LEN] = {0};
     char *string_ptr = NULL;
     ip_addr_t target_addr;
     struct addrinfo hint;
@@ -458,19 +494,32 @@ err_t port_connect(void *ctx, mb_node_info_t *info_ptr)
 
 int port_write_poll(mb_node_info_t *info_ptr, const uint8_t *frame, uint16_t frame_len, uint32_t timeout)
 {
+    if (frame_len > MB_TCP_BUFF_MAX_SIZE) {
+        ESP_LOGE(TAG, MB_NODE_FMT(", refuse send: length %u > max %d"),
+                 info_ptr->index, info_ptr->sock_id, info_ptr->addr_info.ip_addr_str,
+                 (unsigned)frame_len, MB_TCP_BUFF_MAX_SIZE);
+        return -1;
+    }
     // Check if the socket is alive (writable and SO_ERROR == 0)
-    int res = (int)port_check_alive(info_ptr, timeout);
-    if ((res < 0) && (res != ERR_INPROGRESS)) {
+    int ret = (int)port_check_alive(info_ptr, timeout);
+    if ((ret < 0) && (ret != ERR_INPROGRESS)) {
         ESP_LOGE(TAG, MB_NODE_FMT(", is not writable, error: %d, errno %d"),
-                 info_ptr->index, info_ptr->sock_id, info_ptr->addr_info.ip_addr_str, res, (int)errno);
-        return res;
+                 info_ptr->index, info_ptr->sock_id, info_ptr->addr_info.ip_addr_str, ret, (int)errno);
+        return ret;
     }
-    res = send(info_ptr->sock_id, frame, frame_len, TCP_NODELAY);
-    if (res < 0) {
+    ret = send(info_ptr->sock_id, frame, frame_len, TCP_NODELAY);
+    if (ret < 0) {
         ESP_LOGE(TAG, MB_NODE_FMT(", send data error: %d, errno %d"),
-                 info_ptr->index, info_ptr->sock_id, info_ptr->addr_info.ip_addr_str, res, (int)errno);
+                 info_ptr->index, info_ptr->sock_id, info_ptr->addr_info.ip_addr_str, ret, (int)errno);
+        info_ptr->error = ret;
+    } else {
+        ESP_LOG_BUFFER_HEX_LEVEL("SENT", frame, ret, ESP_LOG_DEBUG);
+        info_ptr->error = 0;
+        info_ptr->send_time = port_get_timestamp();
+        info_ptr->send_counter = (info_ptr->send_counter < (USHRT_MAX - 1))
+                                 ? (info_ptr->send_counter + 1) : 0;
     }
-    return res;
+    return ret;
 }
 
 // Scan IP address according to IPV settings

@@ -9,6 +9,8 @@
 extern "C" {
 #endif
 
+#if (CONFIG_FMB_COMM_MODE_TCP_EN)
+
 #include <stdbool.h>
 #include <stdatomic.h>
 
@@ -73,7 +75,7 @@ extern "C" {
 #endif
 
 #define MB_MDNS_PORT (CONFIG_FMB_TCP_PORT_DEFAULT)
-#define MB_READ_TICK (500)
+#define MB_READ_TICK (CONFIG_FMB_TCP_READ_TIMEOUT_MS)
 #define MB_MDNS_QUERY_TIME_MS (2000)
 
 #define MB_STR_LEN_HOST 1  // "mb_node_tcp_01"
@@ -99,6 +101,8 @@ extern "C" {
 typedef struct frame_queue_entry_s frame_entry_t;
 typedef struct mb_node_info_s mb_node_info_t;
 typedef enum addr_type_enum mb_tcp_addr_type_t;
+
+int mb_set_linger(int sock, int tout);
 
 bool port_check_host_addr(const char *host_str, ip_addr_t *host_addr);
 mb_node_info_t *port_get_current_info(void *ctx);
@@ -138,6 +142,8 @@ int port_resolve_mdns_host(const char *host_name, char **addr_str);
 
 int port_bind_addr(const char *pbind_ip, mb_addr_type_t addr_type, mb_comm_mode_t proto, uint16_t port);
 int port_accept_connection(int listen_sock_id, mb_uid_info_t *info_ptr);
+
+#endif
 
 #ifdef __cplusplus
 }

@@ -8,7 +8,6 @@
 #include "esp_partition.h"
 #include "esp_idf_version.h"
 #include "esp_diagnostics.h"
-#include "esp_ota_ops.h"
 #include "esp_log.h"
 #include "sys/time.h"
 #include "esp_system.h"
@@ -20,19 +19,10 @@
 #include "esp_diagnostics_metrics.h"
 #include "esp_diagnostics_variables.h"
 
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
 #include "esp_chip_info.h"
-#endif
-
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(4, 3, 0)
 #include <esp_rom_crc.h>
 #define ESP_CRC32_LE(crc, buf, len) esp_rom_crc32_le(crc, buf, len)
 #define TASK_GET_NAME(handle) pcTaskGetName(handle)
-#else
-#include <esp_crc.h>
-#define ESP_CRC32_LE(crc, buf, len) esp_crc32_le(crc, buf, len)
-#define TASK_GET_NAME(handle) pcTaskGetTaskName(handle)
-#endif
 
 #define TASK_SNAP_TAG       "task_snap"
 #define TASK_INFO_FMT       "task:%s state:%" PRIu32 " high_watermark:%" PRIu32 " "
@@ -44,28 +34,27 @@
 #define BT_DEPTH_FMT_8      BT_DEPTH_FMT_4 BT_DEPTH_FMT_4
 #define BT_DEPTH_FMT_16     BT_DEPTH_FMT_8 BT_DEPTH_FMT_8
 
-/* From esp-idf v4.4 onwards
- * - portENTER_CRITICAL_NESTED() and portEXIT_CRITICAL_NESTED() macros are deprecated
- * - freertos/task_snapshot.h has been removed from freertos/task.h
- */
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(4, 4, 0)
-#include "freertos/task_snapshot.h"
-#define DISABLE_INTERRUPTS portSET_INTERRUPT_MASK_FROM_ISR
-#define ENABLE_INTERRUPTS  portCLEAR_INTERRUPT_MASK_FROM_ISR
-#else
-#define DISABLE_INTERRUPTS portENTER_CRITICAL_NESTED
-#define ENABLE_INTERRUPTS  portEXIT_CRITICAL_NESTED
-#endif
-
-/* ESP-IDF v5.0 changed some existing APIs and moved some to other header files
- */
-
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+/* Available in ESP-IDF >= 5.1 */
 #include <esp_app_desc.h>
 #if CONFIG_IDF_TARGET_ARCH_XTENSA
 #include <esp_cpu_utils.h>
 #endif
+
+/* TaskSnapshot_t / uxTaskGetSnapshotAll: header moved across ESP-IDF versions.
+ * 5.1: freertos/task_snapshot.h (public)
+ * 5.2: esp_private/freertos_debug.h (task_snapshot.h deprecated)
+ * 6.0: freertos/freertos_debug.h (made public again) */
+#include "esp_idf_version.h"
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+#include "freertos/freertos_debug.h"
+#elif ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 2, 0)
+#include "esp_private/freertos_debug.h"
+#else
+#include "freertos/task_snapshot.h"
 #endif
+
+#define DISABLE_INTERRUPTS portSET_INTERRUPT_MASK_FROM_ISR
+#define ENABLE_INTERRUPTS  portCLEAR_INTERRUPT_MASK_FROM_ISR
 
 esp_err_t esp_diag_device_info_get(esp_diag_device_info_t *device_info)
 {
@@ -80,14 +69,9 @@ esp_err_t esp_diag_device_info_get(esp_diag_device_info_t *device_info)
     device_info->chip_model = chip.model;
     device_info->chip_rev = chip.revision;
     device_info->reset_reason = esp_reset_reason();
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
     app_desc = esp_app_get_description();
     const uint8_t* src = app_desc->app_elf_sha256;
     memcpy((uint8_t *)device_info->app_elf_sha256, src, DIAG_SHA_SIZE);
-#else
-    app_desc = esp_ota_get_app_description();
-    esp_ota_get_app_elf_sha256(device_info->app_elf_sha256, sizeof(device_info->app_elf_sha256));
-#endif
     strlcpy(device_info->app_version, app_desc->version, sizeof(device_info->app_version));
     strlcpy(device_info->project_name, app_desc->project_name, sizeof(device_info->project_name));
     return ESP_OK;
@@ -318,12 +302,7 @@ uint32_t esp_diag_data_size_get_crc(void)
 uint32_t esp_diag_meta_crc_get(void)
 {
     uint32_t crc = 0;
-    const esp_app_desc_t *app_desc;
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
-    app_desc = esp_app_get_description();
-#else
-    app_desc = esp_ota_get_app_description();
-#endif
+    const esp_app_desc_t *app_desc = esp_app_get_description();
     crc = ESP_CRC32_LE(crc, (const uint8_t *) app_desc->app_elf_sha256, sizeof(app_desc->app_elf_sha256));
 #if CONFIG_DIAG_ENABLE_METRICS
     uint32_t metrics_len = 0;

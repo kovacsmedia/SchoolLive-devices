@@ -1,5 +1,4 @@
 import argparse
-import io
 import math
 import os
 import shutil
@@ -36,7 +35,7 @@ def copy_models_from_sdkconfig_path(sdkconfig_path, target_path):
     """
     models = []
     extra_model_path = None
-    with io.open(sdkconfig_path, "r") as f:
+    with open(sdkconfig_path, "r") as f:
         for label in f:
             label = label.strip("\n")
             if 'ESP_SR_EXTERNAL_MODEL_PATH' in label:
@@ -53,34 +52,73 @@ def copy_models_from_sdkconfig_path(sdkconfig_path, target_path):
     return extra_model_path, models
 
 
+def copy_wn10_model(model_path, target_path, target):
+    pie_versions = {
+        "esp32s3": "p1",
+        "esp32p4": "p2",
+        "esp32s31": "p2",
+    }
+    if target not in pie_versions:
+        raise ValueError(f"Invalid target for WN10 model: {target}")
+
+    pie_version = pie_versions[target]
+    selected_files = {
+        f"wn10_data_{pie_version}": "wn10_data",
+        f"_MODEL_INFO_{pie_version}": "_MODEL_INFO_",
+    }
+
+    os.makedirs(target_path)
+    for file_name in os.listdir(model_path):
+        source = os.path.join(model_path, file_name)
+        if file_name in selected_files:
+            destination = os.path.join(target_path, selected_files[file_name])
+        elif file_name.endswith("_p1") or file_name.endswith("_p2"):
+            continue
+        else:
+            destination = os.path.join(target_path, file_name)
+
+        if os.path.isdir(source):
+            shutil.copytree(source, destination)
+        else:
+            shutil.copy2(source, destination)
+
+
 def copy_wakenet_from_sdkconfig(model_path, sdkconfig_path, target_path):
     """
     Copy wakenet model from model_path to target_path based on sdkconfig
     """
     models = []
-    with io.open(sdkconfig_path, "r") as f:
+    target = None
+    with open(sdkconfig_path, "r") as f:
         for label in f:
             label = label.strip("\n")
+            if label.startswith("CONFIG_IDF_TARGET="):
+                target = label.split("=", 1)[1].strip('"')
             if 'CONFIG_SR_WN' in label and  '#' not in label[0]:
                 if '_NONE' in label:
                     continue
+                is_wn10 = '_WN10' in label
                 if '=' in label:
                     label = label.split("=")[0]
                 if '_MULTI' in label:
                     label = label[:-6]
                 model_name = label.split("_SR_WN_")[-1].lower()
-                models.append(model_name)
+                models.append((model_name, is_wn10))
 
-    for item in models:
+    for item, is_wn10 in models:
         wakeword_model_path =  model_path + '/wakenet_model/' + item
         if os.path.exists(wakeword_model_path):
-            shutil.copytree(wakeword_model_path, target_path+'/'+item)
+            destination = target_path + '/' + item
+            if is_wn10:
+                copy_wn10_model(wakeword_model_path, destination, target)
+            else:
+                shutil.copytree(wakeword_model_path, destination)
 
 def copy_multinet_from_sdkconfig(model_path, sdkconfig_path, target_path):
     """
     Copy multinet model from model_path to target_path based on sdkconfig
     """
-    with io.open(sdkconfig_path, "r") as f:
+    with open(sdkconfig_path, "r") as f:
         models_string = ''
         for label in f:
             label = label.strip("\n")
@@ -125,7 +163,7 @@ def copy_nsnet_from_sdkconfig(model_path, sdkconfig_path, target_path):
     """
     Copy nsnet model from model_path to target_path based on sdkconfig
     """
-    with io.open(sdkconfig_path, "r") as f:
+    with open(sdkconfig_path, "r") as f:
         models_string = ''
         for label in f:
             label = label.strip("\n")
@@ -145,7 +183,7 @@ def copy_vadnet_from_sdkconfig(model_path, sdkconfig_path, target_path):
     """
     Copy vadnet model from model_path to target_path based on sdkconfig
     """
-    with io.open(sdkconfig_path, "r") as f:
+    with open(sdkconfig_path, "r") as f:
         models_string = ''
         for label in f:
             label = label.strip("\n")
@@ -197,30 +235,30 @@ if __name__ == '__main__':
     recommended_size = int(math.ceil(total_size / 1024.0)) + 1
 
     # ESP-SR Model Report
-    print(u'')
-    print(u'ESP-SR Models Report')
-    print(u'─' * 40)
+    print()
+    print('ESP-SR Models Report')
+    print('─' * 40)
     if extra_model_path:
         if os.path.exists(extra_model_path):
-            print(u'  Models loaded from external path: {}'.format(extra_model_path))
+            print(f'  Models loaded from external path: {extra_model_path}')
             for model in extra_models:
                 model_size = calculate_total_size(os.path.join(target_path, model))
-                print(u'    - {:<20} ({:.2f} KB)'.format(model, model_size / 1024.0))
+                print(f'    - {model:<20} ({model_size / 1024.0:.2f} KB)')
         else:
-            print(u'  External model path specified but does not exist: {}'.format(extra_model_path))
-        print(u'')
+            print(f'  External model path specified but does not exist: {extra_model_path}')
+        print()
 
     if loaded_models:
-        print(u'  Models loaded from esp-sr:')
+        print('  Models loaded from esp-sr:')
         for model in loaded_models:
             if model in extra_models:
                 continue
             model_size = calculate_total_size(os.path.join(target_path, model))
-            print(u'    - {:<20} ({:.2f} KB)'.format(model, model_size / 1024.0))
-        print(u'')
-        print(u'  Recommended Partition Size: {}K'.format(recommended_size))
+            print(f'    - {model:<20} ({model_size / 1024.0:.2f} KB)')
+        print()
+        print(f'  Recommended Partition Size: {recommended_size}K')
     else:
-        print(u'  No speech models loaded.')
+        print('  No speech models loaded.')
 
-    print(u'─' * 40)
-    print(u'')
+    print('─' * 40)
+    print()

@@ -1,17 +1,20 @@
 /*
- * SPDX-FileCopyrightText: 2023 Espressif Systems (Shanghai) CO LTD
+ * SPDX-FileCopyrightText: 2025 Espressif Systems (Shanghai) CO LTD
  *
  * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
 
+#include <stdint.h>
+#include <stdbool.h>
+#include <time.h>
+#include "esp_err.h"
+#include "sdkconfig.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#include <stdint.h>
-#include <time.h>
 
 /** Schedule Handle */
 typedef void *esp_schedule_handle_t;
@@ -45,6 +48,10 @@ typedef enum esp_schedule_type {
     ESP_SCHEDULE_TYPE_DAYS_OF_WEEK,
     ESP_SCHEDULE_TYPE_DATE,
     ESP_SCHEDULE_TYPE_RELATIVE,
+#if CONFIG_ESP_SCHEDULE_ENABLE_DAYLIGHT
+    ESP_SCHEDULE_TYPE_SUNRISE,
+    ESP_SCHEDULE_TYPE_SUNSET,
+#endif
 } esp_schedule_type_t;
 
 /** Schedule days. Used for ESP_SCHEDULE_TYPE_DAYS_OF_WEEK. */
@@ -63,7 +70,7 @@ typedef enum esp_schedule_days {
 /** Schedule months. Used for ESP_SCHEDULE_TYPE_DATE. */
 typedef enum esp_schedule_months {
     ESP_SCHEDULE_MONTH_ONCE         = 0,
-    ESP_SCHEDULE_MONTH_ALL          = 0b1111111,
+    ESP_SCHEDULE_MONTH_ALL          = 0b111111111111,
     ESP_SCHEDULE_MONTH_JANUARY      = 1 << 0,
     ESP_SCHEDULE_MONTH_FEBRUARY     = 1 << 1,
     ESP_SCHEDULE_MONTH_MARCH        = 1 << 2,
@@ -86,12 +93,12 @@ typedef struct esp_schedule_trigger {
     uint8_t hours;
     /** Minutes in the given hour. Accepted values: 0-59. */
     uint8_t minutes;
-    /** For type ESP_SCHEDULE_TYPE_DAYS_OF_WEEK */
+    /** For type ESP_SCHEDULE_TYPE_DAYS_OF_WEEK and solar schedules with day-of-week patterns */
     struct {
         /** 'OR' list of esp_schedule_days_t */
         uint8_t repeat_days;
     } day;
-    /** For type ESP_SCHEDULE_TYPE_DATE */
+    /** For type ESP_SCHEDULE_TYPE_DATE and solar schedules with specific date patterns */
     struct {
         /** Day of the month. Accepted values: 1-31. */
         uint8_t day;
@@ -102,6 +109,20 @@ typedef struct esp_schedule_trigger {
         /** If the schedule is to be repeated every year. */
         bool repeat_every_year;
     } date;
+#if CONFIG_ESP_SCHEDULE_ENABLE_DAYLIGHT
+    /** For type ESP_SCHEDULE_TYPE_SUNRISE and ESP_SCHEDULE_TYPE_SUNSET
+     * Uses day.repeat_days for day-of-week patterns (if date.day == 0)
+     * Uses date.* fields for specific date patterns (if date.day != 0)
+     * If both are 0, treated as single-time schedule */
+    struct {
+        /** Latitude in decimal degrees (-90 to +90, positive North) */
+        double latitude;
+        /** Longitude in decimal degrees (-180 to +180, positive East) */
+        double longitude;
+        /** Offset in minutes from sunrise/sunset (positive = after, negative = before) */
+        int offset_minutes;
+    } solar;
+#endif
     /** For type ESP_SCHEDULE_TYPE_SECONDS */
     int relative_seconds;
     /** Used for passing the next schedule timestamp for
@@ -140,7 +161,7 @@ typedef struct esp_schedule_config {
  * This initializes ESP Schedule. This must be called first before calling any of the other APIs.
  * This API also gets all the schedules from NVS (if it has been enabled).
  *
- * Note: After calling this API, the pointers to the callbacks should be updated for all the schedules by calling
+ * @warning After calling this API, the pointers to the callbacks should be updated for all the schedules by calling
  * esp_schedule_get() followed by esp_schedule_edit() with the correct callbacks.
  *
  * @param[in] enable_nvs If NVS is to be enabled or not.

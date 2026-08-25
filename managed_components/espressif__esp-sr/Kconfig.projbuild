@@ -57,264 +57,276 @@ menu "Load Multiple Wake Words (WakeNet9s)"
 
     config SR_WN_WN9S_HILEXIN
     bool "Hi,乐鑫 (wn9s_hilexin)"
-    default False
+    default n
 
     config SR_WN_WN9S_HIESP
     bool "Hi,ESP (wn9s_hiesp)"
-    default False
+    default n
 
     config SR_WN_WN9S_NIHAOXIAOZHI
     bool "你好小智 (wn9s_nihaoxiaozhi)"
-    default False
+    default n
 
     config SR_WN_WN9S_HIJASON
     bool "Hi,Jason (wn9s_hijason)"
-    default False
+    default n
 
 endmenu
 
-menu "Load Multiple Wake Words (WakeNet9)"
-    depends on IDF_TARGET_ESP32S3 ||  IDF_TARGET_ESP32P4 ||  IDF_TARGET_ESP32S31 || IDF_TARGET_ESP32
+menu "Load Multiple Wake Words (WakeNet9 or WakeNet10)"
+    depends on IDF_TARGET_ESP32S3 ||  IDF_TARGET_ESP32P4 ||  IDF_TARGET_ESP32S31
+
+    config SR_WN_WN10_HILEXIN
+    bool "Hi,乐鑫 (wn10_hilexin)"
+    default n
+
+    config SR_WN_WN10_XIAOAITONGXUE
+    bool "小爱同学 (wn10_xiaoaittongxue)"
+    default n
+
+    config SR_WN_WN10_NIHAOXIAOZHI
+    bool "你好小智 (wn10_nihaoxiaozhi)"
+    default n
 
     config SR_WN_WN9_HILEXIN
     bool "Hi,乐鑫 (wn9_hilexin)"
-    default False
+    default n
 
     config SR_WN_WN9_HIESP
     bool "Hi,ESP (wn9_hiesp)"
-    default False
+    default n
 
     config SR_WN_WN9L_JA_KONNICHIHAESP_TTS3
     bool "こんにちは ESP (wn9l_ja_konnichihaesp_tts3)"
-    default False
+    default n
 
     config SR_WN_WN9L_FR_BONJOURESP_TTS3
     bool "Bonjour ESP (wn9l_fr_bonjouresp_tts3)"
-    default False
+    default n
 
     config SR_WN_WN9_NIHAOMIAOBAN_TTS2
     bool "你好喵伴 (wn9_nihaomiaoban_tts2)"
-    default False
+    default n
 
     config SR_WN_WN9_XIAOAITONGXUE
     bool "小爱同学 (wn9_xiaoaitongxue)"
-    default False
+    default n
 
     config SR_WN_WN9L_XIAOAITONGXUE
     bool "小爱同学 (wn9l_xiaoaitongxue)"
-    default False
+    default n
 
     config SR_WN_WN9_NIHAOXIAOZHI_TTS
     bool "你好小智 (wn9_nihaoxiaozhi_tts)"
-    default False
+    default n
 
     config SR_WN_WN9L_NIHAOXIAOZHI_TTS3
     bool "你好小智 (wn9l_nihaoxiaozhi_tts3)"
-    default False
+    default n
 
     config SR_WN_WN9_ALEXA
     bool "Alexa (wn9_alexa)"
-    default False
+    default n
 
     config SR_WN_WN9_JARVIS_TTS
     bool "Jarvis (wn9_jarvis_tts)"
-    default False
+    default n
 
     config SR_WN_WN9_COMPUTER_TTS
     bool "computer (wn9_computer_tts)"
-    default False
+    default n
 
     config SR_WN_WN9_HEYWILLOW_TTS
     bool "Hey,Willow (wn9_heywillow_tts)"
-    default False
+    default n
 
     config SR_WN_WN9_HIMFIVE
     bool "Hi,M Five (wn9_himfive)"
-    default False
+    default n
 
     config SR_WN_WN9_SOPHIA_TTS
     bool "Sophia (wn9_sophia_tts)"
-    default False
+    default n
 
     config SR_WN_WN9_HEYWANDA_TTS
     bool "Hey,Wanda (wn9_heywanda_tts)"
-    default False
+    default n
 
     config SR_WN_WN9_HIJOLLY_TTS2
     bool "Hi,Jolly (wn9_hijolly_tts2)"
-    default False
+    default n
 
     config SR_WN_WN9_HIFAIRY_TTS2
     bool "Hi,Fairy (wn9_hifairy_tts2)"
-    default False
+    default n
 
     config SR_WN_WN9_HEYPRINTER_TTS
     bool "Hey,Printer (wn9_heyprinter_tts)"
-    default False
+    default n
 
     config SR_WN_WN9_MYCROFT_TTS
     bool "Mycroft (wn9_mycroft_tts)"
-    default False
+    default n
 
     config SR_WN_WN9_HIJOY_TTS
     bool "Hi,Joy (wn9_hijoy_tts)"
-    default False
+    default n
 
     config SR_WN_WN9_HIJASON_TTS2
     bool "Hi,Jason (wn9_hijason_tts2)"
-    default False
+    default n
 
     config SR_WN_WN9_ASTROLABE_TTS
     bool "Astrolabe (wn9_astrolabe_tts)"
-    default False
+    default n
 
     config SR_WN_WN9_HEYILY_TTS2
     bool "Hey,Ily (wn9_heyily_tts2)"
-    default False
+    default n
 
     config SR_WN_WN9_BLUECHIP_TTS2
     bool "Blue Chip (wn9_bluechip_tts2)"
-    default False
+    default n
 
     config SR_WN_WN9_HIANDY_TTS2
     bool "Hi,Andy (wn9_hiandy_tts2)"
-    default False
+    default n
 
     config SR_WN_WN9_HEYIVY_TTS2
     bool "Hey,Ivy (wn9_heyivy_tts2)"
-    default False
+    default n
 
     config SR_WN_WN9L_HISTACKCHAN_TTS3
     bool "Hi,Stack Chan (wn9l_histackchan_tts3)"
-    default False
+    default n
 
     config SR_WN_WN9_HEYKIRA_TTS3
     bool "Hey,Kira (wn9_heykira_tts3)"
-    default False
+    default n
 
     config SR_WN_WN9L_HEYGIGI_TTS3
     bool "Hey,GiGi (wn9l_heygigi_tts3)"
-    default False
+    default n
 
     config SR_WN_WN9_XIAOLONGXIAOLONG_TTS
     bool "小龙小龙 (wn9_xiaolongxiaolong_tts)"
-    default False
+    default n
 
     config SR_WN_WN9_HIMIAOMIAO_TTS
     bool "Hi,喵喵 (wn9_himiaomiao_tts)"
-    default False
+    default n
 
     config SR_WN_WN9_MIAOMIAOTONGXUE_TTS
     bool "喵喵同学 (wn9_miaomiaotongxue_tts)"
-    default False
+    default n
 
     config SR_WN_WN9_NIHAOXIAOXIN_TTS
     bool "你好小鑫 (wn9_nihaoxiaoxin_tts)"
-    default False
+    default n
 
     config SR_WN_WN9_XIAOMEITONGXUE_TTS
     bool "小美同学 (wn9_xiaomeitongxue_tts)"
-    default False
+    default n
 
     config SR_WN_WN9_HILILI_TTS
     bool "Hi,Lily/Hi,莉莉 (wn9_hilili_tts)"
-    default False
+    default n
 
     config SR_WN_WN9_HITELLY_TTS
     bool "Hi,Telly/Hi,泰力 (wn9_hitelly_tts)"
-    default False
+    default n
 
     config SR_WN_WN9_XIAOBINXIAOBIN_TTS
     bool "小滨小滨/小冰小冰 (wn9_xiaobinxiaobin_tts)"
-    default False
+    default n
 
     config SR_WN_WN9_HAIXIAOWU_TTS
     bool "Hi,小巫 (wn9_haixiaowu_tts)"
-    default False
+    default n
 
     config SR_WN_WN9_XIAOYAXIAOYA_TTS2
     bool "小鸭小鸭 (wn9_xiaoyaxiaoya_tts2)"
-    default False
+    default n
 
     config SR_WN_WN9_LINAIBAN_TTS2
     bool "璃奈板 (wn9_linaiban_tts2)"
-    default False
+    default n
 
     config SR_WN_WN9_XIAOSUROU_TTS2
     bool "小酥肉 (wn9_xiaosurou_tts2)"
-    default False
+    default n
 
     config SR_WN_WN9_XIAOYUTONGXUE_TTS2
     bool "小宇同学 (wn9_xiaoyutongxue_tts2)"
-    default False
+    default n
 
     config SR_WN_WN9_XIAOMINGTONGXUE_TTS2
     bool "小明同学 (wn9_xiaomingtongxue_tts2)"
-    default False
+    default n
 
     config SR_WN_WN9_XIAOKANGTONGXUE_TTS2
     bool "小康同学 (wn9_xiaokangtongxue_tts2)"
-    default False
+    default n
 
     config SR_WN_WN9_XIAOJIANXIAOJIAN_TTS2
     bool "小箭小箭 (wn9_xiaojianxiaojian_tts2)"
-    default False
+    default n
 
     config SR_WN_WN9_XIAOTEXIAOTE_TTS2
     bool "小特小特 (wn9_xiaotexiaote_tts2)"
-    default False
+    default n
 
     config SR_WN_WN9_NIHAOXIAOYI_TTS2
     bool "你好小益 (wn9_nihaoxiaoyi_tts2)"
-    default False
+    default n
 
     config SR_WN_WN9_NIHAOBAIYING_TTS2
     bool "你好百应 (wn9_nihaobaiying_tts2)"
-    default False
+    default n
 
     config SR_WN_WN9_NIHAODONGDONG_TTS2
     bool "你好东东 (wn9_nihaodongdong_tts2)"
-    default False
+    default n
 
     config SR_WN_WN9_HIWALLE_TTS2
     bool "Hi Wall E or Hi 瓦力(wn9_hiwalle_tts2)"
-    default False
+    default n
 
     config SR_WN_WN9_XIAOLUXIAOLU_TTS2
     bool "小鹿小鹿 (wn9_xiaoluxiaolu_tts2)"
-    default False
+    default n
 
     config SR_WN_WN9_NIHAOXIAOAN_TTS2
     bool "你好小安 (wn9_nihaoxiaoan_tts2)"
-    default False
+    default n
 
     config SR_WN_WN9_NI3HAO3XIAO3MAI4_TTS2
     bool "你好小脉 (wn9_ni3hao3xiao3mai4_tts2)"
-    default False
+    default n
 
     config SR_WN_WN9_NI3HAO3XIAO3RUI4_TTS3
     bool "你好小瑞 (wn9_ni3hao3xiao3rui4_tts3)"
-    default False
+    default n
 
     config SR_WN_WN9_HAI1XIAO3OU1_TTS3
     bool "嗨小欧 (wn9_hai1xiao3ou1_tts3)"
-    default False
+    default n
 
     config SR_WN_WN9_XIAO3JIA1XIAO3JIA1_TTS3
     bool "小珈小珈 (wn9_xiao3jia1xiao3jia1_tts3)"
-    default False
+    default n
 
     config SR_WN_WN9_XIAO3FENG1XIAO3FENG1_TTS3
     bool "小峰小峰 (wn9_xiao3feng1xiao3feng1_tts3)"
-    default False
+    default n
 
     config SR_WN_WN9_HAI1XIAO3XIANG4_TTS3
     bool "嗨小象 (wn9_hai1xiao3xiang4_tts3)"
-    default False
+    default n
 
     config SR_WN_WN9L_NI3HAO3XING1BAO3_TTS3
     bool "你好星宝 (wn9l_ni3hao3xing1bao3_tts3)"
-    default False
+    default n
 endmenu
 
 
@@ -2385,7 +2397,12 @@ config EN_SPEECH_COMMAND_ID199
 endmenu
 
 config ESP_SR_EXTERNAL_MODEL_PATH
-string "Load models from external path"
-default ""
+    string "Load models from external path"
+    default ""
+    help
+        Path to an external directory containing one or more model folders.
+        Models can be loaded from any filesystem location. Each model folder
+        must contain a valid _MODEL_INFO_ file and the required model data.
+        The selected models are automatically packaged during the build.
 
 endmenu

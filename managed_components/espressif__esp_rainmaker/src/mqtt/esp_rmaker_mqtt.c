@@ -92,6 +92,7 @@ esp_err_t esp_rmaker_mqtt_disconnect(void)
 
 esp_err_t esp_rmaker_mqtt_subscribe(const char *topic, esp_rmaker_mqtt_subscribe_cb_t cb, uint8_t qos, void *priv_data)
 {
+    ESP_LOGD(TAG, "Subscribing to topic: %s", topic);
     if (g_mqtt_config.subscribe) {
         return g_mqtt_config.subscribe(topic, cb, qos, priv_data);
     }
@@ -110,6 +111,7 @@ esp_err_t esp_rmaker_mqtt_unsubscribe(const char *topic)
 
 esp_err_t esp_rmaker_mqtt_publish(const char *topic, void *data, size_t data_len, uint8_t qos, int *msg_id)
 {
+    ESP_LOGD(TAG, "Publishing to topic: %s", topic);
     if (esp_rmaker_mqtt_is_budget_available() != true) {
         ESP_LOGE(TAG, "Out of MQTT Budget. Dropping publish message.");
         return ESP_FAIL;
@@ -123,6 +125,15 @@ esp_err_t esp_rmaker_mqtt_publish(const char *topic, void *data, size_t data_len
     }
     ESP_LOGW(TAG, "esp_rmaker_mqtt_publish not registered");
     return ESP_OK;
+}
+
+esp_err_t esp_rmaker_mqtt_update_config(esp_rmaker_mqtt_conn_params_t *conn_params)
+{
+    if (g_mqtt_config.update_config) {
+        return g_mqtt_config.update_config(conn_params);
+    }
+    ESP_LOGW(TAG, "esp_rmaker_mqtt_update_config not registered");
+    return ESP_ERR_NOT_SUPPORTED;
 }
 
 void esp_rmaker_create_mqtt_topic(char *buf, size_t buf_size, const char *topic_suffix, const char *rule)

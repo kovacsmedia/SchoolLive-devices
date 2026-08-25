@@ -14,7 +14,7 @@
 #define TAG "DIAG_VARIABLES"
 #define DIAG_VARIABLES_MAX_COUNT   CONFIG_DIAG_VARIABLES_MAX_COUNT
 
-/* Max supported string lenth */
+/* Max supported string length */
 #define MAX_STR_LEN         (sizeof(((esp_diag_str_data_pt_t *)0)->value.str) - 1)
 #define MAX_VARIABLES_WRITE_SZ     sizeof(esp_diag_data_pt_t)
 #define MAX_STR_VARIABLES_WRITE_SZ sizeof(esp_diag_str_data_pt_t)
@@ -72,7 +72,7 @@ esp_err_t esp_diag_variable_register(const char *tag, const char *key,
                                      esp_diag_data_type_t type)
 {
     if (!tag || !key || !label || !path) {
-        ESP_LOGE(TAG, "Failed to register variable, tag, key, lable, or path is NULL");
+        ESP_LOGE(TAG, "Failed to register variable, tag, key, label, or path is NULL");
         return ESP_ERR_INVALID_ARG;
     }
     if (!s_priv_data.init) {
@@ -263,7 +263,11 @@ esp_err_t esp_diag_variable_report(esp_diag_data_type_t data_type, const char *t
 #endif
     strlcpy(data.key, key, sizeof(data.key));
     data.ts = ts;
-    memcpy(&data.value, val, val_sz);
+    if (variable->type == ESP_DIAG_DATA_TYPE_STR) {
+        strlcpy(data.value.str, val, sizeof(data.value.str));
+    } else {
+        memcpy(&data.value, val, val_sz);
+    }
 
     if (s_priv_data.config.write_cb) {
         return s_priv_data.config.write_cb(variable->tag, &data, write_sz, s_priv_data.config.cb_arg);

@@ -12,25 +12,36 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <esp_idf_version.h>
+
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+/* mbedtls v4.0: use PSA crypto for key generation */
+#include "psa/crypto.h"
+#include "mbedtls/psa_util.h"
+#else
 #include <mbedtls/version.h>
 /* Keep forward-compatibility with Mbed TLS 3.x */
 #if (MBEDTLS_VERSION_NUMBER < 0x03000000)
 #define MBEDTLS_2_X_COMPAT
-#else /* !(MBEDTLS_VERSION_NUMBER < 0x03000000) */
-/* Macro wrapper for struct's private members */
+#else
 #ifndef MBEDTLS_ALLOW_PRIVATE_ACCESS
 #define MBEDTLS_ALLOW_PRIVATE_ACCESS
-#endif /* MBEDTLS_ALLOW_PRIVATE_ACCESS */
-#endif /* !(MBEDTLS_VERSION_NUMBER < 0x03000000) */
-
-#include "mbedtls/platform.h"
-#include "mbedtls/pk.h"
+#endif
+#endif
 #include "mbedtls/rsa.h"
 #include "mbedtls/entropy.h"
 #include "mbedtls/ctr_drbg.h"
+#include "mbedtls/sha512.h"
+#ifdef CONFIG_ESP_RMAKER_CLAIM_KEY_ECDSA
+#include "mbedtls/ecdsa.h"
+#include "mbedtls/ecp.h"
+#endif
+#endif /* ESP_IDF_VERSION >= 6.0.0 */
+
+#include "mbedtls/platform.h"
+#include "mbedtls/pk.h"
 #include "mbedtls/x509_csr.h"
 #include "mbedtls/md.h"
-#include "mbedtls/sha512.h"
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -54,32 +65,16 @@
 #include "esp_rmaker_internal.h"
 #include "esp_rmaker_client_data.h"
 #include "esp_rmaker_claim.h"
+#include "esp_rmaker_pk_utils.h"
 
-#if RMAKER_USING_NETWORK_PROV
 #include <network_provisioning/manager.h>
-#else
-#include <wifi_provisioning/manager.h>
-#endif
-
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(4, 4, 0)
-// Features supported in 4.4+
 
 #ifdef CONFIG_ESP_RMAKER_USE_CERT_BUNDLE
 #define ESP_RMAKER_USE_CERT_BUNDLE
 #include <esp_crt_bundle.h>
 #endif
 
-#else
-
-#ifdef CONFIG_ESP_RMAKER_USE_CERT_BUNDLE
-#warning "Certificate Bundle not supported below IDF v4.4. Using provided certificate instead."
-#endif
-
-#endif /* !IDF4.4 */
-
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 1, 0)
 #include "esp_mac.h"
-#endif
 
 static const char *TAG = "esp_claim";
 
@@ -99,7 +94,11 @@ extern uint8_t claim_service_server_root_ca_pem_start[] asm("_binary_rmaker_clai
 extern uint8_t claim_service_server_root_ca_pem_end[] asm("_binary_rmaker_claim_service_server_crt_end");
 #endif /* CONFIG_ESP_RMAKER_SELF_CLAIM */
 
+#ifdef CONFIG_ESP_RMAKER_CLAIM_KEY_ECDSA
+#define CLAIM_EC_CURVE     MBEDTLS_ECP_DP_SECP256R1
+#else
 #define CLAIM_PK_SIZE       2048
+#endif
 
 static EventGroupHandle_t claim_event_group;
 static const int CLAIM_TASK_BIT = BIT0;
@@ -148,26 +147,15 @@ static esp_err_t esp_rmaker_claim_generate_csr(esp_rmaker_claim_data_t *claim_da
         ESP_LOGE(TAG, "claim_data or common_name cannot be NULL.");
         return ESP_ERR_INVALID_ARG;
     }
-    const char *pers = "gen_csr";
     mbedtls_x509write_csr csr;
-    mbedtls_ctr_drbg_context ctr_drbg;
-    mbedtls_entropy_context entropy;
 
     /* Generating CSR from the private key */
     mbedtls_x509write_csr_init(&csr);
     mbedtls_x509write_csr_set_md_alg(&csr, MBEDTLS_MD_SHA256);
-    mbedtls_ctr_drbg_init(&ctr_drbg);
 
-    ESP_LOGD(TAG, "Seeding the random number generator.");
-    mbedtls_entropy_init(&entropy);
-    int ret = mbedtls_ctr_drbg_seed( &ctr_drbg, mbedtls_entropy_func, &entropy, (const unsigned char *) pers, strlen(pers));
-    if (ret != 0) {
-        ESP_LOGE(TAG, "mbedtls_ctr_drbg_seed returned -0x%04x", -ret );
-        goto exit;
-    }
     char subject_name[50];
     snprintf(subject_name, sizeof(subject_name), "CN=%s", common_name);
-    ret = mbedtls_x509write_csr_set_subject_name(&csr, subject_name);
+    int ret = mbedtls_x509write_csr_set_subject_name(&csr, subject_name);
     if (ret != 0) {
         ESP_LOGE(TAG, "mbedtls_x509write_csr_set_subject_name returned %d", ret );
         goto exit;
@@ -176,7 +164,27 @@ static esp_err_t esp_rmaker_claim_generate_csr(esp_rmaker_claim_data_t *claim_da
     memset(claim_data->csr, 0, sizeof(claim_data->csr));
     mbedtls_x509write_csr_set_key(&csr, &claim_data->key);
     ESP_LOGD(TAG, "Generating PEM");
-    ret = mbedtls_x509write_csr_pem(&csr, claim_data->csr, sizeof(claim_data->csr), mbedtls_ctr_drbg_random, &ctr_drbg);
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+    ret = mbedtls_x509write_csr_pem(&csr, claim_data->csr, sizeof(claim_data->csr));
+#else
+    {
+        const char *pers = "gen_csr";
+        mbedtls_ctr_drbg_context ctr_drbg;
+        mbedtls_entropy_context entropy;
+        mbedtls_ctr_drbg_init(&ctr_drbg);
+        mbedtls_entropy_init(&entropy);
+        ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, (const unsigned char *) pers, strlen(pers));
+        if (ret != 0) {
+            ESP_LOGE(TAG, "mbedtls_ctr_drbg_seed returned -0x%04x", -ret);
+            mbedtls_ctr_drbg_free(&ctr_drbg);
+            mbedtls_entropy_free(&entropy);
+            goto exit;
+        }
+        ret = mbedtls_x509write_csr_pem(&csr, claim_data->csr, sizeof(claim_data->csr), mbedtls_ctr_drbg_random, &ctr_drbg);
+        mbedtls_ctr_drbg_free(&ctr_drbg);
+        mbedtls_entropy_free(&entropy);
+    }
+#endif
     if (ret < 0) {
         ESP_LOGE(TAG, "mbedtls_x509write_csr_pem returned -0x%04x", -ret );
         goto exit;
@@ -184,59 +192,107 @@ static esp_err_t esp_rmaker_claim_generate_csr(esp_rmaker_claim_data_t *claim_da
     ESP_LOGD(TAG, "CSR generated.");
     claim_data->state = RMAKER_CLAIM_STATE_CSR_GENERATED;
 exit:
-
     mbedtls_x509write_csr_free(&csr);
-    mbedtls_ctr_drbg_free(&ctr_drbg);
-    mbedtls_entropy_free(&entropy);
-
     return ret;
 }
 
 static esp_err_t esp_rmaker_claim_generate_key(esp_rmaker_claim_data_t *claim_data)
 {
+    mbedtls_pk_free(&claim_data->key);
+    mbedtls_pk_init(&claim_data->key);
+    memset(claim_data->payload, 0, sizeof(claim_data->payload));
+    int ret;
+
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+    /* Use PSA crypto for key generation in mbedtls v4.0 */
+    psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+    psa_key_id_t key_id = 0;
+
+#ifdef CONFIG_ESP_RMAKER_CLAIM_KEY_ECDSA
+    ESP_LOGW(TAG, "Generating ECDSA private key. This may take time.");
+    psa_set_key_type(&attributes, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
+    psa_set_key_bits(&attributes, 256);
+    psa_set_key_algorithm(&attributes, PSA_ALG_ECDSA(PSA_ALG_SHA_256));
+#else
+    ESP_LOGW(TAG, "Generating RSA private key. This may take time.");
+    psa_set_key_type(&attributes, PSA_KEY_TYPE_RSA_KEY_PAIR);
+    psa_set_key_bits(&attributes, CLAIM_PK_SIZE);
+    psa_set_key_algorithm(&attributes, PSA_ALG_RSA_PKCS1V15_SIGN(PSA_ALG_SHA_256));
+#endif
+    psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_SIGN_HASH | PSA_KEY_USAGE_EXPORT);
+
+    psa_status_t status = psa_generate_key(&attributes, &key_id);
+    psa_reset_key_attributes(&attributes);
+    if (status != PSA_SUCCESS) {
+        ESP_LOGE(TAG, "psa_generate_key failed: %d", (int)status);
+        return ESP_FAIL;
+    }
+
+    ret = mbedtls_pk_copy_from_psa(key_id, &claim_data->key);
+    psa_destroy_key(key_id);
+    if (ret != 0) {
+        ESP_LOGE(TAG, "mbedtls_pk_copy_from_psa failed: -0x%04x", -ret);
+        return ESP_FAIL;
+    }
+#else /* ESP_IDF_VERSION < 6.0.0 */
     const char *pers = "gen_key";
     mbedtls_entropy_context entropy;
     mbedtls_ctr_drbg_context ctr_drbg;
-
-    mbedtls_pk_free(&claim_data->key);
-    mbedtls_pk_init(&claim_data->key);
     mbedtls_ctr_drbg_init(&ctr_drbg);
-    memset(claim_data->payload, 0, sizeof(claim_data->payload));
 
     ESP_LOGD(TAG, "Seeding the random number generator.");
     mbedtls_entropy_init(&entropy);
-    int ret = mbedtls_ctr_drbg_seed( &ctr_drbg, mbedtls_entropy_func, &entropy, (const unsigned char *) pers, strlen(pers));
+    ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, (const unsigned char *) pers, strlen(pers));
     if (ret != 0) {
-        ESP_LOGE(TAG, "mbedtls_ctr_drbg_seed returned -0x%04x", -ret );
+        ESP_LOGE(TAG, "mbedtls_ctr_drbg_seed returned -0x%04x", -ret);
         mbedtls_pk_free(&claim_data->key);
         goto exit;
     }
 
-    ESP_LOGW(TAG, "Generating the private key. This may take time." );
+#ifdef CONFIG_ESP_RMAKER_CLAIM_KEY_ECDSA
+    ESP_LOGW(TAG, "Generating ECDSA private key. This may take time.");
+    ret = mbedtls_pk_setup(&claim_data->key, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY));
+    if (ret != 0) {
+        ESP_LOGE(TAG, "mbedtls_pk_setup returned -0x%04x", -ret);
+        mbedtls_pk_free(&claim_data->key);
+        goto exit;
+    }
+    ret = mbedtls_ecdsa_genkey(mbedtls_pk_ec(claim_data->key), CLAIM_EC_CURVE, mbedtls_ctr_drbg_random, &ctr_drbg);
+    if (ret != 0) {
+        ESP_LOGE(TAG, "mbedtls_ecdsa_genkey returned -0x%04x", -ret);
+        mbedtls_pk_free(&claim_data->key);
+        goto exit;
+    }
+#else /* CONFIG_ESP_RMAKER_CLAIM_KEY_RSA */
+    ESP_LOGW(TAG, "Generating RSA private key. This may take time.");
     ret = mbedtls_pk_setup(&claim_data->key, mbedtls_pk_info_from_type(MBEDTLS_PK_RSA));
     if (ret != 0) {
-        ESP_LOGE(TAG, "mbedtls_pk_setup returned -0x%04x", -ret );
+        ESP_LOGE(TAG, "mbedtls_pk_setup returned -0x%04x", -ret);
         mbedtls_pk_free(&claim_data->key);
         goto exit;
     }
-
-    ret = mbedtls_rsa_gen_key(mbedtls_pk_rsa(claim_data->key), mbedtls_ctr_drbg_random, &ctr_drbg, CLAIM_PK_SIZE, 65537); /* here, 65537 is the RSA exponent */
+    ret = mbedtls_rsa_gen_key(mbedtls_pk_rsa(claim_data->key), mbedtls_ctr_drbg_random, &ctr_drbg, CLAIM_PK_SIZE, 65537);
     if (ret != 0) {
-        ESP_LOGE(TAG, "mbedtls_rsa_gen_key returned -0x%04x", -ret );
+        ESP_LOGE(TAG, "mbedtls_rsa_gen_key returned -0x%04x", -ret);
         mbedtls_pk_free(&claim_data->key);
         goto exit;
     }
+#endif /* CONFIG_ESP_RMAKER_CLAIM_KEY_RSA */
+exit:
+    mbedtls_ctr_drbg_free(&ctr_drbg);
+    mbedtls_entropy_free(&entropy);
+    if (ret != 0) {
+        return ret;
+    }
+#endif /* ESP_IDF_VERSION >= 6.0.0 */
 
     claim_data->state = RMAKER_CLAIM_STATE_PK_GENERATED;
     ESP_LOGD(TAG, "Converting Private Key to PEM...");
     ret = mbedtls_pk_write_key_pem(&claim_data->key, (unsigned char *)claim_data->payload, sizeof(claim_data->payload));
     if (ret != 0) {
-        ESP_LOGE(TAG, "mbedtls_pk_write_key_pem returned -0x%04x", -ret );
+        ESP_LOGE(TAG, "mbedtls_pk_write_key_pem returned -0x%04x", -ret);
         mbedtls_pk_free(&claim_data->key);
     }
-exit:
-    mbedtls_ctr_drbg_free(&ctr_drbg);
-    mbedtls_entropy_free(&entropy);
     return ret;
 }
 
@@ -268,6 +324,11 @@ static esp_err_t handle_claim_verify_response(esp_rmaker_claim_data_t *claim_dat
                 esp_rmaker_factory_set(ESP_RMAKER_MQTT_HOST_NVS_KEY, value_buf, strlen(value_buf));
                 memset(value_buf, 0, required_len);
             }
+            if (json_obj_get_string(&jctx, "mqtt_cred_host", value_buf, required_len) == 0) {
+                ESP_LOGI(TAG, "Storing received MQTT Cred Host: %s", value_buf);
+                esp_rmaker_factory_set(ESP_RMAKER_MQTT_CRED_HOST_NVS_KEY, value_buf, strlen(value_buf));
+                memset(value_buf, 0, required_len);
+            }
             json_obj_get_string(&jctx, "certificate", value_buf, required_len);
             json_parse_end(&jctx);
             unescape_new_line(value_buf);
@@ -288,18 +349,10 @@ static esp_err_t generate_claim_init_request(esp_rmaker_claim_data_t *claim_data
         return ESP_ERR_INVALID_STATE;
     }
     uint8_t mac_addr[6];
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 1, 0)
-    /* ESP_MAC_BASE was introduced in ESP-IDF v5.1. It is the same as the Wi-Fi Station MAC address
-     * for chips supporting Wi-Fi. We can use base MAC address to generate claim init request for both
+    /* ESP_MAC_BASE provides the base MAC address for all chips, supporting both
      * Wi-Fi and Thread devices
      */
     esp_err_t err = esp_read_mac(mac_addr, ESP_MAC_BASE);
-#else
-    /* Thread was officially supported in ESP-IDF v5.1. Use Wi-Fi Station MAC address to generate claim
-     * init request.
-     */
-    esp_err_t err = esp_wifi_get_mac(WIFI_IF_STA, mac_addr);
-#endif
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Could not fetch MAC address.");
         return err;
@@ -338,14 +391,44 @@ static esp_err_t read_hmac_key(uint32_t *out_hmac_key, size_t hmac_key_size)
 
 static esp_err_t hmac_challenge(const char* hmac_request, unsigned char *hmac_response, size_t len_hmac_response)
 {
-    mbedtls_md_context_t ctx;
-    mbedtls_md_type_t md_type = MBEDTLS_MD_SHA512;
     uint32_t hmac_key[4];
 
     esp_err_t err = read_hmac_key(hmac_key, sizeof(hmac_key));
     if (err != ESP_OK) {
         return err;
     }
+
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+    /* mbedtls v4.0 removed the mbedtls_md_hmac_* API; use the PSA one-shot MAC */
+    psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_SIGN_MESSAGE);
+    psa_set_key_algorithm(&attributes, PSA_ALG_HMAC(PSA_ALG_SHA_512));
+    psa_set_key_type(&attributes, PSA_KEY_TYPE_HMAC);
+    psa_set_key_bits(&attributes, sizeof(hmac_key) * 8);
+
+    psa_key_id_t key_id = 0;
+    psa_status_t status = psa_import_key(&attributes, (const uint8_t *)hmac_key, sizeof(hmac_key), &key_id);
+    if (status != PSA_SUCCESS) {
+        ESP_LOGE(TAG, "psa_import_key failed: %d", (int)status);
+        return ESP_FAIL;
+    }
+    size_t mac_len = 0;
+    status = psa_mac_compute(key_id, PSA_ALG_HMAC(PSA_ALG_SHA_512),
+                             (const uint8_t *)hmac_request, strlen(hmac_request),
+                             hmac_response, len_hmac_response, &mac_len);
+    psa_destroy_key(key_id);
+    if (status != PSA_SUCCESS) {
+        ESP_LOGE(TAG, "psa_mac_compute failed: %d", (int)status);
+        return ESP_FAIL;
+    }
+    if (mac_len != PSA_HASH_LENGTH(PSA_ALG_SHA_512)) {
+        ESP_LOGE(TAG, "Unexpected HMAC-SHA512 length: %d", (int)mac_len);
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+#else
+    mbedtls_md_context_t ctx;
+    mbedtls_md_type_t md_type = MBEDTLS_MD_SHA512;
 
     mbedtls_md_init(&ctx);
     int ret = mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(md_type) ,1);
@@ -359,6 +442,7 @@ static esp_err_t hmac_challenge(const char* hmac_request, unsigned char *hmac_re
     } else {
         return ret;
     }
+#endif
 }
 
 /* Parse the Claim Init response and generate Claim Verify request
@@ -395,6 +479,9 @@ static esp_err_t handle_self_claim_init_response(esp_rmaker_claim_data_t *claim_
                 }
                 json_gen_end_long_string(&jstr);
                 json_gen_obj_set_string(&jstr, "csr", (char *)claim_data->csr);
+#ifdef CONFIG_ESP_RMAKER_CLAIM_VIDEOSTREAM_SUPPORT
+                json_gen_obj_set_string(&jstr, "node_policies", "videostream");
+#endif
                 json_gen_end_object(&jstr);
                 json_gen_str_end(&jstr);
                 return ESP_OK;
@@ -508,14 +595,19 @@ esp_err_t esp_rmaker_self_claim_perform(esp_rmaker_claim_data_t *claim_data)
         ESP_LOGE(TAG, "Self claiming not initialised.");
         return ESP_ERR_INVALID_STATE;
     }
+    esp_rmaker_post_event(RMAKER_EVENT_CLAIM_STARTED, NULL, 0);
     esp_err_t err = esp_rmaker_claim_perform_init(claim_data);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Claim Init Sequence Failed.");
+        esp_rmaker_post_event(RMAKER_EVENT_CLAIM_FAILED, NULL, 0);
         return err;
     }
     err = esp_rmaker_claim_perform_verify(claim_data);
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "Self Claiming was successful. Certificate received.");
+        esp_rmaker_post_event(RMAKER_EVENT_CLAIM_SUCCESSFUL, NULL, 0);
+    } else {
+        esp_rmaker_post_event(RMAKER_EVENT_CLAIM_FAILED, NULL, 0);
     }
     esp_rmaker_claim_data_free(claim_data);
     return err;
@@ -623,6 +715,7 @@ esp_err_t esp_rmaker_assisted_claim_handle_start(RmakerClaim__RMakerClaimPayload
     response->resppayload->status = RMAKER_CLAIM__RMAKER_CLAIM_STATUS__Success;
     claim_data->state = RMAKER_CLAIM_STATE_INIT;
     ESP_LOGI(TAG, "Assisted Claiming Started.");
+    esp_rmaker_post_event(RMAKER_EVENT_CLAIM_STARTED, NULL, 0);
     return ESP_OK;
 }
 
@@ -751,11 +844,16 @@ esp_err_t esp_rmaker_assisted_claim_handle_verify(RmakerClaim__RMakerClaimPayloa
         if (handle_claim_verify_response(claim_data) == ESP_OK) {
             ESP_LOGI(TAG,"Assisted Claiming was Successful.");
             claim_data->state = RMAKER_CLAIM_STATE_VERIFY_DONE;
+            esp_rmaker_post_event(RMAKER_EVENT_CLAIM_SUCCESSFUL, NULL, 0);
             if (claim_event_group) {
                 xEventGroupSetBits(claim_event_group, CLAIM_TASK_BIT);
             }
         } else {
+            esp_rmaker_post_event(RMAKER_EVENT_CLAIM_FAILED, NULL, 0);
             response->resppayload->status = RMAKER_CLAIM__RMAKER_CLAIM_STATUS__InvalidParam;
+            if (claim_event_group) {
+                xEventGroupSetBits(claim_event_group, CLAIM_TASK_BIT);
+            }
             return ESP_OK;
         }
     }
@@ -814,6 +912,10 @@ esp_err_t esp_rmaker_claiming_handler(uint32_t session_id, const uint8_t *inbuf,
             claim_data->state = RMAKER_CLAIM_STATE_PK_GENERATED;
             resppayload.status = RMAKER_CLAIM__RMAKER_CLAIM_STATUS__Success;
             ESP_LOGW(TAG, "Assisted Claiming Aborted.");
+            esp_rmaker_post_event(RMAKER_EVENT_CLAIM_FAILED, NULL, 0);
+            if (claim_event_group) {
+                xEventGroupSetBits(claim_event_group, CLAIM_TASK_BIT);
+            }
             break;
         default:
             break;
@@ -828,11 +930,14 @@ esp_err_t esp_rmaker_claiming_handler(uint32_t session_id, const uint8_t *inbuf,
 static void event_handler(void* arg, esp_event_base_t event_base,
                           int32_t event_id, void* event_data)
 {
-#if RMAKER_USING_NETWORK_PROV
     if (event_base == NETWORK_PROV_EVENT) {
         switch (event_id) {
             case NETWORK_PROV_INIT: {
+#ifdef CONFIG_ESP_RMAKER_CLAIM_VIDEOSTREAM_SUPPORT
+                static const char *capabilities[] = {"camera_claim"};
+#else
                 static const char *capabilities[] = {"claim"};
+#endif
                 network_prov_mgr_set_app_info("rmaker", "1.0", capabilities, 1);
                 if (network_prov_mgr_endpoint_create(CLAIM_ENDPOINT) != ESP_OK) {
                     ESP_LOGE(TAG, "Failed to create claim end point.");
@@ -848,45 +953,70 @@ static void event_handler(void* arg, esp_event_base_t event_base,
                 break;
         }
     }
-#else
-    if (event_base == WIFI_PROV_EVENT) {
-        switch (event_id) {
-            case WIFI_PROV_INIT: {
-                static const char *capabilities[] = {"claim"};
-                wifi_prov_mgr_set_app_info("rmaker", "1.0", capabilities, 1);
-                if (wifi_prov_mgr_endpoint_create(CLAIM_ENDPOINT) != ESP_OK) {
-                    ESP_LOGE(TAG, "Failed to create claim end point.");
-                }
-                break;
-            }
-            case WIFI_PROV_START:
-                if (wifi_prov_mgr_endpoint_register(CLAIM_ENDPOINT, esp_rmaker_claiming_handler, arg) != ESP_OK) {
-                    ESP_LOGE(TAG, "Failed to register claim end point.");
-                }
-                break;
-            default:
-                break;
-        }
-    }
-#endif /* RMAKER_USING_NETWORK_PROV */
 }
 #endif /* CONFIG_ESP_RMAKER_ASSISTED_CLAIM */
 esp_err_t __esp_rmaker_claim_init(esp_rmaker_claim_data_t *claim_data)
 {
     esp_err_t err = ESP_OK;
+    bool node_already_claimed = false;
+
+    /* Check if node is already claimed by checking for certificate */
+    char *cert = esp_rmaker_get_client_cert();
+    if (cert) {
+        node_already_claimed = true;
+        free(cert);
+        ESP_LOGI(TAG, "Node already has certificate. Will use existing key if available.");
+    }
 
     char *key = esp_rmaker_get_client_key();
     if (key) {
         mbedtls_pk_free(&claim_data->key);
         mbedtls_pk_init(&claim_data->key);
-#ifdef MBEDTLS_2_X_COMPAT
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0) || defined(MBEDTLS_2_X_COMPAT)
+        /* Only mbedtls 3.x takes an RNG callback pair here; the 2.x and 4.x
+         * signatures are identical. */
         int ret = mbedtls_pk_parse_key(&claim_data->key, (uint8_t *)key, strlen(key) + 1, NULL, 0);
 #else
         int ret = mbedtls_pk_parse_key(&claim_data->key, (uint8_t *)key, strlen(key) + 1, NULL, 0, mbedtls_ctr_drbg_random, NULL);
 #endif
         if (ret == 0) {
-            ESP_LOGI(TAG, "Private key already exists. No need to re-initialise it.");
-            claim_data->state = RMAKER_CLAIM_STATE_PK_GENERATED;
+            bool key_type_matches_config = false;
+            int is_ec = 0, is_rsa = 0;
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+            esp_rmaker_pk_detect_type(&claim_data->key, &is_ec, &is_rsa);
+#else
+            mbedtls_pk_type_t key_type = mbedtls_pk_get_type(&claim_data->key);
+            is_ec = (key_type == MBEDTLS_PK_ECKEY);
+            is_rsa = (key_type == MBEDTLS_PK_RSA);
+#endif
+#ifdef CONFIG_ESP_RMAKER_CLAIM_KEY_ECDSA
+            key_type_matches_config = is_ec;
+#else
+            key_type_matches_config = is_rsa;
+#endif
+            if (node_already_claimed) {
+                ESP_LOGI(TAG, "Private key already exists and node is claimed. Using existing %s key.",
+                         is_rsa ? "RSA" : is_ec ? "ECDSA" : "unknown");
+                claim_data->state = RMAKER_CLAIM_STATE_PK_GENERATED;
+            } else if (key_type_matches_config) {
+                /* Key type matches config and node is not claimed - use existing key */
+                ESP_LOGI(TAG, "Private key already exists with matching type. No need to re-initialise it.");
+                claim_data->state = RMAKER_CLAIM_STATE_PK_GENERATED;
+            } else {
+                /* Key type doesn't match config and node is not claimed - generate new key */
+                ESP_LOGW(TAG, "Existing key type doesn't match configured type (%s). Generating new key.",
+#ifdef CONFIG_ESP_RMAKER_CLAIM_KEY_ECDSA
+                         "ECDSA"
+#else
+                         "RSA"
+#endif
+                         );
+                mbedtls_pk_free(&claim_data->key);
+                claim_data->state = RMAKER_CLAIM_STATE_INIT;
+            }
+        } else {
+            ESP_LOGW(TAG, "Failed to parse existing key. Will generate new key.");
+            mbedtls_pk_free(&claim_data->key);
         }
         free(key);
     }
@@ -961,10 +1091,13 @@ static esp_rmaker_claim_data_t *esp_rmaker_claim_init(void)
         ESP_LOGE(TAG, "Claim already initialised");
         return NULL;
     }
-    claim_event_group = xEventGroupCreate();
+    /* Create event group if it doesn't exist (for assisted claiming, it may already exist) */
     if (!claim_event_group) {
-        ESP_LOGE(TAG, "Couldn't create event group");
-        return NULL;
+        claim_event_group = xEventGroupCreate();
+        if (!claim_event_group) {
+            ESP_LOGE(TAG, "Couldn't create event group");
+            return NULL;
+        }
     }
     esp_rmaker_claim_data_t *claim_data = NULL;
 
@@ -975,14 +1108,23 @@ static esp_rmaker_claim_data_t *esp_rmaker_claim_init(void)
     if (xTaskCreate(&esp_rmaker_claim_task, "claim_task", ESP_RMAKER_CLAIM_TASK_STACK_SIZE,
                 &claim_data, tskIDLE_PRIORITY, NULL) != pdPASS) {
         ESP_LOGE(TAG, "Couldn't create Claim task");
+        /* On failure, delete event group and reset handle */
         vEventGroupDelete(claim_event_group);
+        claim_event_group = NULL;
         return NULL;
     }
 
     /* Wait for claim init to complete */
     xEventGroupWaitBits(claim_event_group, CLAIM_TASK_BIT, false, true, portMAX_DELAY);
+#ifdef CONFIG_ESP_RMAKER_SELF_CLAIM
+    /* For self-claiming, delete event group after PK generation */
     vEventGroupDelete(claim_event_group);
     claim_event_group = NULL;
+#else
+    /* For assisted claiming, clear the bit as it would be re-used later*/
+    xEventGroupClearBits(claim_event_group, CLAIM_TASK_BIT);
+#endif
+    /* For assisted claiming, keep event group for claiming completion signaling */
     return claim_data;
 }
 
@@ -1000,42 +1142,35 @@ esp_err_t esp_rmaker_assisted_claim_perform(esp_rmaker_claim_data_t *claim_data)
         ESP_LOGE(TAG, "Assisted claiming not initialised.");
         return ESP_ERR_INVALID_STATE;
     }
-    claim_event_group = xEventGroupCreate();
     if (!claim_event_group) {
-        ESP_LOGE(TAG, "Couldn't create event group");
-        return ESP_ERR_NO_MEM;
+        ESP_LOGE(TAG, "Claim event group not created.");
+        return ESP_ERR_INVALID_STATE;
     }
-    /* Wait for assisted claim to complete */
+    /* Wait for assisted claim to complete (returns immediately if bit already set) */
     ESP_LOGI(TAG, "Waiting for assisted claim to finish.");
     xEventGroupWaitBits(claim_event_group, CLAIM_TASK_BIT, false, true, portMAX_DELAY);
     esp_err_t err = ESP_FAIL;
     if (claim_data->state == RMAKER_CLAIM_STATE_VERIFY_DONE) {
         err = ESP_OK;
     }
-#if RMAKER_USING_NETWORK_PROV
     esp_event_handler_unregister(NETWORK_PROV_EVENT, NETWORK_PROV_INIT, &event_handler);
     esp_event_handler_unregister(NETWORK_PROV_EVENT, NETWORK_PROV_START, &event_handler);
-#else
-    esp_event_handler_unregister(WIFI_PROV_EVENT, WIFI_PROV_INIT, &event_handler);
-    esp_event_handler_unregister(WIFI_PROV_EVENT, WIFI_PROV_START, &event_handler);
-#endif
     esp_rmaker_claim_data_free(claim_data);
     vEventGroupDelete(claim_event_group);
+    claim_event_group = NULL;
     return err;
 }
 esp_rmaker_claim_data_t *esp_rmaker_assisted_claim_init(void)
 {
     ESP_LOGI(TAG, "Initialising Assisted Claiming. This may take time.");
+    /* esp_rmaker_claim_init() will create the event group, and for assisted claiming,
+     * it will be kept after PK generation for claiming completion signaling */
     esp_rmaker_claim_data_t *claim_data = esp_rmaker_claim_init();
     if (claim_data) {
-#if RMAKER_USING_NETWORK_PROV
         esp_event_handler_register(NETWORK_PROV_EVENT, NETWORK_PROV_INIT, &event_handler, claim_data);
         esp_event_handler_register(NETWORK_PROV_EVENT, NETWORK_PROV_START, &event_handler, claim_data);
-#else
-        esp_event_handler_register(WIFI_PROV_EVENT, WIFI_PROV_INIT, &event_handler, claim_data);
-        esp_event_handler_register(WIFI_PROV_EVENT, WIFI_PROV_START, &event_handler, claim_data);
-#endif
     }
+    /* If claim init failed, event group is already cleaned up in esp_rmaker_claim_init() */
     return claim_data;
 }
 #endif

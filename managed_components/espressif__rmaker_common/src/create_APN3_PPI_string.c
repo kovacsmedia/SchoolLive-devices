@@ -2,18 +2,26 @@
  * APN3 PPI string generator - sample code
  *
  * NOTE: All code is provided as sample code for informational purposes only, and should not be used for any testing or production workloads.
- * All code is provided “as is” and AWS expressly disclaims all warranties, including, without limitation: any implied warranties of
+ * All code is provided "as is" and AWS expressly disclaims all warranties, including, without limitation: any implied warranties of
  * noninfringement, merchantability, or fitness for a particular purpose; any warranty that operation of the code will be error-free
  * or free of harmful components; or any warranty arising out of any course of dealing or usage of trade. In no event shall AWS or
  * any of its affiliates be liable for any damages arising out of the use of this code, including, without limitation, any direct,
  * indirect, special, incidental or consequential damages.
  */
+
 #include <stdio.h>
 #include <string.h>
 #include <sdkconfig.h>
+#ifndef CONFIG_IDF_TARGET_LINUX
 #include <esp_wifi.h>
+#endif
 #include <esp_log.h>
-#ifdef CONFIG_ESP_RMAKER_NETWORK_OVER_THREAD
+
+#if defined(CONFIG_ESP_WIFI_ENABLED) || defined(CONFIG_ESP32_WIFI_ENABLED) || defined(CONFIG_ESP_WIFI_REMOTE_ENABLED)
+#define RMAKER_WIFI_ENABLED
+#endif
+
+#ifdef CONFIG_OPENTHREAD_ENABLED
 #include <esp_mac.h>
 #endif
 
@@ -52,7 +60,7 @@ static const char *TAG = "aws_ppi";
  */
 char __attribute__((weak)) *platform_get_product_name()
 {
-    return(PPI_PRODUCT_NAME);
+    return (char *) (PPI_PRODUCT_NAME);
 }
 
 /*
@@ -62,7 +70,7 @@ char __attribute__((weak)) *platform_get_product_name()
 char __attribute__((weak)) *platform_get_product_UID()
 {
     static char mac_str[13];
-#if defined(CONFIG_ESP_RMAKER_NETWORK_OVER_WIFI)
+#ifdef RMAKER_WIFI_ENABLED
     uint8_t eth_mac[6];
     esp_err_t err = esp_wifi_get_mac(WIFI_IF_STA, eth_mac);
     if (err != ESP_OK) {
@@ -71,7 +79,7 @@ char __attribute__((weak)) *platform_get_product_UID()
     }
     snprintf(mac_str, sizeof(mac_str), "%02X%02X%02X%02X%02X%02X",
             eth_mac[0], eth_mac[1], eth_mac[2], eth_mac[3], eth_mac[4], eth_mac[5]);
-#elif defined(CONFIG_ESP_RMAKER_NETWORK_OVER_THREAD) /* CONFIG_ESP_RMAKER_NETWORK_OVER_WIFI */
+#elif defined(CONFIG_OPENTHREAD_ENABLED)
     uint8_t base_mac[6];
     esp_err_t err = esp_read_mac(base_mac, ESP_MAC_BASE);
     if (err != ESP_OK) {
@@ -80,7 +88,7 @@ char __attribute__((weak)) *platform_get_product_UID()
     }
     snprintf(mac_str, sizeof(mac_str), "%02X%02X%02X%02X%02X%02X",
              base_mac[0], base_mac[1], base_mac[2], base_mac[3], base_mac[4], base_mac[5]);
-#endif /* CONFIG_ESP_RMAKER_NETWORK_OVER_THREAD */
+#endif /* CONFIG_OPENTHREAD_ENABLED */
     return mac_str;
 }
 
@@ -91,7 +99,7 @@ char __attribute__((weak)) *platform_get_product_UID()
  */
 char __attribute__((weak)) *platform_get_product_version()
 {
-    return(PPI_PRODUCT_VERSION);
+    return (char *) (PPI_PRODUCT_VERSION);
 }
 
 /*
@@ -101,7 +109,7 @@ char __attribute__((weak)) *platform_get_product_version()
  */
 char __attribute__((weak)) *platform_get_silicon_sku_code()
 {
-    return(PPI_SILICON_SKU_CODE);
+    return (char *) (PPI_SILICON_SKU_CODE);
 }
 
 /*
@@ -116,7 +124,7 @@ int validate_sku_code(char *silicon_sku_code)
 
   typedef struct sku_item_t {
       /* entry in sku code lookup table */
-      char *skucode; /* code corresponding to sku name */
+      const char *skucode; /* code corresponding to sku name */
   } sku_item;
 
   static sku_item skutable[] =
@@ -162,7 +170,10 @@ int validate_platform_inputs(char *product_name, char *product_uid, char *produc
 {
   int retval = INVALID;
 
-  if ( (strlen(product_name) + strlen(product_uid) + strlen(product_version)) <= MAX_LEN_FIELDS_1_2_3)
+  if (!product_name || !product_uid || !product_version) {
+      ESP_LOGE(TAG, "Error: NULL field(s)");
+  }
+  else if ((strlen(product_name) + strlen(product_uid) + strlen(product_version)) <= MAX_LEN_FIELDS_1_2_3)
   {   /* field 1,2,3 length check passed */
 
       if (validate_sku_code(silicon_sku_code) == VALID)

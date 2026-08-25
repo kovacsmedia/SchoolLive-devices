@@ -11,7 +11,9 @@
 #include <string.h>
 #include <esp_log.h>
 #include <esp_wifi.h>
+#if CONFIG_ESP_COREDUMP_ENABLE
 #include <esp_core_dump.h>
+#endif
 
 #include <nvs.h>
 #include <esp_crc.h>
@@ -35,10 +37,7 @@
 #define INSIGHTS_CMD_RESP 1
 #endif
 
-#include <esp_idf_version.h>
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
 #include <esp_mac.h>
-#endif
 
 #define INSIGHTS_DEBUG_ENABLED      CONFIG_ESP_INSIGHTS_DEBUG_ENABLED
 
@@ -50,16 +49,24 @@
 #define CLOUD_REPORTING_PERIOD_MAX_SEC    CONFIG_ESP_INSIGHTS_CLOUD_POST_MAX_INTERVAL_SEC
 #define CLOUD_REPORTING_TIMEOUT_TICKS     ((30 * 1000) / portTICK_PERIOD_MS)
 
-#ifdef CONFIG_DIAG_DATA_STORE_RTC
-#if CONFIG_RTC_STORE_DATA_SIZE > (1024 * 4)
-#define INSIGHTS_DATA_MAX_SIZE  (CONFIG_RTC_STORE_DATA_SIZE - 1024)
+#if defined(CONFIG_DIAG_DATA_STORE_RTC) || defined(CONFIG_DIAG_DATA_STORE_RAM)
+
+#if CONFIG_DIAG_DATA_STORE_RTC
+#define DATA_STORE_SIZE CONFIG_RTC_STORE_DATA_SIZE
 #else
-#define INSIGHTS_DATA_MAX_SIZE  CONFIG_RTC_STORE_DATA_SIZE
+#define DATA_STORE_SIZE CONFIG_RAM_STORE_DATA_SIZE
 #endif
+
+#if DATA_STORE_SIZE > (1024 * 4)
+#define INSIGHTS_DATA_MAX_SIZE  (DATA_STORE_SIZE - 1024)
 #else
+#define INSIGHTS_DATA_MAX_SIZE  DATA_STORE_SIZE
+#endif
+
+#else /* defined(CONFIG_DIAG_DATA_STORE_RTC) || defined(CONFIG_DIAG_DATA_STORE_RAM) */
 /* TODO: Hardcoding it to 6K but needs to think about clearer way to define this */
 #define INSIGHTS_DATA_MAX_SIZE (1024 * 6)
-#endif
+#endif /* defined(CONFIG_DIAG_DATA_STORE_RTC) || defined(CONFIG_DIAG_DATA_STORE_RAM) */
 
 #define INSIGHTS_READ_BUF_SIZE  (1024)  // read this much data from data store in one go
 
@@ -155,8 +162,8 @@ static bool is_wifi_connected(void)
  * data will be reported. Depending on whether data was sent or not during
  * the previous timeout, we double or halve the time period.
  * This ensures that data generally gets reported quick enough,
- * but if there's very frequent data being generated, it wont result
- * into too frquent publishes.
+ * but if there's very frequent data being generated, it won't result
+ * into too frequent publishes.
  * The period will keep changing between CLOUD_REPORTING_PERIOD_MIN_SEC and
  * CLOUD_REPORTING_PERIOD_MAX_SEC
  */
@@ -278,25 +285,31 @@ static void insights_event_handler(void* arg, esp_event_base_t event_base,
     }
     switch(event_id) {
         case INSIGHTS_EVENT_TRANSPORT_SEND_SUCCESS:
-#if INSIGHTS_DEBUG_ENABLED
-            ESP_LOGI(TAG, "Data send success, msg_id:%d.", data ? data->msg_id : 0);
-#endif
             if (data && data->msg_id) {
                 xSemaphoreTake(s_insights_data.data_lock, portMAX_DELAY);
-                if (xTimerIsTimerActive(s_insights_data.data_send_timer) == pdTRUE) {
-                    xTimerStop(s_insights_data.data_send_timer, portMAX_DELAY);
-                }
                 if (data->msg_id == s_insights_data.data_msg_id) {
+#if INSIGHTS_DEBUG_ENABLED
+                    ESP_LOGI(TAG, "Data message send success, msg_id:%d.", data ? data->msg_id : 0);
+#endif
                     esp_diag_data_store_critical_release(s_insights_data.data_msg_len);
                     s_insights_data.data_sent = true;
                     s_insights_data.data_send_inprogress = false;
+                    if (xTimerIsTimerActive(s_insights_data.data_send_timer) == pdTRUE) {
+                        xTimerStop(s_insights_data.data_send_timer, portMAX_DELAY);
+                    }
 #if SEND_INSIGHTS_META
                 } else if (s_insights_data.meta_msg_pending && data->msg_id == s_insights_data.meta_msg_id) {
+#if INSIGHTS_DEBUG_ENABLED
+                    ESP_LOGI(TAG, "Meta message send success, msg_id:%d.", data ? data->msg_id : 0);
+#endif
                     esp_insights_meta_nvs_crc_set(s_insights_data.meta_crc);
                     s_insights_data.meta_msg_pending = false;
                     s_insights_data.data_sent = true;
 #endif /* SEND_INSIGHTS_META */
                 } else if (s_insights_data.boot_msg_id > 0 && s_insights_data.boot_msg_id == data->msg_id) {
+#if INSIGHTS_DEBUG_ENABLED
+                    ESP_LOGI(TAG, "Boot message send success, msg_id:%d.", data ? data->msg_id : 0);
+#endif
 #if CONFIG_ESP_INSIGHTS_COREDUMP_ENABLE
                     esp_core_dump_image_erase();
 #endif // CONFIG_ESP_INSIGHTS_COREDUMP_ENABLE
@@ -304,9 +317,13 @@ static void insights_event_handler(void* arg, esp_event_base_t event_base,
                 }
 #if INSIGHTS_CMD_RESP
                 else if (s_insights_data.conf_msg_id > 0 && s_insights_data.conf_msg_id == data->msg_id) {
+#if INSIGHTS_DEBUG_ENABLED
+                    ESP_LOGI(TAG, "Conf message send success, msg_id:%d.", data ? data->msg_id : 0);
+#endif
                     s_insights_data.conf_msg_id = 0;
                 }
 #endif
+
                 xSemaphoreGive(s_insights_data.data_lock);
             }
             break;
@@ -473,7 +490,7 @@ static void send_insights_conf_meta(void)
 /* Consider 100 bytes are published and received on cloud but RMAKER_MQTT_EVENT_PUBLISHED
  * event is not received for 100 bytes. In a mean time 50 bytes are added to the buffer.
  * When the next time timer expires then old 100 bytes plus new 50 bytes will be published
- * and if RMAKER_MQTT_EVENT_PUBLISHED event is recieve for the new message then 150 bytes
+ * and if RMAKER_MQTT_EVENT_PUBLISHED event is receive for the new message then 150 bytes
  * will be removed from the buffers.
  *
  * In short, there is the possibility of data duplication, so cloud should be able to handle it.
@@ -763,21 +780,10 @@ static void variables_deinit(void)
 }
 #endif /* CONFIG_DIAG_ENABLE_VARIABLES */
 
-void esp_insights_disable(void)
+static void esp_insights_disable_internal(void *priv_data)
 {
-    s_insights_data.enabled = false;
+    (void) priv_data;
 
-    esp_insights_unregister_periodic_handler();
-#ifdef CONFIG_DIAG_ENABLE_VARIABLES
-    variables_deinit();
-#endif
-#ifdef CONFIG_DIAG_ENABLE_METRICS
-    metrics_deinit();
-#endif
-    esp_diag_log_hook_disable(ESP_DIAG_LOG_TYPE_ERROR | ESP_DIAG_LOG_TYPE_WARNING | ESP_DIAG_LOG_TYPE_EVENT);
-    esp_diag_data_store_deinit();
-    esp_event_handler_unregister(INSIGHTS_EVENT, ESP_EVENT_ANY_ID, insights_event_handler);
-    esp_event_handler_unregister(ESP_DIAG_DATA_STORE_EVENT, ESP_EVENT_ANY_ID, data_store_event_handler);
     if (s_insights_data.data_lock) {
         vSemaphoreDelete(s_insights_data.data_lock);
         s_insights_data.data_lock = NULL;
@@ -794,6 +800,32 @@ void esp_insights_disable(void)
         free(s_insights_data.node_id);
         s_insights_data.node_id = NULL;
     }
+    ESP_LOGI(TAG, "Deinit done");
+}
+
+void esp_insights_disable(void)
+{
+    if (!s_insights_data.enabled) {
+        ESP_LOGI(TAG, "Insights is already disabled");
+        return;
+    }
+    s_insights_data.enabled = false;
+
+    esp_insights_unregister_periodic_handler();
+#ifdef CONFIG_DIAG_ENABLE_VARIABLES
+    variables_deinit();
+#endif
+#ifdef CONFIG_DIAG_ENABLE_METRICS
+    metrics_deinit();
+#endif
+    esp_diag_log_hook_disable(ESP_DIAG_LOG_TYPE_ERROR | ESP_DIAG_LOG_TYPE_WARNING | ESP_DIAG_LOG_TYPE_EVENT);
+    esp_diag_data_store_deinit();
+    esp_event_handler_unregister(INSIGHTS_EVENT, ESP_EVENT_ANY_ID, insights_event_handler);
+    esp_event_handler_unregister(ESP_DIAG_DATA_STORE_EVENT, ESP_EVENT_ANY_ID, data_store_event_handler);
+
+    /* Let the existing Insights work to complete and then delete the semaphores */
+    ESP_LOGI(TAG, "Adding task to delete the semaphores");
+    esp_rmaker_work_queue_add_task(esp_insights_disable_internal, NULL);
 }
 
 void esp_insights_deinit(void)
@@ -1050,7 +1082,7 @@ esp_err_t esp_insights_init(esp_insights_config_t *config)
     s_insights_data.init_done = true;
 
     err = esp_insights_cmd_resp_init() || esp_insights_cmd_resp_enable();
-    if (err != ESP_OK) { /* device can keep working neverthless */
+    if (err != ESP_OK) { /* device can keep working nevertheless */
         ESP_LOGE(TAG, "Failed to enable insights_cmd_resp");
     }
     return ESP_OK;

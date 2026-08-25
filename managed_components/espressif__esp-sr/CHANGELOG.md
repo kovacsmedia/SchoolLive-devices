@@ -1,5 +1,16 @@
 # Change log for esp-sr
 
+
+# 2.5.1
+- Add GSC module
+- Add wakenet10 models
+
+# 2.5.0
+- Add a minimum energy threshold to VADNet.
+- Resolve the incompatibility between Kconfig and IDF v6.1.
+- Improve BSS performance
+- Support wakenet10 
+
 # 2.4.6
 - Remove redundant heap check
 

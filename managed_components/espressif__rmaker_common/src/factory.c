@@ -1,16 +1,9 @@
-// Copyright 2021 Espressif Systems (Shanghai) PTE LTD
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * SPDX-FileCopyrightText: 2021 Espressif Systems (Shanghai) CO LTD
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #include <string.h>
 #include <esp_log.h>
 #include <nvs_flash.h>
@@ -21,7 +14,7 @@
 static const char *TAG = "esp_rmaker_fctry";
 
 #define RMAKER_FACTORY_NAMESPACE    CONFIG_ESP_RMAKER_FACTORY_NAMESPACE
-#define RMAKER_FACTORY_PART         CONFIG_ESP_RMAKER_FACTORY_PARTITION_NAME        
+#define RMAKER_FACTORY_PART         CONFIG_ESP_RMAKER_FACTORY_PARTITION_NAME
 
 esp_err_t esp_rmaker_factory_init(void)
 {
@@ -47,7 +40,7 @@ esp_err_t esp_rmaker_factory_init(void)
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to read NVS security cfg: 0x%x", err);
         return err;
-    }   
+    }
     err = nvs_flash_secure_init_partition(RMAKER_FACTORY_PART, &cfg);
 #else
     err = nvs_flash_init_partition(RMAKER_FACTORY_PART);
@@ -71,7 +64,7 @@ void *esp_rmaker_factory_get(const char *key)
     }
     size_t required_size = 0;
     if ((err = nvs_get_blob(handle, key, NULL, &required_size)) != ESP_OK) {
-        ESP_LOGD(TAG, "Failed to read key %s with error %d size %d", key, err, required_size);
+        ESP_LOGD(TAG, "Failed to read key %s with error %d size %zu", key, err, required_size);
         nvs_close(handle);
         return NULL;
     }
@@ -94,7 +87,7 @@ size_t esp_rmaker_factory_get_size(const char *key)
     }
     size_t required_size = 0;
     if ((err = nvs_get_blob(handle, key, NULL, &required_size)) != ESP_OK) {
-        ESP_LOGD(TAG, "Failed to read key %s with error %d size %d", key, err, required_size);
+        ESP_LOGD(TAG, "Failed to read key %s with error %d size %zu", key, err, required_size);
     }
     nvs_close(handle);
     return required_size;
@@ -110,7 +103,7 @@ esp_err_t esp_rmaker_factory_set(const char *key, void *value, size_t len)
         return ESP_FAIL;
     }
     if ((err = nvs_set_blob(handle, key, value, len)) != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to write key %s with error %d size %d", key, err, len);
+        ESP_LOGE(TAG, "Failed to write key %s with error %d size %zu", key, err, len);
         nvs_close(handle);
         return ESP_FAIL;
     }

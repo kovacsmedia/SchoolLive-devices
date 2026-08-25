@@ -4,6 +4,8 @@ dependencies:
   espressif/mdns:
     version: ^1.0.0
   idf: '>=5.0'
+  mb_console_helper:
+    path: ../../../../components/mb_console_helper
   mb_example_common:
     path: ../../../mb_example_common
   protocol_examples_common:

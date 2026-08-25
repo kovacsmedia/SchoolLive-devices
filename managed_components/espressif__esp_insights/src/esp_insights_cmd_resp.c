@@ -293,7 +293,6 @@ static esp_err_t esp_insights_cmd_resp_parse_one_entry(cbor_parse_ctx_t *ctx)
     char *tmp_str = NULL;
     int cmd_depth = 0;
     bool cmd_value_b;
-    size_t val_sz = 0;
     esp_err_t ret = ESP_OK;
     char *cmd_tree[MAX_CMD_DEPTH] = {0, };
 
@@ -337,10 +336,8 @@ static esp_err_t esp_insights_cmd_resp_parse_one_entry(cbor_parse_ctx_t *ctx)
                 {
                 case ESP_DIAG_DATA_TYPE_BOOL:
                     cbor_value_get_boolean(it, &cmd_value_b);
-                    val_sz = 1;
                     break;
                 default:
-                    val_sz = 0;
                     break;
                 }
                 cbor_value_advance_fixed(it);
@@ -551,7 +548,7 @@ static void esp_insights_cmd_callback(const char *topic, void *payload, size_t p
             char publish_topic[100];
             snprintf(publish_topic, sizeof(publish_topic), "node/%s/%s", esp_insights_get_node_id(), FROM_NODE_TOPIC_SUFFIX);
             if (esp_insights_mqtt_publish(publish_topic, output, output_len, RMAKER_MQTT_QOS1, NULL) != ESP_OK) {
-                ESP_LOGE(TAG, "Failed to publish reponse.");
+                ESP_LOGE(TAG, "Failed to publish response.");
             }
             free(output);
         } else {

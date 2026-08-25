@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2016-2025 Espressif Systems (Shanghai) CO LTD
+# SPDX-FileCopyrightText: 2016-2026 Espressif Systems (Shanghai) CO LTD
 # SPDX-License-Identifier: Apache-2.0
 
 # This is the script to reproduce the issue when the expect() is called from
@@ -19,10 +19,10 @@ from conftest import (
 
 pattern_dict_slave = {
     Stages.STACK_IPV4: (
-        r"I \([0-9]+\) example_[a-z]+: [A-Za-z\-]* IPv4 [A-Za-z\"_:\s]*address: ([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})"
+        r"I \([0-9]+\) [a-z_]+: [A-Za-z\-]* IPv4 [A-Za-z\"_:\s]*address: ([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})"
     ),
     Stages.STACK_IPV6: (
-        r"I \([0-9]+\) example_[a-z]+: - IPv6 address: (([A-Fa-f0-9]{1,4}::?){1,7}[A-Fa-f0-9]{1,4})"
+        r"I \([0-9]+\) [a-z_]+: - IPv6 address: (([A-Fa-f0-9]{1,4}::?){1,7}[A-Fa-f0-9]{1,4})"
     ),
     Stages.STACK_INIT: (r"I \(([0-9]+)\) [A-Z_]*: (Modbus slave stack initialized)."),
     Stages.STACK_CONNECT: (
@@ -49,10 +49,10 @@ pattern_dict_slave = {
 
 pattern_dict_master = {
     Stages.STACK_IPV4: (
-        r"I \([0-9]+\) example_[a-z]+: [A-Za-z\-]* IPv4 [A-Za-z\"_:\s]*address: ([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})"
+        r"I \([0-9]+\) [a-z_]+: [A-Za-z\-]* IPv4 [A-Za-z\"_:\s]*address: ([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})"
     ),
     Stages.STACK_IPV6: (
-        r"I \([0-9]+\) example_[a-z]+: - IPv6 address: (([A-Fa-f0-9]{1,4}::?){1,7}[A-Fa-f0-9]{1,4})"
+        r"I \([0-9]+\) [a-z_]+: - IPv6 address: (([A-Fa-f0-9]{1,4}::?){1,7}[A-Fa-f0-9]{1,4})"
     ),
     Stages.STACK_INIT: (
         r"I \(([0-9]+)\) [A-Z_]*: [0xa-f0-9,]*\s*Modbus master stack initialized"
@@ -105,6 +105,7 @@ test_configs = [
     ],
     indirect=True,
 )
+@pytest.mark.flaky(reruns=1, reruns_delay=1)
 def test_modbus_tcp_communication(dut: Tuple[ModbusTestDut, ModbusTestDut]) -> None:
     dut_master = dut[1]
     dut_slave = dut[0]
@@ -121,7 +122,7 @@ def test_modbus_tcp_communication(dut: Tuple[ModbusTestDut, ModbusTestDut]) -> N
     ### Slave and Master objects registered
     slave_objects = dut_slave.get_objects_by_tag(SLAVE_TAG)
     for object in slave_objects:
-         logger.info("Modbus slave objects: %s", object)
+        logger.info("Modbus slave objects: %s", object)
     logger.info("Number of slave objects: %s", len(slave_objects))
 
     master_objects = dut_master.get_objects_by_tag(MASTER_TAG)
@@ -186,7 +187,7 @@ def test_modbus_tcp_communication(dut: Tuple[ModbusTestDut, ModbusTestDut]) -> N
 @pytest.mark.parametrize("target", ["esp32"], indirect=True)
 @pytest.mark.multi_dut_modbus_generic
 @pytest.mark.parametrize("config", ["dummy_config"])
-def test_modbus_tcp_generic(config) -> None:
+def test_modbus_tcp_generic(config: str) -> None:
     logger.info("The generic tcp example tests are not provided yet.")
 
 

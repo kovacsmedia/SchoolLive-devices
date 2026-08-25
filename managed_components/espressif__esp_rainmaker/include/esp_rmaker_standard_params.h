@@ -44,6 +44,7 @@ extern "C"
 #define ESP_RMAKER_DEF_OTA_URL_NAME         "URL"
 #define ESP_RMAKER_DEF_TIMEZONE_NAME        "TZ"
 #define ESP_RMAKER_DEF_TIMEZONE_POSIX_NAME  "TZ-POSIX"
+#define ESP_RMAKER_DEF_TIMESTAMP_NAME       "Timestamp"
 #define ESP_RMAKER_DEF_SCHEDULE_NAME        "Schedules"
 #define ESP_RMAKER_DEF_SCENES_NAME          "Scenes"
 #define ESP_RMAKER_DEF_REBOOT_NAME          "Reboot"
@@ -52,6 +53,10 @@ extern "C"
 #define ESP_RMAKER_DEF_LOCAL_CONTROL_POP    "POP"
 #define ESP_RMAKER_DEF_LOCAL_CONTROL_TYPE   "Type"
 #define ESP_RMAKER_DEF_ADD_ZIGBEE_DEVICE    "Add_zigbee_device"
+#define ESP_RMAKER_DEF_USER_TOKEN_NAME      "UserToken"
+#define ESP_RMAKER_DEF_USER_TOKEN_STATUS_NAME "UserTokenStatus"
+#define ESP_RMAKER_DEF_BASE_URL_NAME        "BaseURL"
+#define ESP_RMAKER_DEF_GROUP_ID_NAME        "GroupID"
 
 /**
  * Create standard name param
@@ -255,6 +260,20 @@ esp_rmaker_param_t *esp_rmaker_timezone_param_create(const char *param_name, con
 esp_rmaker_param_t *esp_rmaker_timezone_posix_param_create(const char *param_name, const char *val);
 
 /**
+ * Create standard Timestamp param
+ *
+ * This will create the standard timestamp parameter.
+ * The app can write an epoch time (seconds since 1970-01-01) to this parameter
+ * to set the device's local RTC. This is useful for devices without internet access.
+ *
+ * @param[in] param_name Name of the parameter
+ *
+ * @return Parameter handle on success.
+ * @return NULL in case of failures.
+ */
+esp_rmaker_param_t *esp_rmaker_timestamp_param_create(const char *param_name, int val);
+
+/**
  * Create standard Schedules param
  *
  * This will create the standard schedules parameter. Default value
@@ -347,6 +366,55 @@ esp_rmaker_param_t *esp_rmaker_local_control_pop_param_create(const char *param_
  */
 esp_rmaker_param_t *esp_rmaker_local_control_type_param_create(const char *param_name, int val);
 
+/**
+ * Create standard User Token param
+ *
+ * This will create the standard User Token parameter.
+ *
+ * @param[in] param_name Name of the parameter
+ *
+ * @return Parameter handle on success.
+ * @return NULL in case of failures.
+ */
+esp_rmaker_param_t *esp_rmaker_user_token_param_create(const char *param_name);
+
+/**
+ * Create standard Base URL param
+ *
+ * This will create the standard Base URL parameter.
+ *
+ * @param[in] param_name Name of the parameter
+ *
+ * @return Parameter handle on success.
+ * @return NULL in case of failures.
+ */
+esp_rmaker_param_t *esp_rmaker_base_url_param_create(const char *param_name);
+
+/**
+ * Create standard Group ID param
+ *
+ * This will create the standard Group ID parameter.
+ *
+ * @param[in] param_name Name of the parameter
+ * @param[in] val Default Value of the parameter
+ *
+ * @return Parameter handle on success.
+ * @return NULL in case of failures.
+ */
+esp_rmaker_param_t *esp_rmaker_group_id_param_create(const char *param_name, const char *val);
+
+/**
+ * Create standard User Token Status param
+ *
+ * This will create the standard User Token Status parameter.
+ *
+ * @param[in] param_name Name of the parameter
+ * @param[in] val Default Value of the parameter
+ *
+ * @return Parameter handle on success.
+ * @return NULL in case of failures.
+ */
+esp_rmaker_param_t *esp_rmaker_user_token_status_param_create(const char *param_name, int val);
 #ifdef __cplusplus
 }
 #endif

@@ -1,41 +1,28 @@
-// Copyright 2020 Espressif Systems (Shanghai) PTE LTD
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * SPDX-FileCopyrightText: 2020-2026 Espressif Systems (Shanghai) CO LTD
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #pragma once
+
 #include <stdint.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <json_generator.h>
 #include <esp_rmaker_core.h>
+#include <esp_rmaker_cmd_resp.h>
 #include <esp_idf_version.h>
 
 #define RMAKER_PARAM_FLAG_VALUE_CHANGE   (1 << 0)
 #define RMAKER_PARAM_FLAG_VALUE_NOTIFY   (1 << 1)
 #define ESP_RMAKER_NVS_PART_NAME            "nvs"
 
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 1, 0) && defined(CONFIG_ESP_RMAKER_USING_NETWORK_PROV)
-#define RMAKER_USING_NETWORK_PROV 1
-#else
-#define RMAKER_USING_NETWORK_PROV 0
-#endif
+/* Internal margin for parameter buffer allocation */
+#define RMAKER_PARAMS_SIZE_MARGIN       50 /* To accommodate for changes in param values while creating JSON */
 
-typedef enum {
-    ESP_RMAKER_STATE_DEINIT = 0,
-    ESP_RMAKER_STATE_INIT_DONE,
-    ESP_RMAKER_STATE_STARTING,
-    ESP_RMAKER_STATE_STARTED,
-    ESP_RMAKER_STATE_STOP_REQUESTED,
-} esp_rmaker_state_t;
+/* Minimum valid JSON params object size - length of '{"D":{"P":1}}' */
+#define RMAKER_MIN_VALID_PARAMS_SIZE    13
 
 typedef struct {
     esp_rmaker_param_val_t min;
@@ -59,6 +46,7 @@ struct esp_rmaker_param {
     esp_rmaker_param_valid_str_list_t *valid_str_list;
     struct esp_rmaker_device *parent;
     struct esp_rmaker_param * next;
+    uint16_t ttl_days;  /* TTL in days for simple time series data */
 };
 typedef struct esp_rmaker_param _esp_rmaker_param_t;
 
@@ -114,16 +102,115 @@ esp_err_t esp_rmaker_attribute_delete(esp_rmaker_attr_t *attr);
 char *esp_rmaker_get_node_config(void);
 char *esp_rmaker_get_node_params(void);
 esp_err_t esp_rmaker_handle_set_params(char *data, size_t data_len, esp_rmaker_req_src_t src);
+esp_err_t esp_rmaker_populate_params(char *buf, size_t *buf_len, uint8_t flags, bool reset_flags);
+esp_err_t esp_rmaker_param_cmd_resp_enable(void);
 esp_err_t esp_rmaker_user_mapping_prov_init(void);
 esp_err_t esp_rmaker_user_mapping_prov_deinit(void);
 esp_err_t esp_rmaker_user_node_mapping_init(void);
 esp_err_t esp_rmaker_user_node_mapping_deinit(void);
+#ifdef CONFIG_ESP_RMAKER_ENABLE_PROV_LOCAL_CTRL
+esp_err_t esp_rmaker_prov_local_ctrl_init(void);
+esp_err_t esp_rmaker_prov_local_ctrl_deinit(void);
+#endif /* CONFIG_ESP_RMAKER_ENABLE_PROV_LOCAL_CTRL */
+#ifdef CONFIG_ESP_RMAKER_FACTORY_RESET_REPORTING
 esp_err_t esp_rmaker_reset_user_node_mapping(void);
+#endif
 esp_err_t esp_rmaker_init_local_ctrl_service(void);
 esp_err_t esp_rmaker_start_local_ctrl_service(const char *serv_name);
+esp_err_t esp_rmaker_set_network_id(const char *network_id);
+char *esp_rmaker_get_network_id(void);
 static inline esp_err_t esp_rmaker_post_event(esp_rmaker_event_t event_id, void* data, size_t data_size)
 {
     return esp_event_post(RMAKER_EVENT, event_id, data, data_size, portMAX_DELAY);
 }
-esp_rmaker_state_t esp_rmaker_get_state(void);
+
 esp_err_t esp_rmaker_cmd_response_enable(void);
+
+/** Register for group parameter updates
+ *
+ * This function handles group subscriptions and manages MQTT topics for group communication.
+ * If there's an existing group subscription, it will be unsubscribed before subscribing to the new group.
+ *
+ * @param[in] pgrp The group identifier string
+ *
+ * @return ESP_OK on success
+ * @return error in case of failure
+ */
+esp_err_t esp_rmaker_register_for_group_params(const char *pgrp);
+
+/** Challenge-Response Handler
+ *
+ * Protocomm handler for challenge-response based user-node mapping.
+ * Used by provisioning, on-network challenge-response, and local control.
+ *
+ * @param[in] session_id Protocomm session ID
+ * @param[in] inbuf Input buffer containing the challenge request
+ * @param[in] inlen Length of input buffer
+ * @param[out] outbuf Output buffer for the signed response
+ * @param[out] outlen Length of output buffer
+ * @param[in] priv_data Private data (unused)
+ *
+ * @return ESP_OK on success
+ * @return error in case of failure
+ */
+esp_err_t esp_rmaker_chal_resp_handler(uint32_t session_id, const uint8_t *inbuf, ssize_t inlen,
+                                       uint8_t **outbuf, ssize_t *outlen, void *priv_data);
+
+/** Check if challenge-response signing is disabled (generic)
+ *
+ * @return true if challenge-response is disabled, false otherwise
+ */
+bool esp_rmaker_chal_resp_is_disabled(void);
+
+/** Disable challenge-response signing (generic)
+ *
+ * This disables the signing functionality in the handler.
+ * Service-specific cleanup (mDNS, etc.) should be done by calling
+ * the service-specific disable function.
+ *
+ * @return ESP_OK on success
+ */
+esp_err_t esp_rmaker_chal_resp_disable(void);
+
+/** Enable challenge-response signing (generic)
+ *
+ * Re-enables the signing functionality in the handler.
+ *
+ * @note Can only be called via API, not via ch_resp endpoint.
+ *
+ * @return ESP_OK on success
+ */
+esp_err_t esp_rmaker_chal_resp_enable(void);
+
+/** Reinitialize MQTT with fresh connection parameters
+ *
+ * This is useful when MQTT connection parameters have changed (e.g., LWT)
+ * after the initial MQTT init. It will deinit MQTT, get fresh conn_params,
+ * and reinit MQTT.
+ *
+ * @note This should only be called when MQTT is not connected.
+ *
+ * @return ESP_OK on success
+ * @return error in case of failure
+ */
+esp_err_t esp_rmaker_mqtt_reinit_with_new_params(void);
+
+/** Reconfigure connectivity LWT for node ID change (internal)
+ *
+ * Used after assisted claiming succeeds when node_id has changed.
+ * Updates LWT topic with the new node_id.
+ */
+esp_err_t esp_rmaker_connectivity_reconfigure_lwt_for_node_id_change(void);
+
+/** Reconnect MQTT with fresh connection parameters
+ *
+ * This performs a full reconnect cycle: disconnect → reinit → connect.
+ * Useful when MQTT connection parameters have changed (e.g., LWT) and
+ * MQTT is currently connected.
+ *
+ * If MQTT is not connected, it will just reinit and connect.
+ *
+ * @return ESP_OK on success
+ * @return error in case of failure
+ */
+esp_err_t esp_rmaker_mqtt_reconnect(void);

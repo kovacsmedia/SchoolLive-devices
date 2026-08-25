@@ -33,9 +33,8 @@ typedef struct afe_fetch_result_t {
     int16_t *vad_cache; // the cache data of vad. It's only valid when vad_cache_size > 0. It is used to complete the
                         // audio that was truncated.
     int vad_cache_size; // the size of vad_cache. The unit is byte.
-    float data_volume;  // the volume of input audio, the unit is decibel(dB). This value is calculated before agc.
-                        // (note: invalid in vc). if enable wakenet, the window length is the receptive fields of
-                        // wakenet(about 1.5s), otherwise is the frame length.
+    float data_volume;  // VAD input mean square energy in dBFS, calculated before AGC. With VadNet
+                        // enabled, the window covers vad_min_speech_ms; otherwise, one fetch frame is used.
     wakenet_state_t wakeup_state; // the value is wakenet_state_t
     int wake_word_index;          // if the wake word is detected. It will store the wake word index which start from 1.
     int wakenet_model_index; // if there are multiple wakenets, this value identifies which model be wakes up. Index

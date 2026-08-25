@@ -1,21 +1,16 @@
-// Copyright 2020 Espressif Systems (Shanghai) PTE LTD
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * SPDX-FileCopyrightText: 2020-2026 Espressif Systems (Shanghai) CO LTD
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #pragma once
+
 #include <stdint.h>
 #include <stdbool.h>
 #include <esp_err.h>
 #include <esp_event.h>
+#include <esp_rmaker_cmd_resp.h>
 
 #ifdef __cplusplus
 extern "C"
@@ -52,8 +47,21 @@ typedef enum {
     /* User reset request successfully sent to ESP RainMaker Cloud */
     RMAKER_EVENT_USER_NODE_MAPPING_RESET,
     /** Local control stopped. */
-    RMAKER_EVENT_LOCAL_CTRL_STOPPED
+    RMAKER_EVENT_LOCAL_CTRL_STOPPED,
+    /** ESP RainMaker Started */
+    RMAKER_EVENT_STARTED,
+    /** ESP RainMaker Config Reported */
+    RMAKER_EVENT_CONFIG_REPORTED,
 } esp_rmaker_event_t;
+
+typedef enum {
+    ESP_RMAKER_STATE_DEINIT = 0,
+    ESP_RMAKER_STATE_INIT_DONE,
+    ESP_RMAKER_STATE_STARTING,
+    ESP_RMAKER_STATE_CONFIG_REPORTED,
+    ESP_RMAKER_STATE_STARTED,
+    ESP_RMAKER_STATE_STOP_REQUESTED,
+} esp_rmaker_state_t;
 
 /** ESP RainMaker Node information */
 typedef struct {
@@ -67,6 +75,8 @@ typedef struct {
     char *model;
     /** Subtype (Optional). */
     char *subtype;
+    /** Readme URL (Optional). Typically points to a readme URL. Will be included in node config only if not NULL and not empty. */
+    char *readme;
     /** An array of digests read from efuse. Should be freed after use*/
     char **secure_boot_digest;
 } esp_rmaker_node_info_t;
@@ -167,6 +177,12 @@ typedef enum {
     ESP_RMAKER_REQ_SRC_SCENE_DEACTIVATE,
     /** Request received from a local controller */
     ESP_RMAKER_REQ_SRC_LOCAL,
+    /** Request received via command-response framework */
+    ESP_RMAKER_REQ_SRC_CMD_RESP,
+    /** Request initiated from firmware/console commands */
+    ESP_RMAKER_REQ_SRC_FIRMWARE,
+    /** Request received via BLE Local Control */
+    ESP_RMAKER_REQ_SRC_BLE_LOCAL,
     /** This will always be the last value. Any value equal to or
      * greater than this should be considered invalid.
      */
@@ -432,6 +448,13 @@ esp_err_t esp_rmaker_stop(void);
  */
 esp_err_t esp_rmaker_node_deinit(const esp_rmaker_node_t *node);
 
+/**
+ * @brief Get the current state of the ESP RainMaker agent
+ *
+ * @return esp_rmaker_state_t current state of the ESP RainMaker agent
+ */
+esp_rmaker_state_t esp_rmaker_get_state(void);
+
 /** Get a handle to the Node
  *
  * This API returns handle to a node created using esp_rmaker_node_init().
@@ -474,6 +497,20 @@ esp_rmaker_node_info_t *esp_rmaker_node_get_info(const esp_rmaker_node_t *node);
  */
 esp_err_t esp_rmaker_node_add_attribute(const esp_rmaker_node_t *node, const char *attr_name, const char *val);
 
+/** Edit Node attribute
+ *
+ * Add a new attribute or edit an existing attribute as the metadata for the node.
+ * For the sake of simplicity, only string values are allowed.
+ *
+ * @param node Node handle.
+ * @param[in] attr_name Name of the attribute.
+ * @param[in] val Value for the attribute.
+ *
+ * @return ESP_OK on success.
+ * @return error in case of failure.
+ */
+esp_err_t esp_rmaker_node_edit_attribute(const esp_rmaker_node_t *node, const char *attr_name, const char *val);
+
 /** Add FW version for a node (Not recommended)
  *
  * FW version is set internally to the project version. This API can be used to
@@ -510,6 +547,16 @@ esp_err_t esp_rmaker_node_add_model(const esp_rmaker_node_t *node, const char *m
  * @return error in case of failure.
  */
 esp_err_t esp_rmaker_node_add_subtype(const esp_rmaker_node_t *node, const char *subtype);
+
+/** Add readme URL for a node
+ *
+ * @param node Node handle.
+ * @param[in] readme Readme URL string. Typically points to a readme URL. Will be included in node config only if not NULL and not empty.
+ *
+ * @return ESP_OK on success.
+ * @return error in case of failure.
+ */
+esp_err_t esp_rmaker_node_add_readme(const esp_rmaker_node_t *node, const char *readme);
 
 /**
  * Create a Device
@@ -810,6 +857,21 @@ esp_err_t esp_rmaker_param_add_bounds(const esp_rmaker_param_t *param,
     esp_rmaker_param_val_t min, esp_rmaker_param_val_t max, esp_rmaker_param_val_t step);
 
 /**
+ * Add Time-To-Live for a simple time series parameter
+ *
+ * This adds a TTL value (in days) for a simple time series parameter,
+ * which will be sent as "d" field in the JSON payload.
+ * This is applicable only for parameters with PROP_FLAG_SIMPLE_TIME_SERIES flag.
+ *
+ * @param[in] param Parameter Handle
+ * @param[in] ttl_days Time-to-live value in days
+ *
+ * @return ESP_OK on success
+ * @return error in case of failure
+ */
+esp_err_t esp_rmaker_param_add_simple_time_series_ttl(const esp_rmaker_param_t *param, uint16_t ttl_days);
+
+/**
  * Add a list of valid strings for a string parameter
  *
  * This can be used to add a list of valid strings for a given string parameter.
@@ -844,7 +906,6 @@ esp_err_t esp_rmaker_param_add_valid_str_list(const esp_rmaker_param_t *param, c
  */
 esp_err_t esp_rmaker_param_add_array_max_count(const esp_rmaker_param_t *param, int count);
 
-
 /* Update a parameter
  *
  * This will just update the value of a parameter with esp rainmaker core, without actually reporting
@@ -853,14 +914,14 @@ esp_err_t esp_rmaker_param_add_array_max_count(const esp_rmaker_param_t *param, 
  * and the last one can be updated using esp_rmaker_param_update_and_report().
  * This will report all parameters which were updated prior to this call.
  *
- * @note This does not report to time series even if PROP_FLAG_TIME_SERIES is set. 
+ * @note This does not report to time series even if PROP_FLAG_TIME_SERIES is set.
  *
  * Sample:
  *
  * esp_rmaker_param_update(param1, esp_rmaker_float(10.2));
  * esp_rmaker_param_update(param2, esp_rmaker_int(55));
  * esp_rmaker_param_update(param3, esp_rmaker_int(95));
- * esp_rmaker_param_update_and_report(param1, esp_rmaker_bool(true));
+ * esp_rmaker_param_update_and_report(param4, esp_rmaker_bool(true));
  *
  * @param[in] param Parameter handle.
  * @param[in] val New value of the parameter.
@@ -869,6 +930,26 @@ esp_err_t esp_rmaker_param_add_array_max_count(const esp_rmaker_param_t *param, 
  * @return error in case of failure.
  */
 esp_err_t esp_rmaker_param_update(const esp_rmaker_param_t *param, esp_rmaker_param_val_t val);
+
+/** Report updated parameters
+ *
+ * This API will report all updated parameters to ESP RainMaker cloud with one MQTT message.
+ *
+ * @note When you have multiple parameters to update and report, and not know which params is the last one,
+ * you can use this API to report all updated parameters whenever you want.
+ *
+ * Sample:
+ *
+ * esp_rmaker_param_update(param1, esp_rmaker_float(10.2));
+ * esp_rmaker_param_update(param2, esp_rmaker_int(55));
+ * esp_rmaker_param_update(param3, esp_rmaker_int(95));
+ * esp_rmaker_param_update(param4, esp_rmaker_bool(true));
+ * esp_rmaker_report_updated_params();
+ *
+ * @return ESP_OK on success.
+ * @return error in case of failure.
+ */
+esp_err_t esp_rmaker_report_updated_params(void);
 
 /** Update and report a parameter
  *
@@ -1041,6 +1122,7 @@ esp_err_t esp_rmaker_test_cmd_resp(const void *cmd, size_t cmd_len, void *priv_d
 * @return Apt error on failure.
 */
 esp_err_t esp_rmaker_node_auth_sign_msg(const void *challenge, size_t inlen, void **response, size_t *outlen);
+
 /*
  * @brief Enable Local Control Service.
  *
@@ -1062,6 +1144,186 @@ esp_err_t esp_rmaker_local_ctrl_enable(void);
  * @return error on failure
  */
 esp_err_t esp_rmaker_local_ctrl_disable(void);
+
+/**
+ * @brief Set custom PoP for Local Control Service.
+ *
+ * This allows setting a custom Proof of Possession (PoP) for the local control
+ * service instead of the internally generated one. This is useful when you want
+ * to use the same PoP that was used for provisioning.
+ *
+ * @note This must be called before esp_rmaker_local_ctrl_enable() for it to take effect.
+ *       If not called, a random PoP will be generated and stored in NVS.
+ *
+ * @param[in] pop NULL terminated PoP string (typically 8 characters alphanumeric).
+ *                Pass NULL to clear any previously set custom PoP.
+ *
+ * @return ESP_OK on success
+ * @return ESP_ERR_INVALID_ARG if pop is empty string
+ * @return ESP_ERR_NO_MEM if memory allocation fails
+ */
+esp_err_t esp_rmaker_local_ctrl_set_pop(const char *pop);
+
+#ifdef CONFIG_ESP_RMAKER_LOCAL_CTRL_CHAL_RESP_ENABLE
+/**
+ * @brief Enable challenge-response for Local Control Service.
+ *
+ * This function enables the challenge-response endpoint for local control.
+ * When enabled:
+ * 1. Registers the ch_resp protocomm handler
+ * 2. Announces mDNS service (_esp_rmaker_chal_resp._tcp) with TXT records (for Wi-Fi transport)
+ *
+ * @note Applications should call this after receiving RMAKER_EVENT_LOCAL_CTRL_STARTED
+ *       to enable challenge-response based user-node mapping via local control.
+ *
+ * @param[in] instance_name Custom instance name (NULL to use node_id as default).
+ *                          For Wi-Fi transport, this maps to mDNS instance name.
+ *
+ * @return ESP_OK on success
+ * @return ESP_ERR_INVALID_STATE if local control is not started
+ */
+esp_err_t esp_rmaker_local_ctrl_enable_chal_resp(const char *instance_name);
+
+/**
+ * @brief Disable challenge-response for Local Control Service.
+ *
+ * This function disables the challenge-response endpoint for local control.
+ * Once disabled:
+ * 1. The ch_resp handler will return "Disabled" status for any requests
+ * 2. mDNS TXT records (chal_resp, sec_version, pop_required) are removed
+ *
+ * This is useful after a successful user-node mapping to prevent further
+ * mapping attempts via local control.
+ *
+ * @return ESP_OK on success
+ * @return ESP_ERR_INVALID_STATE if local control is not started
+ */
+esp_err_t esp_rmaker_local_ctrl_disable_chal_resp(void);
+#endif /* CONFIG_ESP_RMAKER_LOCAL_CTRL_CHAL_RESP_ENABLE */
+
+/**
+ * Report simple time series data directly with specified timestamp and TTL
+ *
+ * This API allows reporting simple time series data directly with control over
+ * the timestamp and TTL values. The value is stored in the simple time series
+ * database and also cached locally.
+ *
+ * @note This function only updates the value in the simple time series database,
+ * not the regular parameters, which helps keep costs lower. It won't trigger any
+ * automations. However, it will internally cache the value so it may be reported
+ * when reporting other parameters or if someone queries for it via local control.
+ *
+ * @param[in] param Parameter handle, must have PROP_FLAG_SIMPLE_TIME_SERIES flag
+ * @param[in] val Value to report (can be any supported data type)
+ * @param[in] timestamp Epoch timestamp in seconds (0 to use current time)
+ * @param[in] ttl_days Time-to-live in days (0 to omit TTL field)
+ *
+ * @return ESP_OK on success
+ * @return error in case of failure
+ */
+esp_err_t esp_rmaker_param_report_simple_ts_data(const esp_rmaker_param_t *param, esp_rmaker_param_val_t val, int timestamp, uint16_t ttl_days);
+
+/** Publish command response payload to the cloud
+ *
+ * @param[in] output Pointer to the data to publish
+ *                   Ensure that the pointer is dynamically allocated memory. The API will free it internally.
+ *                   Do not reuse the pointer after calling this API as it may cause undefined access since the
+ *                   memory could have been freed before use.
+ *
+ * @param[in] output_len Length of the output data.
+ *
+ * @return ESP_OK on success, appropriate error on failure.
+ */
+esp_err_t esp_rmaker_cmd_response_publish(void *output, size_t output_len);
+
+/** Send an asynchronous command response to the cloud.
+ *
+ * Convenience wrapper for handlers that returned ESP_ERR_NOT_FINISHED from the cmd_resp dispatcher.
+ * Builds the TLV with esp_rmaker_cmd_prepare_payload() using the saved context, and publishes it
+ * via esp_rmaker_cmd_response_publish() (which takes ownership of the allocated buffer).
+ *
+ * @param[in] ctx          Command context saved (copied) when the command was received.
+ * @param[in] status       ESP_RMAKER_CMD_STATUS_* value.
+ * @param[in] response     Optional DATA TLV payload (may be NULL if @p response_len is 0).
+ * @param[in] response_len Length of @p response.
+ *
+ * @return ESP_OK on success.
+ * @return ESP_ERR_INVALID_ARG if @p ctx is NULL.
+ * @return error from the underlying build/publish call on failure.
+ */
+esp_err_t esp_rmaker_cmd_async_response_send(const esp_rmaker_cmd_ctx_t *ctx, uint8_t status,
+                                             const void *response, size_t response_len);
+
+/**
+ * @brief Structure to hold AWS temporary credentials.
+ */
+typedef struct {
+    char *access_key;              /*!< AWS Access Key ID (null-terminated string, heap-allocated) */
+    uint32_t access_key_len;       /*!< Length of the access key string (excluding null terminator) */
+    char *secret_key;              /*!< AWS Secret Access Key (null-terminated string, heap-allocated) */
+    uint32_t secret_key_len;       /*!< Length of the secret key string (excluding null terminator) */
+    char *session_token;           /*!< AWS Session Token (null-terminated string, heap-allocated) */
+    uint32_t session_token_len;    /*!< Length of the session token string (excluding null terminator) */
+    uint32_t expiration;           /*!< Expiration time of the credentials (seconds from now) */
+} esp_rmaker_aws_credentials_t;
+
+/** Get AWS region from credential endpoint
+ *
+ * This function extracts the AWS region from the credential endpoint stored in factory.
+ * The region string is allocated on the heap and should be freed by the caller.
+ *
+ * @return Pointer to allocated region string on success
+ * @return NULL on failure
+ */
+char* esp_rmaker_get_aws_region(void);
+
+/** Get AWS security token credentials
+ *
+ * This function fetches AWS temporary credentials by assuming the specified role alias.
+ * The credentials are allocated on the heap and should be freed using esp_rmaker_free_aws_credentials().
+ *
+ * @param[in] role_alias AWS IoT role alias to assume
+ *
+ * @return Pointer to allocated credentials structure on success
+ * @return NULL on failure
+ */
+esp_rmaker_aws_credentials_t* esp_rmaker_get_aws_security_token(const char *role_alias);
+
+/** Free AWS credentials structure
+ *
+ * This function frees the memory allocated for AWS credentials structure and all its members.
+ *
+ * @param[in] credentials Pointer to credentials structure to free
+ */
+void esp_rmaker_free_aws_credentials(esp_rmaker_aws_credentials_t *credentials);
+
+/** Store group_id in NVS
+ *
+ * @param[in] group_id The group_id to store
+ *
+ * @return ESP_OK on success
+ * @return error in case of failure
+ */
+esp_err_t esp_rmaker_store_group_id(const char *group_id);
+
+/** Retrieve group_id from NVS
+ *
+ * @param[out] group_id The group_id to retrieve. Should be freed by the caller.
+ *
+ * @return ESP_OK on success
+ * @return error in case of failure
+ */
+esp_err_t esp_rmaker_get_stored_group_id(char **group_id);
+
+/**
+ * @brief Publish a string message to direct params topic
+ *
+ * @param[in] message The message to publish
+ *
+ * @return ESP_OK on success
+ */
+esp_err_t esp_rmaker_publish_direct(const char *message);
+
 #ifdef __cplusplus
 }
 #endif

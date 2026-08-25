@@ -92,6 +92,11 @@ typedef struct {
 } afe_debug_hook_t;
 
 #define AFE_MAX_WAKEWORD_NUM 3
+
+// The averaged frame energy in dBFS required to report speech, see vad_energy_threshold
+#define AFE_VAD_ENERGY_THRESHOLD_DEFAULT (-60.0f)
+#define AFE_VAD_ENERGY_THRESHOLD_MIN (-100.0f)
+
 typedef struct {
     /********** AEC(Acoustic Echo Cancellation) **********/
     bool aec_init;         // Whether to init aec
@@ -118,6 +123,11 @@ typedef struct {
                             // If you find vad cache can not cover all speech, please increase this value.
     bool vad_mute_playback; // If true, the playback will be muted for vad detection. default: false
     bool vad_enable_channel_trigger; // If true, the vad will be used to choose the channel id. default: false
+    float vad_energy_threshold; // The minimum averaged frame energy in dBFS required to report speech. Speech is only
+                                // reported when the energy of the last vad_min_speech_ms reaches this threshold and the
+                                // vad model triggers as well. A higher value suppresses more low level noise, but quiet
+                                // speech may be missed. It is only applied when a vad model is used, and only when afe
+                                // is created, runtime switching is not supported.
 
     /********** WakeNet(Wake Word Engine) **********/
     bool wakenet_init;

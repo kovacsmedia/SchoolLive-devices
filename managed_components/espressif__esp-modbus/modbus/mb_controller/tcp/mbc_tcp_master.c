@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: 2016-2023 Espressif Systems (Shanghai) CO LTD
+ * SPDX-FileCopyrightText: 2016-2026 Espressif Systems (Shanghai) CO LTD
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -177,6 +177,16 @@ static esp_err_t mbc_tcp_master_send_request(void *ctx, mb_param_request_t *requ
         mbm_opts->reg_buffer_ptr = (uint8_t *)data_ptr;
         mbm_opts->reg_buffer_size = mb_size;
 
+        // Extra write fields for command 23 (0x17) MB_FUNC_READWRITE_MULTIPLE_REGISTERS
+        uint16_t mb_wr_offset = 0;
+        uint16_t mb_wr_size = 0;
+
+        if (mb_command == MB_FUNC_READWRITE_MULTIPLE_REGISTERS) {
+            mb_wr_offset = request->wr_rd_multi_reg_func.wr_reg_start;
+            mb_wr_size = request->wr_rd_multi_reg_func.wr_reg_size;
+            mbm_opts->reg_buffer_size = (mb_size > mb_wr_size) ? mb_size : mb_wr_size;  // Workaround to have enough space in buffer for both read and write
+        }
+
         // Calls appropriate request function to send request and waits response
         switch (mb_command) {
 #if MB_FUNC_READ_COILS_ENABLED
@@ -234,7 +244,7 @@ static esp_err_t mbc_tcp_master_send_request(void *ctx, mb_param_request_t *requ
 #if MB_FUNC_READWRITE_HOLDING_ENABLED
         case MB_FUNC_READWRITE_MULTIPLE_REGISTERS:
             mb_error = mbm_rq_rw_multi_holding_reg(mbm_controller_iface->mb_base, mb_slave_addr, mb_offset,
-                                                   mb_size, (uint16_t *)data_ptr, mb_offset, mb_size, pdMS_TO_TICKS(MB_MAX_RESP_DELAY_MS));
+                                                   mb_size, (uint16_t *)data_ptr, mb_wr_offset, mb_wr_size, pdMS_TO_TICKS(MB_MAX_RESP_DELAY_MS));
             break;
 #endif
 
@@ -563,6 +573,9 @@ static esp_err_t mbc_tcp_master_delete(void *ctx)
     mbm_opts->task_handle = NULL;
     vEventGroupDelete(mbm_opts->event_group_handle);
     mbm_opts->event_group_handle = NULL;
+    if (xSemaphoreTake(mbm_opts->mbm_sema, pdMS_TO_TICKS(MB_MIN_RESP_DELAY_MS)) == pdTRUE) {
+        (void)xSemaphoreGive(mbm_opts->mbm_sema);
+    }
     vSemaphoreDelete(mbm_opts->mbm_sema);
     mbm_opts->mbm_sema = NULL;
     mb_error = mbm_iface->mb_base->delete (mbm_iface->mb_base);

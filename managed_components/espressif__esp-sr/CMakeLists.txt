@@ -1,14 +1,20 @@
-if((${IDF_TARGET} STREQUAL "esp32s3") OR (${IDF_TARGET} STREQUAL "esp32p4") OR (${IDF_TARGET} STREQUAL "esp32") OR (${IDF_TARGET} STREQUAL "esp32c3") OR (${IDF_TARGET} STREQUAL "esp32c5") OR (${IDF_TARGET} STREQUAL "esp32c6") OR  (${IDF_TARGET} STREQUAL "esp32s2") OR (${IDF_TARGET} STREQUAL "esp32s31"))
+if(("${IDF_TARGET}" STREQUAL "esp32s3") OR ("${IDF_TARGET}" STREQUAL "esp32p4") OR ("${IDF_TARGET}" STREQUAL "esp32") OR ("${IDF_TARGET}" STREQUAL "esp32c3") OR ("${IDF_TARGET}" STREQUAL "esp32c5") OR ("${IDF_TARGET}" STREQUAL "esp32c6") OR ("${IDF_TARGET}" STREQUAL "esp32s2") OR ("${IDF_TARGET}" STREQUAL "esp32s31"))
     set(TARGET_LIB_PATH "${IDF_TARGET}")
     
-    if(CONFIG_IDF_TARGET_ESP32P4 AND IDF_VERSION_MAJOR EQUAL 5)
-	    if(CONFIG_ESP32P4_SELECTS_REV_LESS_V3 OR IDF_VERSION_MINOR LESS 5 OR IDF_VERSION_PATCH LESS 3)
-            set(TARGET_LIB_PATH "esp32p4_less_v3")
+    if(CONFIG_IDF_TARGET_ESP32P4)
+        if(CONFIG_ESP32P4_SELECTS_REV_LESS_V3)
+            # Chip revision < v3
+            if(IDF_VERSION_MAJOR EQUAL 5)
+                set(TARGET_LIB_PATH "esp32p4_less_v3")
+            elseif(IDF_VERSION_MAJOR GREATER_EQUAL 6)
+                set(TARGET_LIB_PATH "esp32p4_less_v3_idf6")
+            endif()
+        else()
+            # Chip revision >= v3, requires IDF >= 5.5.3
+            if(IDF_VERSION_MAJOR EQUAL 5 AND (IDF_VERSION_MINOR LESS 5 OR (IDF_VERSION_MINOR EQUAL 5 AND IDF_VERSION_PATCH LESS 3)))
+                set(TARGET_LIB_PATH "esp32p4_less_v3")
+            endif()
         endif()
-    endif()
-
-    if(CONFIG_ESP32P4_SELECTS_REV_LESS_V3 AND IDF_VERSION_MAJOR EQUAL 6)
-        message(FATAL_ERROR "ESP-SR only support ESP32P4 rev less v3 on ESP-IDF v5.5 or earlier")
     endif()
 
     message(STATUS "CONFIG_ESP32P4_SELECTS_REV_LESS_V3 is ${CONFIG_ESP32P4_SELECTS_REV_LESS_V3}")
@@ -81,7 +87,7 @@ if((${IDF_TARGET} STREQUAL "esp32s3") OR (${IDF_TARGET} STREQUAL "esp32p4") OR (
         vadnet
         wakenet)
 
-    if(${IDF_TARGET} STREQUAL "esp32")
+    if("${IDF_TARGET}" STREQUAL "esp32")
         add_prebuilt_library(multinet2_ch "${CMAKE_CURRENT_SOURCE_DIR}/lib/${TARGET_LIB_PATH}/libmultinet2_ch.a" PRIV_REQUIRES ${COMPONENT_NAME})
         list(APPEND sr_libs multinet2_ch)
     endif()

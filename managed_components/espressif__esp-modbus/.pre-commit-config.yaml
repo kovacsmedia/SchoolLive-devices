@@ -1,16 +1,16 @@
 minimum_pre_commit_version: 2.17.0                        # Specifies the minimum version of pre-commit required for this configuration
-default_install_hook_types: [commit-msg]                  # Default hook types to install if not specified in individual hooks
-default_stages: [commit-msg]
+default_install_hook_types: [pre-commit,commit-msg]
+default_stages: [pre-commit]
 
 repos:
 -   repo: https://github.com/igrr/astyle_py.git
-    rev: v1.1.0
+    rev: v1.0.5
     hooks:
     -   id: astyle_py
         args: ['--style=otbs', '--attach-namespaces', '--attach-classes', '--indent=spaces=4', '--convert-tabs', '--align-pointer=name', '--align-reference=name', '--keep-one-line-statements', '--pad-header', '--pad-oper']
 
 -   repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v6.0.0
+    rev: v5.0.0
     hooks:
       - id: trailing-whitespace                          # Removes trailing whitespaces from lines
         exclude: &whitespace_excludes |
@@ -69,7 +69,7 @@ repos:
           - --subject-min-length=10
 
 -   repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.18.2
+    rev: v1.19.0
     hooks:
       - id: mypy                                         # Runs mypy for Python type checking
         additional_dependencies: ['PyYAML', 'types-PyYAML']
@@ -80,4 +80,4 @@ repos:
     rev: v1.1.1
     hooks:
       - id: check-copyright
-        args: ['--config', 'tools/ci/check_copyright_config.yaml']
+        args: ['--config', '.gitlab/ci/check_copyright_config.yaml']

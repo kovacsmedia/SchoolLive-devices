@@ -14,6 +14,7 @@
 #include <sdkconfig.h>
 #include <time.h>
 #include <string.h>
+#include <stdint.h>
 #include <esp_log.h>
 #include <esp_err.h>
 #include <nvs.h>
@@ -25,6 +26,7 @@
 #include <esp_rmaker_standard_types.h>
 #include <esp_rmaker_mqtt.h>
 #include <esp_rmaker_utils.h>
+#include <esp_rmaker_connectivity.h>
 #include "esp_rmaker_mqtt_topics.h"
 #include "esp_rmaker_internal.h"
 
@@ -32,9 +34,11 @@
 
 #define ESP_RMAKER_ALERT_KEY                    "esp.alert.str"
 
-#define RMAKER_PARAMS_SIZE_MARGIN       50 /* To accommodate for changes in param values while creating JSON */
 #define RMAKER_ALERT_STR_MARGIN         25 /* To accommodate rest of the alert payload {"esp.alert.str":""}  */
 #define MAX_TS_DATA_PARAM_NAME          66 /* Time series data param name is of the format <device_name>.<param_name> */
+
+#define RMAKER_GROUP_NVS_NAMESPACE  "rmaker_group"
+#define GROUP_ID_KEY                "group_id"
 
 static size_t max_node_params_size = CONFIG_ESP_RMAKER_MAX_PARAM_DATA_SIZE;
 /* This buffer will be allocated once and will be reused for all param updates.
@@ -45,6 +49,8 @@ static bool esp_rmaker_params_mqtt_init_done;
 
 static const char *TAG = "esp_rmaker_param";
 
+/* Add this to track active group_id */
+static char *active_group_id = NULL;
 
 static const char *cb_srcs[ESP_RMAKER_REQ_SRC_MAX] = {
     [ESP_RMAKER_REQ_SRC_INIT] = "Init",
@@ -53,6 +59,9 @@ static const char *cb_srcs[ESP_RMAKER_REQ_SRC_MAX] = {
     [ESP_RMAKER_REQ_SRC_SCENE_ACTIVATE] = "Scene Activate",
     [ESP_RMAKER_REQ_SRC_SCENE_DEACTIVATE] = "Scene Deactivate",
     [ESP_RMAKER_REQ_SRC_LOCAL] = "Local",
+    [ESP_RMAKER_REQ_SRC_CMD_RESP] = "Command Response",
+    [ESP_RMAKER_REQ_SRC_FIRMWARE] = "Firmware",
+    [ESP_RMAKER_REQ_SRC_BLE_LOCAL] = "BLE",
 };
 
 const char *esp_rmaker_device_cb_src_to_str(esp_rmaker_req_src_t src)
@@ -117,7 +126,7 @@ esp_rmaker_param_val_t esp_rmaker_array(const char *val)
     return param_val;
 }
 
-static esp_err_t esp_rmaker_populate_params(char *buf, size_t *buf_len, uint8_t flags, bool reset_flags)
+esp_err_t esp_rmaker_populate_params(char *buf, size_t *buf_len, uint8_t flags, bool reset_flags)
 {
     esp_err_t err = ESP_OK;
     json_gen_str_t jstr;
@@ -257,19 +266,27 @@ static esp_err_t esp_rmaker_report_param_internal(uint8_t flags)
     esp_err_t err = esp_rmaker_allocate_and_populate_params(flags, true);
     if (err == ESP_OK) {
         /* Just checking if there are indeed any params to report by comparing with a decent enough
-         * length as even the smallest possible data, Eg. '{"d":{"p":0}}' will be > 10 bytes.
+         * length as even the smallest possible data, Eg. '{"D":{"P":1}}' will be >= 13 bytes.
          */
         char *node_params_buf = esp_rmaker_param_get_buf(0);
-        if (strlen(node_params_buf) > 10) {
+        if (strlen(node_params_buf) >= RMAKER_MIN_VALID_PARAMS_SIZE) {
             if (flags == RMAKER_PARAM_FLAG_VALUE_CHANGE) {
-                esp_rmaker_create_mqtt_topic(publish_topic, sizeof(publish_topic), NODE_PARAMS_LOCAL_TOPIC_SUFFIX, NODE_PARAMS_LOCAL_TOPIC_RULE);
+                if (active_group_id) {
+                    /* Use group-specific topic */
+                    snprintf(publish_topic, sizeof(publish_topic), "node/%s/%s/%s",
+                            esp_rmaker_get_node_id(), NODE_PARAMS_LOCAL_TOPIC_SUFFIX, active_group_id);
+                } else {
+                    /* Use default topic */
+                    esp_rmaker_create_mqtt_topic(publish_topic, sizeof(publish_topic),
+                            NODE_PARAMS_LOCAL_TOPIC_SUFFIX, NODE_PARAMS_LOCAL_TOPIC_RULE);
+                }
                 ESP_LOGI(TAG, "Reporting params: %s", node_params_buf);
             } else if (flags == RMAKER_PARAM_FLAG_VALUE_NOTIFY) {
-                esp_rmaker_create_mqtt_topic(publish_topic, sizeof(publish_topic), NODE_PARAMS_ALERT_TOPIC_SUFFIX, NODE_PARAMS_ALERT_TOPIC_RULE);
+                esp_rmaker_create_mqtt_topic(publish_topic, sizeof(publish_topic),
+                        NODE_PARAMS_ALERT_TOPIC_SUFFIX, NODE_PARAMS_ALERT_TOPIC_RULE);
                 ESP_LOGI(TAG, "Notifying params: %s", node_params_buf);
-            } else {
-                return ESP_FAIL;
             }
+
             if (esp_rmaker_params_mqtt_init_done) {
                 esp_rmaker_mqtt_publish(publish_topic, node_params_buf, strlen(node_params_buf), RMAKER_MQTT_QOS1, NULL);
             } else {
@@ -281,7 +298,7 @@ static esp_err_t esp_rmaker_report_param_internal(uint8_t flags)
     return err;
 }
 
-static esp_err_t esp_rmaker_report_updated_params(void)
+esp_err_t esp_rmaker_report_updated_params(void)
 {
     return esp_rmaker_report_param_internal(RMAKER_PARAM_FLAG_VALUE_CHANGE);
 }
@@ -386,7 +403,10 @@ static esp_err_t esp_rmaker_device_set_params(_esp_rmaker_device_t *device, jpar
                     num_param, device->priv_data, &ctx) != ESP_OK) {
             ESP_LOGE(TAG, "Remote update for device %s failed", device->name);
         } else {
-            esp_rmaker_report_updated_params();
+            /* Skip MQTT reporting for command response source - it will be returned in response */
+            if (src != ESP_RMAKER_REQ_SRC_CMD_RESP) {
+                esp_rmaker_report_updated_params();
+            }
         }
     }
 set_params_free:
@@ -442,6 +462,50 @@ static esp_err_t esp_rmaker_register_for_set_params(void)
     return ESP_OK;
 }
 
+esp_err_t esp_rmaker_register_for_group_params(const char *group_id)
+{
+    /* First unsubscribe from existing group topic if any */
+    if (active_group_id) {
+        char old_topic[MQTT_TOPIC_BUFFER_SIZE];
+        snprintf(old_topic, sizeof(old_topic), "node/%s/%s/%s",
+                esp_rmaker_get_node_id(), NODE_PARAMS_REMOTE_TOPIC_SUFFIX, active_group_id);
+        esp_err_t err = esp_rmaker_mqtt_unsubscribe(old_topic);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to unsubscribe from old group topic %s. Error %d", old_topic, err);
+        } else {
+            ESP_LOGI(TAG, "Unsubscribed from old group topic: %s", old_topic);
+        }
+        free(active_group_id);
+        active_group_id = NULL;
+    }
+    esp_rmaker_store_group_id(group_id);
+
+    /* Check if group_id is empty or NULL - just clear stored group_id */
+    /* No need to subscribe to default topic as we're already subscribed via esp_rmaker_register_for_set_params() */
+    if (group_id && strlen(group_id) > 0) {
+        active_group_id = strdup(group_id);
+        if (!active_group_id) {
+            ESP_LOGE(TAG, "Failed to allocate memory for group_id, continuing with subscription");
+            /* Continue execution - subscription is more critical than storing the ID */
+        }
+        char subscribe_topic[MQTT_TOPIC_BUFFER_SIZE];
+        snprintf(subscribe_topic, sizeof(subscribe_topic), "node/%s/%s/%s",
+                 esp_rmaker_get_node_id(), NODE_PARAMS_REMOTE_TOPIC_SUFFIX, group_id);
+        esp_err_t err = esp_rmaker_mqtt_subscribe(subscribe_topic, esp_rmaker_set_params_callback, RMAKER_MQTT_QOS1, NULL);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to subscribe to group topic %s. Error %d", subscribe_topic, err);
+            return ESP_FAIL;
+        }
+    }
+
+    /* Update connectivity service LWT if enabled */
+    if (esp_rmaker_connectivity_is_enabled()) {
+        esp_rmaker_connectivity_update_lwt(group_id);
+    }
+
+    return ESP_OK;
+}
+
 esp_err_t esp_rmaker_param_get_stored_value(_esp_rmaker_param_t *param, esp_rmaker_param_val_t *val)
 {
     if (!param || !param->parent || !val) {
@@ -456,6 +520,7 @@ esp_err_t esp_rmaker_param_get_stored_value(_esp_rmaker_param_t *param, esp_rmak
                 (param->val.type == RMAKER_VAL_TYPE_ARRAY)) {
         size_t len = 0;
         if ((err = nvs_get_blob(handle, param->name, NULL, &len)) == ESP_OK) {
+            ESP_LOGD(TAG, "nvs_get_blob: %s, len: %d", param->name, len);
             char *s_val = MEM_CALLOC_EXTRAM(1, len + 1);
             if (!s_val) {
                 err = ESP_ERR_NO_MEM;
@@ -466,6 +531,7 @@ esp_err_t esp_rmaker_param_get_stored_value(_esp_rmaker_param_t *param, esp_rmak
                 val->val.s = s_val;
             }
         } else if ((err = nvs_get_str(handle, param->name, NULL, &len)) == ESP_OK) {
+            ESP_LOGD(TAG, "nvs_get_str: %s, len: %d", param->name, len);
             /* In order to be compatible with the previous nvs_set_str() */
             char *s_val = MEM_CALLOC_EXTRAM(1, len);
             if (!s_val) {
@@ -556,9 +622,9 @@ esp_rmaker_param_t *esp_rmaker_param_create(const char *param_name, const char *
         ESP_LOGE(TAG, "A paramater cannot have both, PROP_FLAG_TIME_SERIES and PROP_FLAG_SIMPLE_TIME_SERIES.");
         return NULL;
     }
-    if ((properties & PROP_FLAG_TIME_SERIES) || (properties & PROP_FLAG_SIMPLE_TIME_SERIES)) {
+    if (properties & PROP_FLAG_TIME_SERIES) {
         if ((val.type == RMAKER_VAL_TYPE_ARRAY) || (val.type == RMAKER_VAL_TYPE_OBJECT)) {
-            ESP_LOGE(TAG, "PROP_FLAG_TIME_SERIES/PROP_FLAG_SIMPLE_TIME_SERIES not allowed for array/object param types.");
+            ESP_LOGE(TAG, "PROP_FLAG_TIME_SERIES not allowed for array/object param types.");
             return NULL;
         }
     }
@@ -581,6 +647,7 @@ esp_rmaker_param_t *esp_rmaker_param_create(const char *param_name, const char *
     }
     param->val.type = val.type;
     param->prop_flags = properties;
+    param->ttl_days = 0; /* Initialize TTL days to 0 */
     if ((val.type == RMAKER_VAL_TYPE_STRING) || (val.type == RMAKER_VAL_TYPE_OBJECT) ||
                 (val.type == RMAKER_VAL_TYPE_ARRAY)) {
         if (val.val.s) {
@@ -631,6 +698,26 @@ esp_err_t esp_rmaker_param_add_bounds(const esp_rmaker_param_t *param,
         free(_param->bounds);
     }
     _param->bounds = bounds;
+    return ESP_OK;
+}
+
+esp_err_t esp_rmaker_param_add_simple_time_series_ttl(const esp_rmaker_param_t *param, uint16_t ttl_days)
+{
+    if (!param) {
+        ESP_LOGE(TAG, "Param handle cannot be NULL.");
+        return ESP_ERR_INVALID_ARG;
+    }
+    _esp_rmaker_param_t *_param = (_esp_rmaker_param_t *)param;
+    if (!(_param->prop_flags & PROP_FLAG_SIMPLE_TIME_SERIES)) {
+        ESP_LOGE(TAG, "TTL can only be set for parameters with PROP_FLAG_SIMPLE_TIME_SERIES flag.");
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (ttl_days == 0) {
+        ESP_LOGE(TAG, "TTL days must be a positive value.");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    _param->ttl_days = ttl_days;
     return ESP_OK;
 }
 
@@ -822,7 +909,13 @@ static esp_err_t esp_rmaker_param_report_time_series(const esp_rmaker_param_t *p
     return ESP_OK;
 }
 
-static esp_err_t esp_rmaker_param_report_simple_time_series(const esp_rmaker_param_t *param)
+/* Add this helper function before both simple time series functions */
+static esp_err_t esp_rmaker_simple_ts_data_report_internal(
+    const esp_rmaker_param_t *param,
+    const esp_rmaker_param_val_t *val,  /* Optional (NULL to use param's current value) */
+    int timestamp,                      /* 0 to use current time */
+    uint16_t ttl_days,                  /* 0 to omit TTL field */
+    bool update_param)                  /* Whether to update param value with val */
 {
     if (!param) {
         ESP_LOGE(TAG, "Param handle cannot be NULL.");
@@ -834,42 +927,85 @@ static esp_err_t esp_rmaker_param_report_simple_time_series(const esp_rmaker_par
         ESP_LOGE(TAG, "Param \"%s\" has not been added to any device.", _param->name);
         return ESP_FAIL;
     }
-    if (esp_rmaker_time_check() != true) {
+    /* Update param value if requested */
+    if (update_param && val) {
+        esp_err_t err = esp_rmaker_param_update(param, *val);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to update parameter value locally.");
+            return err;
+        }
+    }
+    /* Check that time is available if needed */
+    if (timestamp == 0 && esp_rmaker_time_check() != true) {
         ESP_LOGE(TAG, "Current time not yet available. Cannot report time series data.");
         return ESP_ERR_INVALID_STATE;
     }
-    /* node_params_buf will be NULL during the first publish */
-    char * node_params_buf = esp_rmaker_param_get_buf(max_node_params_size);
+    /* Determine value to use */
+    const esp_rmaker_param_val_t *report_val = val ? val : &_param->val;
+    /* Get buffer for the JSON payload */
+    char *node_params_buf = esp_rmaker_param_get_buf(max_node_params_size);
     if (!node_params_buf) {
         return ESP_ERR_NO_MEM;
     }
-
+    /* Generate JSON payload */
     json_gen_str_t jstr;
     int buf_len = max_node_params_size;
     json_gen_str_start(&jstr, node_params_buf, buf_len, NULL, NULL);
     json_gen_start_object(&jstr);
+    /* Add parameter name */
     char param_name[MAX_TS_DATA_PARAM_NAME];
     snprintf(param_name, sizeof(param_name), "%s.%s", _device->name, _param->name);
     json_gen_obj_set_string(&jstr, "name", param_name);
+    /* Add type if available */
     if (_param->type) {
         json_gen_obj_set_string(&jstr, "type", _param->type);
     }
-    esp_rmaker_report_data_type(_param->val.type, "dt", &jstr);
-    time_t current_timestamp = 0;
-    time(&current_timestamp);
-    json_gen_obj_set_int(&jstr, "t", (int)current_timestamp);
-    esp_rmaker_report_value(&_param->val, "v", &jstr);
+    /* Add data type */
+    esp_rmaker_report_data_type(report_val->type, "dt", &jstr);
+    /* Add timestamp */
+    if (timestamp == 0) {
+        time_t current_time;
+        time(&current_time);
+        timestamp = (int)current_time;
+    }
+    json_gen_obj_set_int(&jstr, "t", timestamp);
+    /* Add value */
+    esp_rmaker_report_value(report_val, "v", &jstr);
+    /* Add TTL in days if provided or set in param */
+    uint16_t ttl = ttl_days > 0 ? ttl_days : _param->ttl_days;
+    if (ttl > 0) {
+        json_gen_obj_set_int(&jstr, "d", ttl);
+    }
     json_gen_end_object(&jstr);
     json_gen_str_end(&jstr);
-
-    esp_rmaker_create_mqtt_topic(publish_topic, sizeof(publish_topic), SIMPLE_TS_DATA_TOPIC_SUFFIX, SIMPLE_TS_DATA_TOPIC_RULE);
+    /* Create MQTT topic and publish the data */
+    esp_rmaker_create_mqtt_topic(publish_topic, sizeof(publish_topic),
+                                SIMPLE_TS_DATA_TOPIC_SUFFIX, SIMPLE_TS_DATA_TOPIC_RULE);
+    /* Publish the data if MQTT is initialized */
     if (esp_rmaker_params_mqtt_init_done) {
-        _esp_rmaker_param_t *_param = (_esp_rmaker_param_t *)param;
-        _esp_rmaker_device_t *_device = _param->parent;
-        ESP_LOGI(TAG, "Reporting Simple Time Series Data for %s.%s", _device->name, _param->name);
-        esp_rmaker_mqtt_publish(publish_topic, node_params_buf, strlen(node_params_buf), RMAKER_MQTT_QOS1, NULL);
+        const char *function_name = update_param ? "Directly reporting" : "Reporting";
+        ESP_LOGI(TAG, "%s Simple TS data: %s", function_name, node_params_buf);
+        return esp_rmaker_mqtt_publish(publish_topic, node_params_buf,
+                                     strlen(node_params_buf), RMAKER_MQTT_QOS1, NULL);
+    } else {
+        ESP_LOGW(TAG, "MQTT not initialized. Cannot report Simple TS data.");
+        return ESP_ERR_INVALID_STATE;
     }
-    return ESP_OK;
+}
+
+static esp_err_t esp_rmaker_param_report_simple_time_series(const esp_rmaker_param_t *param)
+{
+    if (!param) {
+        ESP_LOGE(TAG, "Param handle cannot be NULL.");
+        return ESP_ERR_INVALID_ARG;
+    }
+    _esp_rmaker_param_t *_param = (_esp_rmaker_param_t *)param;
+    if (!(_param->prop_flags & PROP_FLAG_SIMPLE_TIME_SERIES)) {
+        ESP_LOGE(TAG, "Parameter does not have SIMPLE_TIME_SERIES flag set.");
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* Use common implementation with no custom value, timestamp, or TTL */
+    return esp_rmaker_simple_ts_data_report_internal(param, NULL, 0, 0, false);
 }
 
 esp_err_t esp_rmaker_param_notify(const esp_rmaker_param_t *param)
@@ -940,10 +1076,10 @@ esp_err_t esp_rmaker_report_node_state(void)
     esp_err_t err = esp_rmaker_allocate_and_populate_params(0, false);
     if (err == ESP_OK) {
         /* Just checking if there are indeed any params to report by comparing with a decent enough
-         * length as even the smallest possible data, Eg. '{"d":{"p":0}}' will be > 10 bytes.
+         * length as even the smallest possible data, Eg. '{"D":{"P":1}}' will be >= 13 bytes.
          */
         char *node_params_buf = esp_rmaker_param_get_buf(0);
-        if (strlen(node_params_buf) > 10) {
+        if (strlen(node_params_buf) >= RMAKER_MIN_VALID_PARAMS_SIZE) {
             esp_rmaker_create_mqtt_topic(publish_topic, sizeof(publish_topic), NODE_PARAMS_LOCAL_INIT_TOPIC_SUFFIX, NODE_PARAMS_LOCAL_INIT_RULE);
             ESP_LOGI(TAG, "Reporting params (init): %s", node_params_buf);
             if (esp_rmaker_params_mqtt_init_done) {
@@ -958,10 +1094,28 @@ esp_err_t esp_rmaker_report_node_state(void)
     return err;
 }
 
+static esp_err_t esp_rmaker_restore_group_id(void)
+{
+    char *group_id = NULL;
+    esp_err_t err = esp_rmaker_get_stored_group_id(&group_id);
+    if (err == ESP_OK && group_id) {
+        /* Subscribe to the stored group */
+        err = esp_rmaker_register_for_group_params(group_id);
+        free(group_id);
+    }
+    return err;
+}
+
 esp_err_t esp_rmaker_params_mqtt_init(void)
 {
+    /* First try to restore any saved group_id */
+    esp_err_t err = esp_rmaker_restore_group_id();
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "Failed to restore group id from NVS");
+    }
+
     /* Subscribe for parameter update requests */
-    esp_err_t err = esp_rmaker_register_for_set_params();
+    err = esp_rmaker_register_for_set_params();
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "Params MQTT Init done.");
         esp_rmaker_params_mqtt_init_done = true;
@@ -998,4 +1152,97 @@ esp_err_t esp_rmaker_raise_alert(const char *alert_str)
     esp_rmaker_create_mqtt_topic(publish_topic, sizeof(publish_topic), NODE_PARAMS_ALERT_TOPIC_SUFFIX, NODE_PARAMS_ALERT_TOPIC_RULE);
     ESP_LOGI(TAG, "Reporting alert: %s", buf);
     return esp_rmaker_mqtt_publish(publish_topic, buf, strlen(buf), RMAKER_MQTT_QOS1, NULL);
+}
+
+esp_err_t esp_rmaker_param_report_simple_ts_data(const esp_rmaker_param_t *param, esp_rmaker_param_val_t val, int timestamp, uint16_t ttl_days)
+{
+    if (!param) {
+        ESP_LOGE(TAG, "Param handle cannot be NULL.");
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* Verify that the parameter supports simple time series */
+    _esp_rmaker_param_t *_param = (_esp_rmaker_param_t *)param;
+    if (!(_param->prop_flags & PROP_FLAG_SIMPLE_TIME_SERIES)) {
+        ESP_LOGE(TAG, "Parameter \"%s\" does not have PROP_FLAG_SIMPLE_TIME_SERIES flag.", _param->name);
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* Use common implementation with custom value, timestamp, and TTL */
+    return esp_rmaker_simple_ts_data_report_internal(param, &val, timestamp, ttl_days, true);
+}
+
+
+/* Store group_id in NVS */
+esp_err_t esp_rmaker_store_group_id(const char *group_id)
+{
+    nvs_handle handle;
+    esp_err_t err = nvs_open_from_partition(ESP_RMAKER_NVS_PART_NAME, RMAKER_GROUP_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (group_id && strlen(group_id) > 0) {
+        err = nvs_set_str(handle, GROUP_ID_KEY, group_id);
+    } else {
+        err = nvs_erase_key(handle, GROUP_ID_KEY);
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    return err;
+}
+
+/* Retrieve group_id from NVS */
+esp_err_t esp_rmaker_get_stored_group_id(char **group_id)
+{
+    if (!group_id) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *group_id = NULL;
+
+    nvs_handle handle;
+    esp_err_t err = nvs_open_from_partition(ESP_RMAKER_NVS_PART_NAME, RMAKER_GROUP_NVS_NAMESPACE, NVS_READONLY, &handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    size_t required_size = 0;
+    err = nvs_get_str(handle, GROUP_ID_KEY, NULL, &required_size);
+    if (err != ESP_OK) {
+        nvs_close(handle);
+        return err;
+    }
+
+    char *id = calloc(1, required_size);
+    if (!id) {
+        nvs_close(handle);
+        return ESP_ERR_NO_MEM;
+    }
+    err = nvs_get_str(handle, GROUP_ID_KEY, id, &required_size);
+    nvs_close(handle);
+    if (err == ESP_OK) {
+        *group_id = id;
+    } else {
+        free(id);
+    }
+    return err;
+}
+
+esp_err_t esp_rmaker_publish_direct(const char *message)
+{
+    if (!active_group_id || !message) {
+        ESP_LOGW(TAG, "Invalid arguments or active group not set");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char topic[128];
+    snprintf(topic, sizeof(topic), "node/%s/direct/params/local/%s", esp_rmaker_get_node_id(), active_group_id);
+
+    esp_err_t err = esp_rmaker_mqtt_publish(topic, (void *)message, strlen(message), 1, NULL);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to publish message to topic: %s", topic);
+    } else {
+        ESP_LOGI(TAG, "Message published to topic: %s", topic);
+    }
+
+    return err;
 }
