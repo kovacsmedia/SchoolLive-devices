@@ -121,6 +121,14 @@ bool ProvisioningManager::doPollStatus() {
   _activatedConfig.wifiSsid     = cfg["wifiSsid"].as<String>();
   _activatedConfig.wifiPassword = cfg["wifiPassword"].as<String>();
   _activatedConfig.deviceKey    = cfg["deviceKey"].as<String>();
+  // Multi-node cluster: opcionális mező, régi backend válaszban hiányozhat.
+  // A `.isNull()` explicit check szükséges, mert `.as<String>()` egy hiányzó/
+  // null JSON mezőre a "null" NÉGYBETŰS STRING-et adná (ld. safeStr komment
+  // lent) – ezt itt is elkerüljük, üres String marad, nem hiba.
+  {
+    JsonVariantConst tv = cfg["tenantId"];
+    _activatedConfig.tenantId = tv.isNull() ? String("") : tv.as<String>();
+  }
 
   // WPA2 Enterprise mezők (opcionális, default empty/PERSONAL).
   //
@@ -156,6 +164,9 @@ void ProvisioningManager::applyAndReboot() {
   _store.setWifiUser(_activatedConfig.wifiUser);
   _store.setWifiSecurity(_activatedConfig.wifiSecurity);
   _store.setDeviceKey(_activatedConfig.deviceKey);
+  if (_activatedConfig.tenantId.length() > 0) {
+    _store.setTenantId(_activatedConfig.tenantId);
+  }
 
   // wifi.txt írása – SLNetworkManager ebből olvas
   File f = LittleFS.open("/wifi.txt", "w");

@@ -387,11 +387,13 @@ bool BackendClient::confirmProvisioning(
     const String& provisioningToken,
     String& outDeviceKey,
     String& outWifiSsid,
-    String& outWifiPass
+    String& outWifiPass,
+    String& outTenantId
 ) {
     outDeviceKey = "";
     outWifiSsid = "";
     outWifiPass = "";
+    outTenantId = "";
 
     JsonDocument req;
     req["provisioningToken"] = provisioningToken;
@@ -422,7 +424,35 @@ bool BackendClient::confirmProvisioning(
         outWifiPass = resp["wifi"]["password"].as<const char*>();
     }
 
+    // Multi-node cluster: a device.tenantId a válaszban (ha a backend már
+    // ezt a mezőt is küldi – devices.provision.routes.ts). Hiánya nem hiba,
+    // csak a node-discovery marad kihasználatlan ezen az eszközön.
+    if (resp["device"]["tenantId"].is<const char*>()) {
+        outTenantId = resp["device"]["tenantId"].as<const char*>();
+    }
+
     return outDeviceKey.length() > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Multi-node cluster: node discovery
+// ---------------------------------------------------------------------------
+
+bool BackendClient::locateNode(const String& tenantId, String& outHostname) {
+    outHostname = "";
+    if (tenantId.length() == 0) return false;
+
+    JsonDocument resp;
+    int code = 0;
+
+    bool ok = getJson("/cluster/locate?tenantId=" + tenantId, resp, code);
+    if (!ok) return false;
+
+    if (resp["hostname"].is<const char*>()) {
+        outHostname = resp["hostname"].as<const char*>();
+    }
+
+    return outHostname.length() > 0;
 }
 
 // ---------------------------------------------------------------------------

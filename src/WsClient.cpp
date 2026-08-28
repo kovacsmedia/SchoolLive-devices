@@ -22,6 +22,16 @@ void WsClient::begin(const String& host, uint16_t port, const String& deviceKey)
 void WsClient::loop() {
     if (!_started) return;
     _ws.loop();
+
+    // A relocate callback-et SZÁNDÉKOSAN itt, a `_ws.loop()` visszatérése UTÁN
+    // hívjuk (nem a wsEvent()-en belül) – onnan hívva a callback (ami újra
+    // meghívja `begin()`-t, azaz `_ws.beginSSL()`-t) még a `_ws.loop()` saját
+    // hívási vermén belülről módosítaná a `_ws` belső állapotát.
+    if (_relocatePending) {
+        _relocatePending = false;
+        _consecutiveFailures = 0;
+        if (_relocateCb) _relocateCb();
+    }
 }
 
 bool WsClient::sendJson(const JsonDocument& doc) {
@@ -39,6 +49,7 @@ void WsClient::wsEvent(WStype_t type, uint8_t* payload, size_t length) {
             _connected = true;
             _reconnectIntervalMs = 1000UL;
             _ws.setReconnectInterval(_reconnectIntervalMs);
+            _consecutiveFailures = 0;
             Serial.println("[WS] ✅ Csatlakozva a szerverhez");
             break;
 
@@ -52,6 +63,11 @@ void WsClient::wsEvent(WStype_t type, uint8_t* payload, size_t length) {
             _reconnectIntervalMs = min(_reconnectIntervalMs * 2, MAX_RECONNECT_MS);
             _ws.setReconnectInterval(_reconnectIntervalMs);
             Serial.printf("[WS] Következő újracsatlakozás: %lums\n", _reconnectIntervalMs);
+
+            _consecutiveFailures++;
+            if (_consecutiveFailures >= RELOCATE_AFTER_FAILURES) {
+                _relocatePending = true;
+            }
             break;
 
         case WStype_TEXT:

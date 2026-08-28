@@ -74,12 +74,52 @@ void tryStartSnapcastClient() {
 
 // --- WS kapcsolat indítása (beacon és poll helyett) ---
 
+// Multi-node cluster: a legutóbb ismert (cache-elt) node host-ot használjuk,
+// ha van; egyébként a Config.h BACKEND_BASE_URL-ből származtatott alapértelmezett
+// hostra esünk vissza (a "https://" séma-előtag levágásával).
+String resolveWsHost() {
+    if (store.hasCachedNodeHost()) {
+        return store.getCachedNodeHost();
+    }
+    String base = String(BACKEND_BASE_URL);
+    int schemeEnd = base.indexOf("://");
+    return schemeEnd >= 0 ? base.substring(schemeEnd + 3) : base;
+}
+
 void startWsConnection(const String& deviceKey) {
-    // wss://api.schoollive.hu:443/sync?deviceKey=<key>
-    wsClient.begin("api.schoollive.hu", 443, deviceKey);
+    // wss://<host>:443/sync?deviceKey=<key>
+    wsClient.begin(resolveWsHost(), 443, deviceKey);
 
     wsClient.onMessage([](const JsonDocument& msg) {
         agent.onWsMessage(msg);
+    });
+
+    // Multi-node cluster: N sikertelen újracsatlakozás után megkérdezzük a
+    // backendet (a jelenlegi, esetleg elavult host felé – a /cluster/locate
+    // tulajdonjog-kapu nélküli, bármelyik node válaszol rá), hogy a tenant
+    // időközben másik node-ra került-e.
+    wsClient.onNeedsRelocate([deviceKey]() {
+        String tenantId = store.getTenantId();
+        if (tenantId.length() == 0) {
+            Serial.println("[MAIN] Relocate szükséges lenne, de nincs tárolt tenantId — kihagyva");
+            return;
+        }
+
+        String newHost;
+        if (backend.locateNode(tenantId, newHost)) {
+            String current = resolveWsHost();
+            if (newHost != current) {
+                Serial.printf("[MAIN] Node-váltás: %s → %s\n", current.c_str(), newHost.c_str());
+                store.setCachedNodeHost(newHost);
+            } else {
+                Serial.println("[MAIN] locateNode: jelenlegi host továbbra is érvényes");
+            }
+            // Mindig újraindítjuk a WS kapcsolatot (akár változott a host, akár
+            // nem), hogy a WebSocketsClient és a backoff-számláló tiszta legyen.
+            wsClient.begin(newHost, 443, deviceKey);
+        } else {
+            Serial.println("[MAIN] locateNode sikertelen — marad a jelenlegi hoston, backoff folytatódik");
+        }
     });
 
     Serial.println("[MAIN] WsClient indítva");

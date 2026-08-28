@@ -38,12 +38,24 @@ public:
     );
 
     // Provisioning
+    // outTenantId: multi-node cluster – a device saját tenantId-ja (a
+    // válasz `device.tenantId` mezőjéből), amit a hívó PersistStore::
+    // setTenantId()-vel ment el. Üres marad, ha a válasz nem tartalmazza
+    // (régi backend) – ez nem hiba, csak a node-discovery marad kihasználatlan.
     bool confirmProvisioning(
         const String& provisioningToken,
         String& outDeviceKey,
         String& outWifiSsid,
-        String& outWifiPass
+        String& outWifiPass,
+        String& outTenantId
     );
+
+    // Multi-node cluster: GET /cluster/locate?tenantId=<id> – hitelesítés
+    // nélküli, bárhonnan (bármelyik node-tól) ugyanazt a választ adja.
+    // A `_baseUrl` mezőt használja (bármi is épp be van állítva, akár
+    // elavult is) – ezért működik akkor is, ha a jelenlegi node már nem a
+    // tenant gazdája, csak épp válaszol erre az egy végpontra.
+    bool locateNode(const String& tenantId, String& outHostname);
 
     // ── OTA (firmware update) ──────────────────────────────────────────────
     //

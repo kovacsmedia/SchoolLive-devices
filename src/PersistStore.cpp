@@ -21,6 +21,32 @@ void PersistStore::clearDeviceKey() {
   _prefs.remove("deviceKey");
 }
 
+bool PersistStore::hasTenantId() const {
+  return _prefs.isKey("tenantId") && _prefs.getString("tenantId", "").length() > 0;
+}
+
+String PersistStore::getTenantId() const {
+  return _prefs.getString("tenantId", "");
+}
+
+bool PersistStore::setTenantId(const String& tenantId) {
+  if (tenantId.length() == 0) return false;
+  return _prefs.putString("tenantId", tenantId) > 0;
+}
+
+bool PersistStore::hasCachedNodeHost() const {
+  return _prefs.isKey("nodeHost") && _prefs.getString("nodeHost", "").length() > 0;
+}
+
+String PersistStore::getCachedNodeHost() const {
+  return _prefs.getString("nodeHost", "");
+}
+
+bool PersistStore::setCachedNodeHost(const String& host) {
+  if (host.length() == 0) return false;
+  return _prefs.putString("nodeHost", host) > 0;
+}
+
 bool PersistStore::hasWifi() const {
   return _prefs.isKey("wifiSsid") && _prefs.getString("wifiSsid", "").length() > 0;
 }

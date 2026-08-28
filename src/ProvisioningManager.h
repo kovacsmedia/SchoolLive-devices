@@ -27,6 +27,11 @@ struct ProvConfig {
   String wifiUser;       // WPA2 Enterprise: felhasználónév (email)
   String wifiSecurity;   // "WPA2_PERSONAL" | "WPA2_ENTERPRISE"
   String deviceKey;
+  // Multi-node cluster: a device saját tenantId-ja (a
+  // GET /provision/status/:pendingId válasz config.tenantId mezőjéből) –
+  // PersistStore-ba mentve, hogy WsClient node-váltás esetén a
+  // GET /cluster/locate?tenantId= hívást tudja indítani.
+  String tenantId;
 };
 
 class ProvisioningManager {

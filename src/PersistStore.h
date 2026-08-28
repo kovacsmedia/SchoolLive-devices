@@ -20,6 +20,22 @@ public:
   bool setDeviceKey(const String& key);
   void clearDeviceKey();
 
+  // Multi-node cluster: a device saját tenantId-ja (a provisioning-confirm
+  // válaszából tanult meg, ld. BackendClient::confirmProvisioning) – ez
+  // teszi lehetővé, hogy WsClient node-váltás esetén a
+  // GET /cluster/locate?tenantId= hívást tudja indítani.
+  bool hasTenantId() const;
+  String getTenantId() const;
+  bool setTenantId(const String& tenantId);
+
+  // Multi-node cluster: a legutóbb ismert, tényleg működő node hostname-je
+  // (pl. "api1.schoollive.hu"). Bootkor ezt próbáljuk elsőként a
+  // Config.h BACKEND_BASE_URL-ből származó alapérték helyett – így egy
+  // korábbi node-váltás túléli az újraindítást is.
+  bool hasCachedNodeHost() const;
+  String getCachedNodeHost() const;
+  bool setCachedNodeHost(const String& host);
+
   bool hasWifi() const;
   String getWifiSsid() const;
   String getWifiPass() const;
