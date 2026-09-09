@@ -37,6 +37,11 @@ public:
     UIManager(AudioManager &audioMgr, SLNetworkManager &netMgr, BellManager &bellMgr, PersistStore &storeRef);
     void begin();
     void loop();
+
+    /** Van-e ténylegesen OLED az eszközön (futásidejű I2C-detektálás).
+     *  EGY bináris szolgálja ki a kijelzős-érintőgombos és a csak
+     *  szervizgombos hardver-változatot is. */
+    bool hasDisplay() const { return _hasDisplay; }
     void setTelemetry(DeviceTelemetry* tel);
 
     // Új top-bar állapotjelzőkhöz: a UI olvassa a Snapcast kapcsolat
@@ -53,6 +58,15 @@ public:
     void showVolumeScreen();
 
 private:
+    // Kijelző jelenléte – a `begin()` deríti ki I2C-próbával. Ha nincs, a
+    // rajzolás a RAM-pufferbe továbbra is lefut (ártalmatlan, mikroszekundumok),
+    // de az I2C-re küldés (`flush()`) kimarad, és a splash-várakozás sem tartja
+    // fel a bootot.
+    bool _hasDisplay = false;
+    bool detectDisplay();
+    /** `display.display()` helyett – kijelző nélkül no-op. */
+    void flush();
+
     AudioManager &audio;
     SLNetworkManager &network;
     BellManager &bell;

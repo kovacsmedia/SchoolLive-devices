@@ -33,6 +33,19 @@ public:
     void loop();
     bool syncTimeBlocking();
 
+    /** Nem blokkoló csatlakozás-indítás. A tényleges csatlakozásra NEM vár –
+     *  a `loop()` (TaskNetwork) úgyis újrapróbálja, amíg sikerül. */
+    void startConnect();
+
+    /** Egy SZOFTVERES újraindítás (szervizgomb, OTA, crash, `ESP.restart()`)
+     *  megőrzi az RTC órát, csak a RAM-beli `_timeSynced` flag vész el – és a
+     *  libc időzóna-beállítása. Ez a metódus visszaállítja a TZ-t, és ha az
+     *  óra hihető értéket mutat, azonnal "szinkronizáltnak" tekinti az időt.
+     *  Így az eszköz WiFi NÉLKÜL is tud csengetni közvetlenül újraindulás
+     *  után. Tápkimaradás után az RTC nullázódik – ott marad az NTP.
+     *  @return true, ha az óra használható */
+    bool adoptRtcTimeIfValid();
+
     bool isConnected();
     bool isTimeSynced();
     String getIP();
@@ -52,6 +65,9 @@ public:
 private:
     bool _timeSynced = false;
     unsigned long _lastTimeSync = 0;
+    // Az RTC-ből átvett idő pontos lehet, de driftelhet – ha WiFi lesz,
+    // egyszer akkor is kérjünk friss NTP-t, ne csak az 1 órás ciklusban.
+    bool _needsNtpRefresh = false;
     unsigned long _lastWifiCheck = 0;
 
     std::vector<WiFiCreds> knownNetworks;

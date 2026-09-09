@@ -12,6 +12,12 @@
 #define BELL_MODE_ON    1
 #define BELL_MODE_TODAY 2
 
+// Gyári default csengetőhangok. Ezek a firmware LittleFS képében (data/)
+// szállítódnak, és a szerver `sounds` listája is MINDIG tartalmazza őket –
+// a szinkron-takarítás SOSEM törölheti őket (ld. BellManager.cpp).
+#define BELL_DEFAULT_SIGNAL "/jelzocsengo.mp3"
+#define BELL_DEFAULT_MAIN   "/kibecsengo.mp3"
+
 // Csengetés típusa
 enum class BellType : uint8_t {
     MAIN   = 0,
@@ -105,6 +111,8 @@ private:
 
     // Szinkronizáció állapot
     unsigned long _lastVersionCheckMs = 0;
+    // A cache-bootstrap újrapróbálásának ritkítása (a checkBells 100 ms-enként fut).
+    unsigned long _lastCacheLoadMs    = 0;
     bool          _syncedToday        = false;
     bool          _syncedFromServer   = false;
 
@@ -162,6 +170,19 @@ private:
 
     void loadHardcodedDefault();
     void checkSchedule();
+
+    // "A CSENGETÉS SOSEM MARADHAT EL": olyan LittleFS-útvonalat ad vissza,
+    // ami TÉNYLEGESEN LÉTEZIK. Sorrend: a kért fájl → a típushoz tartozó
+    // gyári default → a másik gyári default → bármelyik .mp3 a tárhelyen.
+    // Üres String csak akkor, ha egyetlen hangfájl sincs az eszközön.
+    String resolveLocalSound(const char* soundFile, BellType type);
+
+    // A tárolt (NVS) csengetési rend betöltése HÁLÓZAT NÉLKÜL. A teljes
+    // offline lánc: napi cache → tanévnyi naptár → default sablon → beégetett
+    // alapérték. Akkor kell, ha az eszköz úgy indul el, hogy a backend nem
+    // (vagy csak félig) érhető el – ilyenkor a `loop()` szinkron-ága nem fut,
+    // és a rend enélkül üres maradna, azaz EGYETLEN csengetés sem szólalna meg.
+    bool loadScheduleFromCache(const String& today);
     String getTodayDateStr();
 };
 

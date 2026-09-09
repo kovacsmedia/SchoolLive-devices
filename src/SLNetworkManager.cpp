@@ -125,6 +125,56 @@ void SLNetworkManager::connectPersonal(String ssid, String pass) {
     WiFi.begin(ssid.c_str(), pass.c_str());
 }
 
+// A NEM blokkoló csatlakozás-indítás és az RTC-idő átvétele. Ezek együtt
+// teszik lehetővé, hogy az eszköz elérhetetlen WiFi mellett is ELINDULJON és
+// csengessen – korábban a `syncTimeBlocking()` akár 30 mp-ig várt a
+// kapcsolatra, majd további 3 mp-ig mutatta a hibaképernyőt, és a
+// `_timeSynced` hamis maradt, azaz a BellManager egyáltalán nem csengetett.
+void SLNetworkManager::startConnect() {
+    loadFromNVS();
+    if (knownNetworks.empty()) {
+        Serial.println("[WIFI] Nincs mentett halozat – offline indulas");
+        return;
+    }
+
+    WiFiCreds& c = knownNetworks[0];
+    Serial.printf("[WIFI] Csatlakozas inditva (nem blokkolo): %s\n", c.ssid.c_str());
+    if (c.security == "WPA2_ENTERPRISE" && c.user.length() > 0) {
+        connectEnterprise(c.ssid, c.user, c.pass);
+    } else {
+        connectPersonal(c.ssid, c.pass);
+    }
+    // SZÁNDÉKOSAN nem várunk: a handleWiFi() 10 mp-enként újrapróbálja.
+}
+
+bool SLNetworkManager::adoptRtcTimeIfValid() {
+    // Az időzóna-beállítás NEM éli túl az újraindítást, csak maga az RTC
+    // számláló – ezért itt újra be kell állítani, mielőtt az órát olvasnánk.
+    configTime(3600, 3600, "pool.ntp.org", "time.google.com");
+
+    // 2024-01-01 UTC. Ennél régebbi érték = az RTC nullázódott (tápkimaradás),
+    // tehát nincs használható időnk.
+    static const time_t SANE_EPOCH = 1704067200;
+
+    const time_t now = time(nullptr);
+    if (now < SANE_EPOCH) {
+        Serial.println("[WIFI] RTC ora ervenytelen (tapkimaradas?) – NTP-re varunk");
+        return false;
+    }
+
+    _timeSynced      = true;
+    _lastTimeSync    = millis();
+    _needsNtpRefresh = true;   // ha lesz WiFi, azonnal pontosítunk
+
+    struct tm t;
+    if (getLocalTime(&t)) {
+        Serial.printf("[WIFI] RTC ora atveve: %04d-%02d-%02d %02d:%02d:%02d – offline csengetes aktiv\n",
+                      t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
+                      t.tm_hour, t.tm_min, t.tm_sec);
+    }
+    return true;
+}
+
 void SLNetworkManager::loop() {
     handleWiFi();
     if (isConnected()) handleNTP();
@@ -151,12 +201,19 @@ void SLNetworkManager::handleWiFi() {
 }
 
 void SLNetworkManager::handleNTP() {
-    if (!_timeSynced || (millis() - _lastTimeSync > 3600000)) {
+    if (!_timeSynced || _needsNtpRefresh || (millis() - _lastTimeSync > 3600000)) {
         configTime(3600, 3600, "pool.ntp.org", "time.google.com");
         struct tm t;
         if (getLocalTime(&t)) {
-            _timeSynced = true;
-            _lastTimeSync = millis();
+            const bool wasRefresh = _needsNtpRefresh;
+            _timeSynced      = true;
+            _lastTimeSync    = millis();
+            _needsNtpRefresh = false;   // az RTC-ből átvett idő pontosítva
+            if (wasRefresh) {
+                Serial.printf("[WIFI] NTP pontositas kesz: %04d-%02d-%02d %02d:%02d:%02d\n",
+                              t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
+                              t.tm_hour, t.tm_min, t.tm_sec);
+            }
         }
     }
 }

@@ -53,6 +53,28 @@
 #define TOUCH_L 12
 #define TOUCH_R 6
 
+// --- SZERVIZ NYOMÓGOMB (kijelző nélküli hardver-változat) ---
+//
+// Bekötés: a nyomógomb egyik lába GPIO4, a másik GND. Külső ellenállás NEM
+// kell – a láb `INPUT_PULLUP`-ban van, tehát alaphelyzetben HIGH, lenyomva
+// a gomb GND-re húzza (aktív alacsony).
+//
+// Miért GPIO4:
+//   • nem strapping láb (0, 3, 45, 46), tehát a boot-módot nem befolyásolja;
+//   • nem érinti az N16R8 modul foglalt lábait: 26-32 = SPI flash,
+//     33-37 = oktális (OPI) PSRAM;
+//   • nem USB (19, 20 – a firmware USB CDC-vel megy), nem UART0 (43, 44),
+//     nem JTAG (39-42);
+//   • nem a DevKitC-1 RGB LED-je (az a board-verziótól függően 38 VAGY 48);
+//   • van belső felhúzóellenállása;
+//   • a MEGLÉVŐ változatban is szabad (foglalt: 6, 12, 13, 14, 15, 21, 47),
+//     így EGYETLEN firmware szolgálja ki mindkét hardvert – a kijelzős
+//     példányokon a láb egyszerűen mindig HIGH marad, a gomb sosem sül el.
+#define BTN_SERVICE 4
+
+// Ennyi nyomva tartás után áll vissza az eszköz aktiválás előtti állapotba.
+#define BTN_FACTORY_RESET_MS 7000UL
+
 // -----------------------------------------------------------------------------
 // WIFI
 // -----------------------------------------------------------------------------

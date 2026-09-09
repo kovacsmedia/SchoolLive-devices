@@ -20,22 +20,52 @@ UIManager::UIManager(AudioManager &audioMgr, SLNetworkManager &netMgr, BellManag
       display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1) {}
 
 // --- BEGIN ---
+// I2C-próba az OLED címére. Kijelző nélküli hardveren a modul (és vele a
+// külső felhúzóellenállások) hiányzik, így a cím nem nyugtáz → false.
+bool UIManager::detectDisplay() {
+    for (int attempt = 0; attempt < 3; attempt++) {
+        Wire.beginTransmission(OLED_ADDR);
+        if (Wire.endTransmission() == 0) return true;
+        delay(50);   // lassan bekapcsolódó modulnak
+    }
+    return false;
+}
+
+void UIManager::flush() {
+    if (!_hasDisplay) return;
+    display.display();
+}
+
 void UIManager::begin() {
     Wire.begin(I2C_SDA, I2C_SCL);
     Wire.setClock(400000);
     delay(100);
 
-    display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR);
-    display.setRotation(2);
-    display.setTextColor(SSD1306_WHITE);
-    display.setTextWrap(false);
+    // EGY bináris mindkét hardver-változatra: futásidőben derítjük ki, van-e
+    // kijelző. Kijelző nélkül nincs `display.begin()`, nincs 2 mp-es splash,
+    // és nincs felesleges I2C-forgalom sem.
+    _hasDisplay = detectDisplay();
+    Serial.printf("[UI] OLED a 0x%02X cimen: %s\n", OLED_ADDR,
+                  _hasDisplay ? "VAN" : "NINCS (kijelzo nelkuli valtozat)");
 
-    applyDimming();
-    drawSplashScreen();
-    delay(2000);
+    if (_hasDisplay) {
+        display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR);
+        display.setRotation(2);
+        display.setTextColor(SSD1306_WHITE);
+        display.setTextWrap(false);
 
-    pinMode(TOUCH_L, INPUT);
-    pinMode(TOUCH_R, INPUT);
+        applyDimming();
+        drawSplashScreen();
+        delay(2000);
+    }
+
+    // INPUT_PULLDOWN (nem sima INPUT): a TTP223 push-pull kimenete simán
+    // felülvezérli a belső ~45k lehúzást, viszont a KIJELZŐ/ÉRINTŐGOMB NÉLKÜLI
+    // hardver-változaton ezek a lábak bekötetlenek. Sima `INPUT`-tal lebegnének,
+    // és a zaj véletlenszerű RISING megszakításokat – azaz fantom
+    // gombnyomásokat (hangerő-ugrás, csengetési mód váltás) – okozna.
+    pinMode(TOUCH_L, INPUT_PULLDOWN);
+    pinMode(TOUCH_R, INPUT_PULLDOWN);
 
     attachInterrupt(digitalPinToInterrupt(TOUCH_L), isrL, RISING);
     attachInterrupt(digitalPinToInterrupt(TOUCH_R), isrR, RISING);
@@ -190,7 +220,7 @@ void UIManager::executeMenuAction() {
             display.clearDisplay();
             display.setCursor(0, 10);
             display.print("REBOOTING...");
-            display.display();
+            flush();
             delay(1000);
             ESP.restart();
         }
@@ -210,7 +240,7 @@ void UIManager::executeMenuAction() {
                 display.print("Biztos? Nyomd meg");
                 display.setCursor(0, 22);
                 display.print("meg egyszer! (5s)");
-                display.display();
+                flush();
                 return;
             } else if (_factoryResetConfirmStep == 1 &&
                        (now - _factoryResetConfirmTime) < 5000) {
@@ -219,7 +249,7 @@ void UIManager::executeMenuAction() {
                 display.setTextSize(1);
                 display.setCursor(0, 10);
                 display.print("FULL INIT...");
-                display.display();
+                flush();
                 delay(1000);
                 _store.factoryReset();
                 delay(500);
@@ -231,7 +261,7 @@ void UIManager::executeMenuAction() {
                 display.setTextSize(1);
                 display.setCursor(0, 10);
                 display.print("Megszakitva.");
-                display.display();
+                flush();
                 delay(1000);
                 updateDisplay();
             }
@@ -265,12 +295,12 @@ void UIManager::updateDisplay() {
     if (uiState == STATE_NORMAL) {
         if (millis() < volumeDisplayUntil) drawVolumeScreen();
         else if (settings.clockMode > 0) drawClockScreen();
-        else display.display();
+        else flush();
     } else if (uiState == STATE_MENU) {
         drawMenuScreen();
     }
 
-    display.display();
+    flush();
 }
 
 void UIManager::drawStatusScreen() {
@@ -498,7 +528,7 @@ void UIManager::drawSplashScreen() {
     // hogy a tényleges firmware-verzió jelenjen meg a boot képernyőn.
     display.print("SmartSpeaker  ");
     display.println(FW_VERSION);
-    display.display();
+    flush();
 }
 
 void UIManager::applyDimming() {
@@ -520,7 +550,7 @@ void UIManager::drawBootStatus(String status, String details) {
     display.print(status);
     display.setCursor(0, 24);
     display.print(details);
-    display.display();
+    flush();
 }
 
 void UIManager::enterProvisioningMode() {
@@ -529,7 +559,7 @@ void UIManager::enterProvisioningMode() {
     display.setTextSize(1);
     display.setCursor(0, 0);
     display.print("Var aktivalasra...");
-    display.display();
+    flush();
 }
 
 void UIManager::updateProvisioningDisplay(const String& mac, const String& ip, const String& status) {
@@ -543,7 +573,7 @@ void UIManager::updateProvisioningDisplay(const String& mac, const String& ip, c
     display.print(ip.length() > 0 ? ip : "...");
     display.setCursor(0, 22);
     display.print(status);
-    display.display();
+    flush();
 }
 
 void UIManager::showVolumeScreen() {

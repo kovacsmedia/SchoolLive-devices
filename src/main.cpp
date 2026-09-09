@@ -17,6 +17,7 @@
 #include "DeviceTelemetry.h"
 #include "SnapcastClient.h"
 #include "OtaManager.h"
+#include "ServiceButton.h"
 
 extern "C" {
 #include "snap_app.h"
@@ -26,6 +27,7 @@ extern "C" {
 SLNetworkManager networkManager;
 AudioManager audioManager;
 PersistStore store;
+ServiceButton serviceButton;
 BackendClient backend;
 WsClient wsClient;
 BellManager bellManager(audioManager, networkManager, backend);
@@ -257,18 +259,31 @@ void startNormalMode() {
 
     Serial.println("[MAIN] Starting NORMAL mode");
 
-    uiManager->drawBootStatus("System check", "WiFi + time sync");
+    uiManager->drawBootStatus("System check", "WiFi + ido");
+
+    // NEM várunk a WiFire.
+    //
+    // Korábban a `syncTimeBlocking()` akár 30 mp-ig várt a kapcsolatra, majd
+    // sikertelenség esetén további 3 mp-ig hibaképernyőt mutatott – és mivel a
+    // `_timeSynced` hamis maradt, a BellManager EGYÁLTALÁN NEM CSENGETETT,
+    // amíg a WiFi vissza nem jött. Egy elérhetetlen iskolai hálózat mellett
+    // újrainduló eszköz így néma maradt, ami a "jelzés nem maradhat el"
+    // szabályt sérti.
+    //
+    // Mostantól: a csatlakozás elindul a háttérben (a TaskNetwork
+    // handleWiFi()-je 10 mp-enként újrapróbálja), az idő pedig – szoftveres
+    // újraindítás után – az RTC-ből azonnal átvehető, tehát a csengetés
+    // működik. Amint a WiFi megjön, az NTP pontosít, a WS csatlakozik, a
+    // backend elküldi a SCHEDULE_SYNC-et, és az eszköz magától online módba
+    // vált (ld. BellManager::checkSchedule "backend elérhető" szabálya).
+    networkManager.begin();
+    networkManager.startConnect();
+
+    const bool timeOk = networkManager.adoptRtcTimeIfValid();
+    uiManager->drawBootStatus(
+        timeOk ? "Ido: RTC OK" : "Ido: NTP-re var",
+        timeOk ? "Offline csenges kesz" : "WiFi keresese...");
     delay(300);
-
-    bool wifiOk = networkManager.syncTimeBlocking();
-
-    if (!wifiOk) {
-        uiManager->drawBootStatus("WIFI FAILED!", "Check wifi config");
-        delay(3000);
-    } else {
-        uiManager->drawBootStatus("WIFI OK!", networkManager.getIP().c_str());
-        delay(1000);
-    }
 
     backend.begin(String(BACKEND_BASE_URL));
 
@@ -372,6 +387,32 @@ void setup() {
 
     bellManager.begin();
 
+    // ── Szervizgomb ───────────────────────────────────────────────────────
+    // A mód-döntés ELŐTT indul, hogy provisioning módban is működjön (pl. egy
+    // félbemaradt aktiválás után is lehessen újraindítani az eszközt).
+    serviceButton.begin(BTN_SERVICE, BTN_FACTORY_RESET_MS);
+
+    serviceButton.onShortPress([]() {
+        Serial.println("[MAIN] Szervizgomb: ujrainditas");
+        Serial.flush();
+        delay(100);
+        ESP.restart();
+    });
+
+    serviceButton.onLongPress([]() {
+        // Aktiválás előtti állapot: a Preferences teljes törlése. Ezzel
+        // `hasWifi` és `hasKey` is hamis lesz, tehát a következő induláskor a
+        // setup() provisioning módot választ – az pedig a Config.h-beli
+        // szerviz-WiFire (PROV_WIFI_SSID = "MP") csatlakozik, és várja az
+        // aktiválást. A letöltött csengetőhangok (LittleFS) SZÁNDÉKOSAN
+        // megmaradnak: az eszköz így az újraaktiválásig is tud csengetni.
+        Serial.println("[MAIN] Szervizgomb: GYARI VISSZAALLITAS (provisioning mod)");
+        store.factoryReset();
+        Serial.flush();
+        delay(200);
+        ESP.restart();
+    });
+
     bool hasWifi = store.hasWifi();
     bool hasKey = store.hasDeviceKey();
     bool needsProv = !hasWifi || !hasKey;
@@ -393,6 +434,9 @@ void setup() {
 // --- LOOP (core 1) ---
 
 void loop() {
+    // Szervizgomb – MINDKÉT módban (normál és provisioning) figyeljük.
+    serviceButton.loop();
+
     if (!inProvisioningMode) {
         /*
          * A Snapcast audio külön taskban fut.

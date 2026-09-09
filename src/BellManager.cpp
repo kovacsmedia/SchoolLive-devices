@@ -70,6 +70,42 @@ void BellManager::loop() {
     if (_entryCount > 0) checkSchedule();
 }
 
+// ---------------------------------------------------------------------------
+// loadScheduleFromCache – hálózat nélküli betöltés
+// ---------------------------------------------------------------------------
+// Ugyanaz a lánc, mint a maybeSyncSchedule() offline ágában, de HTTP-hívás
+// NÉLKÜL. Azért kell külön, mert a `loop()` (és benne a szinkron) csak akkor
+// fut, ha az eszköz TELJESEN offline – egy félig-online állapotban (pl. a
+// backend-folyamat halott, de a snapclient még kapcsolódik) az induló eszköz
+// rendje üres maradna, és egyetlen csengetés sem szólalna meg.
+bool BellManager::loadScheduleFromCache(const String& today) {
+    if (loadTodayFromNVS(today, "")) {
+        _loadedDate     = today;
+        _scheduleSource = "nvs";
+        Serial.printf("[BELL] Cache bootstrap: napi NVS (%d bejegyzes)\n", _entryCount);
+        return true;
+    }
+
+    bool fyIsHoliday = false;
+    if (resolveFullYearForDate(today, fyIsHoliday)) {
+        _loadedDate     = today;
+        _scheduleSource = fyIsHoliday ? "nvs-fullyear-holiday" : "nvs-fullyear";
+        Serial.printf("[BELL] Cache bootstrap: tanevnyi naptar %s (%d bejegyzes, holiday=%d)\n",
+                      today.c_str(), _entryCount, fyIsHoliday ? 1 : 0);
+        return true;
+    }
+
+    if (loadDefaultFromNVS("")) {
+        _loadedDate     = today;
+        _scheduleSource = "nvs-default";
+        Serial.printf("[BELL] Cache bootstrap: NVS default sablon (%d bejegyzes)\n", _entryCount);
+        return true;
+    }
+
+    return false;
+}
+
+// ---------------------------------------------------------------------------
 // Csak a csengetés-figyelés, HTTP ütemezés-szinkron NÉLKÜL. A main loop ezt
 // hívja minden körben (online állapotban is), hogy a checkSchedule() saját
 // szabálya dönthessen az offline lejátszásról – korábban a figyelés maga is
@@ -80,6 +116,19 @@ void BellManager::loop() {
 void BellManager::checkBells() {
     if (!network.isTimeSynced()) return;
     if (_mode == BELL_MODE_OFF)  return;
+
+    // Ha még nincs betöltött rend (pl. az eszköz úgy indult, hogy a backend
+    // nem érhető el, vagy csak félig – ilyenkor a `loop()` szinkron-ága sem
+    // fut), a TÁROLT rendet töltjük be. Enélkül `_entryCount == 0` maradna,
+    // és egyetlen csengetés sem szólalna meg.
+    // Ritkítva: ez a metódus 100 ms-enként fut, a tanévnyi naptár JSON
+    // beolvasása+parse-olása viszont drága. Üres cache-nél 30 mp-enként
+    // próbáljuk újra.
+    if (_entryCount == 0 &&
+        (_lastCacheLoadMs == 0 || millis() - _lastCacheLoadMs > 30000UL)) {
+        _lastCacheLoadMs = millis();
+        loadScheduleFromCache(getTodayDateStr());
+    }
 
     if (_entryCount > 0) checkSchedule();
 }
@@ -325,11 +374,26 @@ bool BellManager::fetchFullSync() {
                     for (uint8_t i = 0; i < serverFileCount; i++) {
                         if (serverFiles[i] == entryName) { found = true; break; }
                     }
-                    if (!found) {
+                    // A GYÁRI DEFAULT hangokat SOHA nem töröljük.
+                    //
+                    // Ezek a firmware LittleFS képében (data/) érkeznek, és
+                    // minden `soundFile` nélküli csengetés rájuk hivatkozik.
+                    // Ha a szerver listája nem tartalmazza őket (pl. egy új,
+                    // még seedeletlen tenantnál), a korábbi kód KITÖRÖLTE
+                    // őket – és onnantól az adott csengetés NÉMÁN elmaradt.
+                    // Ez a rendszer alapvető működése, itt kivétel nincs.
+                    const bool isFactoryDefault =
+                        entryName.equals(BELL_DEFAULT_SIGNAL) ||
+                        entryName.equals(BELL_DEFAULT_MAIN);
+
+                    if (!found && !isFactoryDefault) {
                         Serial.printf("[BELL] Sound removed (not on server): %s\n",
                                       entryName.c_str());
                         LittleFS.remove(entryName);
                         dlRemoved++;
+                    } else if (!found && isFactoryDefault) {
+                        Serial.printf("[BELL] Gyari default megtartva (nincs a szerver listajan): %s\n",
+                                      entryName.c_str());
                     }
                 }
                 entry = root.openNextFile();
@@ -586,6 +650,50 @@ void BellManager::loadHardcodedDefault() {
 }
 
 // ---------------------------------------------------------------------------
+// resolveLocalSound – "a csengetés sosem maradhat el"
+// ---------------------------------------------------------------------------
+// A `playFile()` csendben visszatér, ha a fájl nincs meg a LittleFS-en, tehát
+// egy törölt/le nem töltött hangnál a csengetés NÉMÁN elmaradna. Itt olyan
+// útvonalat keresünk, ami tényleg létezik – a gyári default hangok (a
+// firmware LittleFS képéből) a végső mentőöv.
+String BellManager::resolveLocalSound(const char* soundFile, BellType type) {
+    // 1. A kért fájl
+    if (soundFile && soundFile[0]) {
+        String p = (soundFile[0] == '/') ? String(soundFile) : "/" + String(soundFile);
+        if (LittleFS.exists(p)) return p;
+        Serial.printf("[BELL] HIANYZO hangfajl: %s -> default\n", p.c_str());
+    }
+
+    // 2. A típushoz tartozó gyári default
+    const char* primary = (type == BellType::SIGNAL) ? BELL_DEFAULT_SIGNAL : BELL_DEFAULT_MAIN;
+    if (LittleFS.exists(primary)) return String(primary);
+
+    // 3. A másik gyári default
+    const char* secondary = (type == BellType::SIGNAL) ? BELL_DEFAULT_MAIN : BELL_DEFAULT_SIGNAL;
+    if (LittleFS.exists(secondary)) return String(secondary);
+
+    // 4. Végső esély: bármelyik .mp3 a tárhelyen. Inkább szóljon "valami",
+    //    mint hogy egy jelzés teljesen elmaradjon.
+    File root = LittleFS.open("/");
+    if (root && root.isDirectory()) {
+        File e = root.openNextFile();
+        while (e) {
+            String n = "/" + String(e.name());
+            bool isMp3 = n.endsWith(".mp3");
+            e.close();
+            if (isMp3) {
+                Serial.printf("[BELL] VESZHELYZETI hang: %s\n", n.c_str());
+                return n;
+            }
+            e = root.openNextFile();
+        }
+    }
+
+    Serial.println("[BELL] ⛔ EGYETLEN hangfajl sincs a tarhelyen!");
+    return String();
+}
+
+// ---------------------------------------------------------------------------
 // checkSchedule
 // ---------------------------------------------------------------------------
 // Napon belüli perc (0..1439) alapú bit-tárolók – ld. BellManager.h.
@@ -684,14 +792,18 @@ void BellManager::checkSchedule() {
                             ? "jelzocsengo.mp3"
                             : "kibecsengo.mp3");
 
-        Serial.printf("[BELL] OFFLINE %s @ %02d:%02d  file:%s (src:%s, ws+snap=%d, armed=%d)\n",
+        // Garantáltan létező útvonal – ha a kért hang hiányzik, a gyári
+        // defaultra esünk vissza. Csengetés nem maradhat el.
+        String path = resolveLocalSound(sf, _entries[i].type);
+
+        Serial.printf("[BELL] OFFLINE %s @ %02d:%02d  kert:%s jatszott:%s (src:%s, ws+snap=%d, armed=%d)\n",
                       _entries[i].type == BellType::SIGNAL ? "SIGNAL" : "MAIN",
                       _entries[i].hour, _entries[i].minute, sf,
+                      path.isEmpty() ? "(nincs)" : path.c_str(),
                       _scheduleSource.c_str(), _backendReachable ? 1 : 0,
                       bellBitGet(_bellArmedBits, bellMin) ? 1 : 0);
 
-        String path = sf[0] == '/' ? String(sf) : "/" + String(sf);
-        audio.playFile(path.c_str());
+        if (!path.isEmpty()) audio.playFile(path.c_str());
 
         bellBitSet(_bellHandledBits, bellMin, true);
         bellBitSet(_bellArmedBits,   bellMin, false);
@@ -877,7 +989,13 @@ void BellManager::onScheduleSync(const JsonDocument& msg) {
                     for (uint8_t i = 0; i < serverFileCount; i++) {
                         if (serverFiles[i] == entryName) { found = true; break; }
                     }
-                    if (!found) {
+                    // A gyári default hangokat SOHA nem töröljük – ld. a
+                    // fetchFullSync() azonos védelmét. Nélkülük egy
+                    // `soundFile` nélküli csengetés némán elmaradna.
+                    const bool isFactoryDefault =
+                        entryName.equals(BELL_DEFAULT_SIGNAL) ||
+                        entryName.equals(BELL_DEFAULT_MAIN);
+                    if (!found && !isFactoryDefault) {
                         LittleFS.remove(entryName);
                         Serial.printf("[BELL] Törölt hang: %s\n", entryName.c_str());
                     }
