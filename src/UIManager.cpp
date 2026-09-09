@@ -42,18 +42,32 @@ void UIManager::begin() {
     delay(100);
 
     // EGY bináris mindkét hardver-változatra: futásidőben derítjük ki, van-e
-    // kijelző. Kijelző nélkül nincs `display.begin()`, nincs 2 mp-es splash,
-    // és nincs felesleges I2C-forgalom sem.
+    // kijelző. Kijelző nélkül elmarad a splash-várakozás és az I2C-forgalom
+    // (`flush()`), de a framebuffer allokációja NEM – ld. lentebb.
     _hasDisplay = detectDisplay();
     Serial.printf("[UI] OLED a 0x%02X cimen: %s\n", OLED_ADDR,
                   _hasDisplay ? "VAN" : "NINCS (kijelzo nelkuli valtozat)");
 
-    if (_hasDisplay) {
-        display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR);
-        display.setRotation(2);
-        display.setTextColor(SSD1306_WHITE);
-        display.setTextWrap(false);
+    // A `display.begin()`-t MINDIG meghívjuk, kijelző nélkül is!
+    //
+    // Az Adafruit_SSD1306 ITT allokálja a framebuffert (Adafruit_SSD1306.cpp:499
+    // `buffer = malloc(...)`), és csak utána küldi az I2C init-szekvenciát.
+    // Kijelző nélkül az I2C forgalom ártalmatlanul NAK-ol, a `begin()` pedig
+    // a malloc-hibát leszámítva mindig `true`-val tér vissza (:638).
+    //
+    // Ha ezt kihagynánk, a `buffer` NULL maradna, és az ELSŐ rajzoló hívás
+    // (`clearDisplay()` → `memset(NULL, 0, 512)`) azonnal StoreProhibited
+    // panicot okozna – pontosan ez történt az első kijelző nélküli boot-nál.
+    // 512 bájt RAM az ára, cserébe mind a ~175 rajzoló hívás érintetlen
+    // maradhat, és tényleg EGY bináris fut mindkét hardveren.
+    display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR);
+    display.setRotation(2);
+    display.setTextColor(SSD1306_WHITE);
+    display.setTextWrap(false);
 
+    // Csak az látható rész marad el kijelző nélkül: a kontraszt-parancs és a
+    // 2 másodperces splash-várakozás.
+    if (_hasDisplay) {
         applyDimming();
         drawSplashScreen();
         delay(2000);
@@ -532,6 +546,12 @@ void UIManager::drawSplashScreen() {
 }
 
 void UIManager::applyDimming() {
+    // Közvetlen I2C parancsok (nem a framebufferbe írnak) – kijelző nélkül
+    // csak felesleges, NAK-oló busz-forgalom lenne. Itt, a függvényben
+    // kapuzzuk, hogy MINDEN hívási hely fedve legyen (a beállítás-menüből is
+    // hívódik, nem csak a boot-ból).
+    if (!_hasDisplay) return;
+
     uint8_t contrast = 255;
     if (settings.dimmLevel > 0) {
         contrast = 255 - (settings.dimmLevel * 50);
