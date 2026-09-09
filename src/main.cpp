@@ -201,16 +201,26 @@ void TaskNetwork(void* pvParameters) {
 
         tryStartSnapcastClient();
 
-        // Offline bell lejátszás: csak ha nincs WS kapcsolat ÉS nincs Snapcast
-        if (!wsConnected && !snapConnected) {
-            if (!audioManager.isBusy() && !audioManager.isInCooldown()) {
-                bellManager.loop();
-            }
-        }
+        // A backend akkor és csak akkor tudja lejátszani a csengetést, ha
+        // MINDKETTŐ él: a WS (a backend folyamat hajtja a mixert) ÉS a
+        // snapclient-kapcsolat (azon jön a hang). Korábban a feltétel
+        // `!ws && !snap` volt, azaz MINDKETTŐNEK el kellett esnie ahhoz, hogy
+        // az eszköz helyben csengessen – csakhogy a snapserver KÜLÖN PM2
+        // processz, így egy backend-deploy/összeomlás alatt a snapclient
+        // kapcsolat élve maradt, az eszköz "online"-nak hitte magát, és a
+        // csengetés SEHOL nem szólalt meg.
+        bellManager.setBackendReachable(wsConnected && snapConnected);
 
-        // Ha WS lecsatlakozott, az online módot töröljük → BellManager lokálisan játszhat
-        if (!wsConnected) {
-            bellManager.setOnlineMode(false);
+        // A csengetés-figyelő MINDIG fut; hogy kell-e helyben lejátszani, azt
+        // a BellManager::checkSchedule() dönti el (T-60 mp-es előellenőrzés +
+        // BELL PREPARE bizonyíték + türelmi idő). Teljesen offline állapotban
+        // a `loop()`-ot hívjuk, mert az a HTTP ütemezés-szinkront is elvégzi.
+        if (!audioManager.isBusy() && !audioManager.isInCooldown()) {
+            if (!wsConnected && !snapConnected) {
+                bellManager.loop();
+            } else {
+                bellManager.checkBells();
+            }
         }
 
         otaManager.loop();

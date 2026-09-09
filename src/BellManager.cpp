@@ -70,6 +70,20 @@ void BellManager::loop() {
     if (_entryCount > 0) checkSchedule();
 }
 
+// Csak a csengetés-figyelés, HTTP ütemezés-szinkron NÉLKÜL. A main loop ezt
+// hívja minden körben (online állapotban is), hogy a checkSchedule() saját
+// szabálya dönthessen az offline lejátszásról – korábban a figyelés maga is
+// csak akkor futott, ha az eszköz teljesen offline volt, ezért egy fél-hibás
+// állapotban (pl. backend-deploy: WS halott, snapclient él) senki nem szólt.
+// A `maybeSyncSchedule()` szándékosan marad a `loop()`-ban: online állapotban
+// az ütemezést a WS SCHEDULE_SYNC push frissíti, nem kell HTTP-vel pollozni.
+void BellManager::checkBells() {
+    if (!network.isTimeSynced()) return;
+    if (_mode == BELL_MODE_OFF)  return;
+
+    if (_entryCount > 0) checkSchedule();
+}
+
 // ---------------------------------------------------------------------------
 // maybeSyncSchedule
 // ---------------------------------------------------------------------------
@@ -574,47 +588,125 @@ void BellManager::loadHardcodedDefault() {
 // ---------------------------------------------------------------------------
 // checkSchedule
 // ---------------------------------------------------------------------------
-void BellManager::checkSchedule() {
-    // Online módban a backend Snapcast-on keresztül gondoskodik a csengetésről.
-    // Lokálisan csak offline esetén játszunk.
-    if (_onlineMode) return;
+// Napon belüli perc (0..1439) alapú bit-tárolók – ld. BellManager.h.
+static inline bool bellBitGet(const uint8_t* bits, int minuteOfDay) {
+    if (minuteOfDay < 0 || minuteOfDay >= 1440) return false;
+    return (bits[minuteOfDay >> 3] & (1 << (minuteOfDay & 7))) != 0;
+}
+static inline void bellBitSet(uint8_t* bits, int minuteOfDay, bool v) {
+    if (minuteOfDay < 0 || minuteOfDay >= 1440) return;
+    if (v) bits[minuteOfDay >> 3] |=  (1 << (minuteOfDay & 7));
+    else   bits[minuteOfDay >> 3] &= ~(1 << (minuteOfDay & 7));
+}
 
+// A szabály MINDHÁROM kliensen (ESP32 / Linux / Windows) azonos – korábban
+// háromféle volt, ami ugyanabban a helyzetben eltérő viselkedést adott:
+//   ESP32:   !ws && !snap   → a backend-folyamat leállásakor (deploy!) néma
+//                             maradt, mert a snapserver KÜLÖN PM2 processz,
+//                             és a snapclient-kapcsolat élve maradt
+//   Linux:   !ws            → nem vette észre, ha a snap-kapcsolat halt meg
+//   Windows: !snap          → nem vette észre, ha a backend halt meg
+//
+// Helyesen: az online csengetéshez MINDKETTŐ kell (a backend hajtja a mixert
+// – ezt a WS jelzi –, a hang pedig a snap-streamen érkezik), tehát
+//     "a backend elérhető"  ==  ws ÉS snap        (ld. setBackendReachable)
+//
+// Időzítés (a megrendelt viselkedés szerint):
+//   • T-60 mp-től folyamatosan figyeljük az elérhetőséget ("felfegyverzés")
+//   • T-kor: ha megjött a csengetéshez tartozó BELL PREPARE, ŐT hagyjuk
+//     dolgozni – ez a legmegbízhatóbb jel, mert közvetlenül azt méri, hogy az
+//     online út működött-e, nem tippel a kapcsolat állapotából. Ez zárja ki a
+//     dupla csengetést.
+//   • ha T-60-kor nem volt elérhető, vagy most sem az → AZONNAL helyben
+//     játszunk
+//   • ha bizonytalan (kapcsolat él, de PREPARE nem jött) → türelmi idő, utána
+//     mégis helyben játszunk, hogy a csengetés ne maradjon el
+void BellManager::checkSchedule() {
     struct tm t = network.getTimeInfo();
 
-    int curMin = t.tm_hour * 60 + t.tm_min;
-    if (_lastDay == t.tm_yday && _lastMinute == curMin) return;
+    // Napváltáskor nullázzuk a napi állapotot.
+    if (_bellStateDay != t.tm_yday) {
+        _bellStateDay = t.tm_yday;
+        memset(_bellHandledBits, 0, sizeof(_bellHandledBits));
+        memset(_bellArmedBits,   0, sizeof(_bellArmedBits));
+    }
+
+    const long nowSec = (long)t.tm_hour * 3600 + (long)t.tm_min * 60 + (long)t.tm_sec;
+
+    // Friss BELL PREPARE = az online út él (a backend most játssza le).
+    const bool onlineBellEvidence =
+        _lastOnlineBellMs != 0 &&
+        (millis() - _lastOnlineBellMs) <= BELL_ONLINE_EVIDENCE_MS;
 
     for (uint8_t i = 0; i < _entryCount; i++) {
-        if (_entries[i].hour   == (uint8_t)t.tm_hour &&
-            _entries[i].minute == (uint8_t)t.tm_min) {
+        const int  bellMin = _entries[i].hour * 60 + _entries[i].minute;
+        if (bellBitGet(_bellHandledBits, bellMin)) continue;
 
-            const char* sf = _entries[i].soundFile[0]
-                             ? _entries[i].soundFile
-                             : (_entries[i].type == BellType::SIGNAL
-                                ? "jelzocsengo.mp3"
-                                : "kibecsengo.mp3");
+        const long bellSec = (long)bellMin * 60;
+        const long dt      = nowSec - bellSec;
 
-            Serial.printf("[BELL] %s @ %02d:%02d  file:%s (src:%s)\n",
-                          _entries[i].type == BellType::SIGNAL ? "SIGNAL" : "MAIN",
-                          t.tm_hour, t.tm_min, sf, _scheduleSource.c_str());
-
-            String path = sf[0] == '/' ? String(sf) : "/" + String(sf);
-            audio.playFile(path.c_str());
-
-            _lastDay    = t.tm_yday;
-            _lastMinute = curMin;
-
-            if (_mode == BELL_MODE_TODAY) {
-                bool isLast = true;
-                for (uint8_t j = 0; j < _entryCount; j++) {
-                    if (_entries[j].hour * 60 + _entries[j].minute > curMin) {
-                        isLast = false; break;
-                    }
-                }
-                if (isLast) _mode = BELL_MODE_ON;
+        // 1) Előzetes ellenőrzés T-60 mp-től, folyamatosan frissítve.
+        if (dt >= -BELL_LEAD_CHECK_S && dt < 0) {
+            if (_backendReachable) {
+                bellBitSet(_bellArmedBits, bellMin, false);
+            } else if (!bellBitGet(_bellArmedBits, bellMin)) {
+                bellBitSet(_bellArmedBits, bellMin, true);
+                Serial.printf("[BELL] %02d:%02d – a backend nem erheto el (%ld mp-cel elotte) -> offline lejatszasra keszulunk\n",
+                              _entries[i].hour, _entries[i].minute, -dt);
             }
-            break;
+            continue;
         }
+
+        if (dt < 0) continue;
+
+        // Felső korlát: ha az eszköz egy már elmúlt csengetés UTÁN indult el
+        // (vagy sokáig nem volt pontos ideje), NE pótoljuk utólag – egy
+        // délután bekapcsolt hangszóró ne csengessen rá a reggeli időpontokra.
+        if (dt > BELL_CATCHUP_MAX_S) {
+            bellBitSet(_bellHandledBits, bellMin, true);
+            bellBitSet(_bellArmedBits,   bellMin, false);
+            continue;
+        }
+
+        // 2) A csengetés pillanata (és utána).
+        if (onlineBellEvidence) {
+            bellBitSet(_bellHandledBits, bellMin, true);
+            continue;
+        }
+
+        if (!bellBitGet(_bellArmedBits, bellMin) && _backendReachable && dt < BELL_GRACE_S) {
+            continue;   // még várunk a PREPARE-re
+        }
+
+        const char* sf = _entries[i].soundFile[0]
+                         ? _entries[i].soundFile
+                         : (_entries[i].type == BellType::SIGNAL
+                            ? "jelzocsengo.mp3"
+                            : "kibecsengo.mp3");
+
+        Serial.printf("[BELL] OFFLINE %s @ %02d:%02d  file:%s (src:%s, ws+snap=%d, armed=%d)\n",
+                      _entries[i].type == BellType::SIGNAL ? "SIGNAL" : "MAIN",
+                      _entries[i].hour, _entries[i].minute, sf,
+                      _scheduleSource.c_str(), _backendReachable ? 1 : 0,
+                      bellBitGet(_bellArmedBits, bellMin) ? 1 : 0);
+
+        String path = sf[0] == '/' ? String(sf) : "/" + String(sf);
+        audio.playFile(path.c_str());
+
+        bellBitSet(_bellHandledBits, bellMin, true);
+        bellBitSet(_bellArmedBits,   bellMin, false);
+
+        if (_mode == BELL_MODE_TODAY) {
+            const int curMin = t.tm_hour * 60 + t.tm_min;
+            bool isLast = true;
+            for (uint8_t j = 0; j < _entryCount; j++) {
+                if (_entries[j].hour * 60 + _entries[j].minute > curMin) {
+                    isLast = false; break;
+                }
+            }
+            if (isLast) _mode = BELL_MODE_ON;
+        }
+        break;   // egyszerre csak egy csengetést indítunk
     }
 }
 

@@ -79,7 +79,9 @@ void DeviceAgent::handleHello(const JsonDocument& msg) {
                       snapHost.c_str(), snapPort, _deviceId.c_str());
     }
 
-    if (_bells) _bells->setOnlineMode(true);
+    // A "elérhető-e a backend" állapotot a main loop állítja minden körben
+    // (ws && snap), ezért itt már nincs külön online-mód kapcsoló – a HELLO
+    // önmagában nem jelentette, hogy a HANG útja (snapclient) is él.
 
     Serial.printf("[AGENT] HELLO fogadva – szerver online\n");
 }
@@ -105,6 +107,11 @@ void DeviceAgent::handlePrepare(const JsonDocument& msg) {
     String action = msg["action"] | "";
     Serial.printf("[AGENT] PREPARE: cmd=%s action=%s shouldPlay=%d\n",
                   commandId.c_str(), action.c_str(), shouldPlay ? 1 : 0);
+
+    // Bizonyíték arra, hogy az online csengetés-út működik: ha erre a
+    // csengetésre megjött a PREPARE, a BellManager NEM játszhatja le helyben
+    // is (különben duplán szólna). Ld. BellManager::checkSchedule().
+    if (action == "BELL" && _bells) _bells->noteOnlineBell();
 
     if (shouldPlay && looksLikeAudioCommand(msg.as<JsonVariantConst>(), action)) {
         enterPlaybackQuiet(msg.as<JsonVariantConst>(), action);

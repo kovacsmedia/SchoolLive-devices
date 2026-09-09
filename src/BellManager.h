@@ -71,10 +71,20 @@ public:
     // WS SCHEDULE_SYNC üzenet érkezett: frissítjük a helyi cache-t a push-olt adatokból
     void onScheduleSync(const JsonDocument& msg);
 
-    // Online/offline mód jelzése a DeviceAgent-től:
-    // ha online=true, a checkSchedule() NEM játszik lokálisan
-    // (a backend PREPARE/PLAY gondoskodik a csengetésről Snapcast-on)
-    void setOnlineMode(bool online) { _onlineMode = online; }
+    // Csak a csengetés-figyelés (ütemezés-szinkron NÉLKÜL). A main loop ezt
+    // hívja MINDEN körben; a teljes `loop()`-ot (ami HTTP-sync-et is csinál)
+    // csak akkor, ha az eszköz ténylegesen offline.
+    void checkBells();
+
+    // "Elérhető-e a backend" – a main loop állítja minden körben.
+    // MINDKETTŐ kell hozzá: a WS (a backend folyamat hajtja a mixert) ÉS az
+    // élő snapclient-kapcsolat (azon jön a hang). Ld. checkSchedule().
+    void setBackendReachable(bool ok) { _backendReachable = ok; }
+
+    // A DeviceAgent hívja, amikor BELL PREPARE érkezik: bizonyíték arra, hogy
+    // az online csengetés-út működik, tehát helyben NEM szabad lejátszani
+    // (különben duplán szólna).
+    void noteOnlineBell() { _lastOnlineBellMs = millis(); }
 
 private:
     AudioManager&   audio;
@@ -82,8 +92,6 @@ private:
     BackendClient&  backend;
 
     uint8_t _mode       = BELL_MODE_ON;
-    int     _lastDay    = -1;
-    int     _lastMinute = -1;
 
     BellEntry _entries[MAX_BELL_ENTRIES];
     uint8_t   _entryCount    = 0;
@@ -100,8 +108,25 @@ private:
     bool          _syncedToday        = false;
     bool          _syncedFromServer   = false;
 
-    // Online mód: ha true, a checkSchedule() nem játszik lokálisan
-    bool          _onlineMode         = false;
+    // ── Offline csengetés állapota (ld. checkSchedule) ─────────────────────
+    // A backend elérhetősége (ws && snap), a main loop frissíti.
+    bool          _backendReachable   = false;
+    // Az utolsó BELL PREPARE ideje (millis()); 0 = még nem volt ilyen.
+    unsigned long _lastOnlineBellMs   = 0;
+    // Melyik naptári napra érvényes a lenti két tömb (tm_yday).
+    int           _bellStateDay       = -1;
+    // Napi állapot NAPON BELÜLI PERC szerint indexelve (0..1439), bitenként:
+    // 1440 bit = 180 bájt. SZÁNDÉKOSAN nem az `_entries` tömb indexe a kulcs –
+    // a csengetési rend menet közben is frissülhet (WS SCHEDULE_SYNC), és
+    // olyankor az indexek elcsúsznának, ami kihagyott vagy duplán lejátszott
+    // csengetést okozna. A napon belüli perc viszont stabil azonosító.
+    uint8_t       _bellHandledBits[180] = { 0 };  // ma már elintézve (online v. offline)
+    uint8_t       _bellArmedBits[180]   = { 0 };  // T-60-nál nem volt elérhető a backend
+
+    static const long BELL_LEAD_CHECK_S       = 60;    // ennyivel előbb kezdünk figyelni
+    static const long BELL_GRACE_S            = 4;     // ennyit várunk PREPARE-re
+    static const unsigned long BELL_ONLINE_EVIDENCE_MS = 15000; // friss PREPARE = él az online út
+    static const long BELL_CATCHUP_MAX_S      = 120;   // ennel regebbi csengetest mar NEM potolunk
 
     const unsigned long VERSION_CHECK_MS = 60000UL;  // 1 perc
 
