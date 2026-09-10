@@ -7,6 +7,58 @@
 #include "SnapcastClient.h"
 #include "DeviceTelemetry.h"
 
+namespace {
+
+/**
+ * Verziószám tagokra bontása: "S5.1" -> [5, 1], "S3.52" -> [3, 52].
+ * A vezető nem-szám prefixet ("S") eldobjuk, a tagokat pontnál vágjuk.
+ * @return hány tagot sikerült kiolvasni (0 = értelmezhetetlen verzió)
+ */
+int parseVersion(const String& v, long out[], int maxParts) {
+    int count = 0;
+    int i     = 0;
+    const int len = v.length();
+
+    while (i < len && !isDigit(v[i])) i++;   // "S" (vagy bármi) átugrása
+
+    while (i < len && count < maxParts) {
+        long val   = 0;
+        bool anyDigit = false;
+        while (i < len && isDigit(v[i])) {
+            val = val * 10 + (v[i] - '0');
+            anyDigit = true;
+            i++;
+        }
+        if (!anyDigit) break;
+        out[count++] = val;
+
+        if (i < len && v[i] == '.') { i++; continue; }
+        break;                                // "5.1-rc2" -> [5, 1]
+    }
+    return count;
+}
+
+/**
+ * Szigorúan újabb-e a `candidate` a `current`-nél?
+ *
+ * Bizonytalanság esetén (bármelyik verzió értelmezhetetlen) FALSE – inkább
+ * maradjon el egy frissítés, mint hogy visszaessünk egy régebbi bináris(ra).
+ */
+bool isNewerVersion(const String& candidate, const String& current) {
+    long a[4] = {0, 0, 0, 0};
+    long b[4] = {0, 0, 0, 0};
+    const int na = parseVersion(candidate, a, 4);
+    const int nb = parseVersion(current,   b, 4);
+    if (na == 0 || nb == 0) return false;
+
+    for (int i = 0; i < 4; i++) {
+        if (a[i] != b[i]) return a[i] > b[i];
+    }
+    return false;                              // azonos verzió
+}
+
+}  // namespace
+
 void OtaManager::begin(
     SLNetworkManager& net,
     BackendClient&    backend,
@@ -81,6 +133,34 @@ void OtaManager::runCheckAndMaybeUpdate() {
         fw.sizeBytes, fw.mandatory ? 1 : 0,
         fw.url.c_str()
     );
+
+    if (fw.url.length() == 0) {
+        Serial.println("[OTA] Hianyzo letoltesi URL – kihagyva");
+        return;
+    }
+
+    /*
+     * DOWNGRADE-VEDELEM (2026-09-10).
+     *
+     * A backend korabban a LEGUTOBB FELTOLTOTT release-t ajanlotta ki, nem a
+     * legmagasabb verzioszamut – egy regi .bin ujratoltese, vagy a legfrissebb
+     * sor torlese az egesz flottat visszaforditotta volna (elesben: S5.1 ->
+     * S3.52). A backend oldalan ez javitva van, de az eszkoz NEM bizhat abban,
+     * hogy a szerver mindig jol valaszt: a rollback ki van kapcsolva
+     * (CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE nincs beallitva), tehat egy rossz
+     * flash utan csak fizikai jelenlettel mentheto a keszulek.
+     */
+    if (!isNewerVersion(fw.version, _currentVersion)) {
+        Serial.printf(
+            "[OTA] ELUTASITVA: '%s' nem ujabb a futo '%s'-nal – downgrade nem megy\n",
+            fw.version.c_str(), _currentVersion.c_str()
+        );
+        if (_backend) {
+            _backend->reportOtaStatus(fw.version, "FAILED", 0,
+                                      "downgrade elutasitva");
+        }
+        return;
+    }
 
     // Most csak a mandatory release-eket telepítjük automatikusan. A nem-
     // kötelező frissítéseket a backend admin UI tudja triggerelni egy
@@ -173,6 +253,19 @@ void OtaManager::performUpdate(const FirmwareCheckResult& fw) {
             delay(500);
             ESP.restart();
             break;
+    }
+
+    /*
+     * Ha idaig eljutottunk, az OTA NEM sikerult (siker eseten a httpUpdate mar
+     * ujrainditotta az eszkozt). A snap streamet vissza KELL kapcsolni: a
+     * hangnak nem szabad egy elbukott frissites miatt vegleg elnemulnia.
+     * A snap_app_start() ilyenkor mar csak resume (a halozati taskok vegig
+     * futottak) – korabban ez a pont inditotta ujra a teljes player
+     * inicializalast, es az okozta a `xQueueSemaphoreTake` panikot.
+     */
+    if (_snap) {
+        Serial.println("[OTA] Sikertelen frissites – snap stream vissza");
+        _snap->start();
     }
 
     _updateRunning = false;

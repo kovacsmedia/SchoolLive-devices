@@ -1,5 +1,6 @@
 #include "DeviceAgent.h"
 #include <esp_system.h>   // esp_reset_reason() – távoli diagnosztika
+#include <LittleFS.h>     // fájlrendszer-telítettség a beaconban
 
 void DeviceAgent::begin(
     SLNetworkManager& net,
@@ -28,6 +29,17 @@ void DeviceAgent::begin(
 // ── loop ──────────────────────────────────────────────────────────────────────
 
 void DeviceAgent::loop() {
+    // Távoli újraindítás – MINDEN más előtt, hogy a playback-quiet vagy egy
+    // audio-cooldown se tudja késleltetni. A CMD_ACK-nek ekkorra már rég
+    // kiment a vonalra (REBOOT_DELAY_MS).
+    if (_rebootAtMs != 0 && (long)(millis() - _rebootAtMs) >= 0) {
+        _rebootAtMs = 0;
+        Serial.println("[AGENT] REBOOT: ujrainditas most");
+        Serial.flush();
+        ESP.restart();
+        return;   // ide már nem jutunk
+    }
+
     if (isPlaybackQuietActive()) return;
 
     maybeClearEmergencyOverride();
@@ -194,6 +206,15 @@ bool DeviceAgent::executeCommand(const String& commandId, JsonVariantConst paylo
         ok = true;
     } else if (action == "SET_CHANNEL_MODE") {
         ok = handleSetChannelMode(payload, err);
+    } else if (action == "REBOOT") {
+        // Soft reset az adminfelületről. Csak megjelöljük: a tényleges
+        // ESP.restart() a loop()-ban fut le, miután a CMD_ACK kiment.
+        _rebootAtMs = millis() + REBOOT_DELAY_MS;
+        if (_rebootAtMs == 0) _rebootAtMs = 1;   // millis() túlcsordulás-védelem
+        Serial.printf("[AGENT] REBOOT parancs – ujrainditas %lu ms mulva\n",
+                      (unsigned long)REBOOT_DELAY_MS);
+        if (_ui) _ui->drawBootStatus("Ujrainditas", "Tavoli parancs");
+        ok = true;
     } else {
         err = "Unknown action: " + action;
     }
@@ -244,6 +265,12 @@ void DeviceAgent::sendBeaconIfDue() {
         statusDoc["uptimeSec"]   = (uint32_t)(millis() / 1000UL);
         statusDoc["freeHeap"]    = (uint32_t)ESP.getFreeHeap();
         statusDoc["minFreeHeap"] = (uint32_t)ESP.getMinFreeHeap();
+
+        // Fájlrendszer-kihasználtság: ha megtelik, a csengetőhangok nem
+        // tölthetők le ("Cannot open for write"), és az eszköz csak a gyári
+        // default hangokkal tud csengetni. Távolról ez másképp nem látszik.
+        statusDoc["fsTotal"] = (uint32_t)LittleFS.totalBytes();
+        statusDoc["fsUsed"]  = (uint32_t)LittleFS.usedBytes();
 
         beacon["statusPayload"] = statusDoc;
     }

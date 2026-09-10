@@ -358,6 +358,18 @@ void setup() {
 
     LittleFS.begin(true, "/littlefs", 10, "littlefs");
 
+    // A fájlrendszer tényleges mérete és kihasználtsága. A "Cannot open for
+    // write" hibák oka jellemzően ez: tele van, vagy a partíció-geometria
+    // eltér a feltöltött LittleFS képtől (ilyenkor a mount sikerül, de a
+    // méret nem az, amit a partitions.csv mond → `pio run -t uploadfs`).
+    {
+        const size_t tot = LittleFS.totalBytes();
+        const size_t use = LittleFS.usedBytes();
+        Serial.printf("[FS] LittleFS: %u / %u bajt hasznalva (%u szabad)\n",
+                      (unsigned)use, (unsigned)tot,
+                      (unsigned)(tot > use ? tot - use : 0));
+    }
+
     store.begin();
 
     audioManager.begin(&store);

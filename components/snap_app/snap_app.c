@@ -1427,6 +1427,12 @@ static void dac_control_task(audio_board_handle_t board_handle,
 // blokkoló volt az app_main végén.
 
 static volatile bool s_snap_running = false;
+
+// A snap taskok (http_get_task + dac_control_task) EGYSZER indulnak el, és
+// onnantól az eszköz újraindításáig futnak – a snap_app_stop() nem tudja
+// megszüntetni őket (ld. ott). Ezt külön flag jelzi, mert az `s_snap_running`
+// csak logikai állapot ("szolgáltatunk-e hangot"), nem a taskok élettartama.
+static volatile bool s_snap_tasks_alive = false;
 static QueueHandle_t s_snap_audioQHdl = NULL;
 static TaskHandle_t  s_snap_dac_task = NULL;
 // `s_snap_last_audio_active_ms` deklarációja a handle_chunk_message() előtt
@@ -1492,6 +1498,46 @@ esp_err_t snap_app_start(const snap_app_config_t *cfg) {
   if (s_snap_running)        return ESP_ERR_INVALID_STATE;
   if (!cfg->host || !cfg->device_id) return ESP_ERR_INVALID_ARG;
 
+  /*
+   * ÚJRAINDÍTÁS ELLENI VÉDELEM – 2026-09-10-i pánik.
+   *
+   * A snap_app_stop() csak egy flaget billent: a http_get_task és a
+   * dac_control_task TOVÁBB FUT. Ha ilyen állapotban másodszor is végigmennénk
+   * a teljes indításon, két dolog történne:
+   *
+   *   • init_player() legelső lépése a deinit_player(), ami TÖRLI a
+   *     `snapcastSettingsMux` mutexet (player.c:451) – miközben a régi
+   *     http_get_task épp `player_get_snapcast_settings()`-t hív rá:
+   *     `assert failed: xQueueSemaphoreTake queue.c:1709 (( pxQueue ))`,
+   *     azaz azonnali abort. (A player.c-ben lévő komment nem véletlen:
+   *     "ensure this is called after http_task was killed!")
+   *   • minden körben létrejönne EGY ÚJABB 15 kB stackű http_get_task és egy
+   *     dac_control_task – néhány OTA-kísérlet után elfogyna a heap.
+   *
+   * Ezért ha a taskok élnek, a "start" csak visszakapcsolás: frissítjük a
+   * konfigurációt (a connection_handler minden újracsatlakozáskor a
+   * settings_get_*() stubokból olvassa), és feloldjuk a player pause-t.
+   */
+  if (s_snap_tasks_alive) {
+    const bool host_changed = (strcmp(s_snap_host_buf, cfg->host) != 0) ||
+                              (s_snap_cfg.port != cfg->port);
+
+    s_snap_cfg = *cfg;
+    strncpy(s_snap_host_buf, cfg->host, sizeof(s_snap_host_buf) - 1);
+    s_snap_host_buf[sizeof(s_snap_host_buf) - 1] = '\0';
+    strncpy(s_snap_device_id_buf, cfg->device_id, sizeof(s_snap_device_id_buf) - 1);
+    s_snap_device_id_buf[sizeof(s_snap_device_id_buf) - 1] = '\0';
+
+    player_resume();
+    s_snap_running = true;
+
+    ESP_LOGW(TAG, "snap_app_start: taskok mar futnak – resume (host=%s port=%u%s)",
+             s_snap_host_buf, (unsigned)s_snap_cfg.port,
+             host_changed ? ", UJ CIM: a kovetkezo ujracsatlakozaskor lep eletbe"
+                          : "");
+    return ESP_OK;
+  }
+
   // Lemásoljuk a cfg-t és a stringeket saját pufferekbe, hogy a snap_app
   // élettartama független legyen a hívóétól (a CarlosDerSeher kód a
   // settings_get_*() stubokat tetszőleges időpontban hívja).
@@ -1552,6 +1598,11 @@ esp_err_t snap_app_start(const snap_app_config_t *cfg) {
     ESP_LOGE(TAG, "snap_app_start: http_get_task creation failed");
     return ESP_FAIL;
   }
+  // Innentől él egy olyan task, amit nem tudunk megszüntetni – akkor is, ha a
+  // dac task létrehozása alább elbukik. A flagnek MÁR ITT igazzá kell válnia,
+  // különben egy féloldalas indulás után a következő start újra végigmenne a
+  // teljes inicializáláson (ld. a fenti újraindítás elleni védelmet).
+  s_snap_tasks_alive = true;
 
   // dac_control_task: PCM chunk -> I2S írás. Saját task, hogy a snap_app_start
   // ne blokkoljon (az eredeti CarlosDerSeher kódban az app_main itt végződött).
@@ -1570,13 +1621,23 @@ esp_err_t snap_app_start(const snap_app_config_t *cfg) {
 }
 
 esp_err_t snap_app_stop(void) {
-  // A CarlosDerSeher kódbázis nem ad clean shutdown utat (a taskok statikus
-  // állapotokat tartanak fenn). Egyelőre flag-alapú leállítás - a taskok
-  // futnak tovább, de a state-et `not running` jelzi. Production-ban majd
-  // task delete + erőforrás-felszabadítás kell.
+  /*
+   * A CarlosDerSeher kódbázis nem ad clean shutdown utat: a taskok statikus,
+   * egymásra hivatkozó állapotot tartanak fenn (queue-k, mutexek, i2s csatorna),
+   * és a player.c maga írja elő, hogy a deinit csak a http_task megölése UTÁN
+   * futhat. Task-delete helyett ezért NÉMÍTUNK: a player_task felfüggesztve,
+   * az I2S szabad, a hálózati oldal viszont sértetlenül tovább él, így a
+   * snap_app_start() bármikor, kockázat nélkül visszakapcsolhat.
+   *
+   * Következmény: a taskok memóriája nem szabadul fel (s_snap_tasks_alive
+   * marad true), és a snap szerver felé a TCP kapcsolat is megmarad. Ez
+   * szándékos – a stop/start ciklus (OTA, node-váltás, helyi lejátszás) így
+   * lesz idempotens és pánikmentes.
+   */
   if (!s_snap_running) return ESP_OK;
   s_snap_running = false;
-  ESP_LOGW(TAG, "snap_app_stop: graceful shutdown not yet implemented");
+  player_pause();
+  ESP_LOGI(TAG, "snap_app_stop: player felfuggesztve (a halozati taskok tovabb futnak)");
   return ESP_OK;
 }
 

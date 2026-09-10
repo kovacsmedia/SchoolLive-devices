@@ -64,6 +64,13 @@ private:
 
     bool _emergencyOverrideActive = false;
 
+    // Távoli újraindítás (REBOOT parancs). NEM a WS-callbackben hívunk
+    // ESP.restart()-ot: előbb ki kell mennie a CMD_ACK-nek a vonalra,
+    // különben a backend sikertelennek látná a parancsot, és az adminnak
+    // nem lenne visszajelzése. 0 = nincs kért újraindítás.
+    unsigned long _rebootAtMs = 0;
+    const unsigned long REBOOT_DELAY_MS = 1200UL;
+
     const unsigned long PLAYBACK_SAFETY_MS      = 10000UL;
     const unsigned long DEFAULT_PLAYBACK_QUIET_MS = 60000UL;
 

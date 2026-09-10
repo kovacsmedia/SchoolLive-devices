@@ -248,10 +248,30 @@ bool BackendClient::downloadFile(
         return false;
     }
 
+    // Hely-ellenőrzés a letöltés ELŐTT. A "Cannot open for write" önmagában
+    // nem árulja el, mi a baj – tele van a fájlrendszer, túl hosszú a név,
+    // vagy elfogytak a fájl-leírók. Írjuk ki a tényeket.
+    const size_t fsTotal = LittleFS.totalBytes();
+    const size_t fsUsed  = LittleFS.usedBytes();
+    const size_t fsFree  = (fsTotal > fsUsed) ? (fsTotal - fsUsed) : 0;
+
+    if (expectedBytes > 0 && fsFree < expectedBytes + 4096) {
+        Serial.printf("[DL] ⛔ NINCS ELEG HELY: kell %u B, szabad %u B (osszes %u, hasznalt %u) – %s\n",
+                      (unsigned)expectedBytes, (unsigned)fsFree,
+                      (unsigned)fsTotal, (unsigned)fsUsed, localPath.c_str());
+        _lastHttpEndMs = millis();
+        http.end();
+        return false;
+    }
+
     File file = LittleFS.open(localPath, "w");
 
     if (!file) {
-        Serial.printf("[DL] Cannot open for write: %s\n", localPath.c_str());
+        Serial.printf("[DL] Cannot open for write: %s (nevhossz=%u, szabad=%u B, osszes=%u B, hasznalt=%u B)\n",
+                      localPath.c_str(), (unsigned)localPath.length(),
+                      (unsigned)fsFree, (unsigned)fsTotal, (unsigned)fsUsed);
+        Serial.println("[DL] Tipp: a LittleFS nevhossz-korlat 64 karakter, es a partíció-geometria "
+                       "eltérése is okozhatja – ilyenkor 'pio run -t uploadfs' ujraformaz.");
 
         _lastHttpEndMs = millis();
         http.end();

@@ -623,6 +623,14 @@ int start_player(snapcastSetting_t *setting) {
 int8_t player_set_snapcast_settings(snapcastSetting_t *setting) {
   int8_t ret = pdPASS;
 
+  // SchoolLive: a mutex NULL is lehet (deinit_player() törli, és a http_task
+  // ettől függetlenül fut tovább). A FreeRTOS ilyenkor assert-tel ABORTÁL, ami
+  // az egész eszközt újraindítja – csengetés közben ez elfogadhatatlan.
+  if (snapcastSettingsMux == NULL) {
+    ESP_LOGW(TAG, "%s: settings mutex nem letezik, kihagyva", __func__);
+    return pdFAIL;
+  }
+
   xSemaphoreTake(snapcastSettingsMux, portMAX_DELAY);
 
   memcpy(&currentSnapcastSetting, setting, sizeof(snapcastSetting_t));
@@ -637,6 +645,14 @@ int8_t player_set_snapcast_settings(snapcastSetting_t *setting) {
  */
 int8_t player_get_snapcast_settings(snapcastSetting_t *setting) {
   int8_t ret = pdPASS;
+
+  // Ld. player_set_snapcast_settings – NULL mutexre az xSemaphoreTake abortál.
+  // Ilyenkor üres beállítást adunk vissza, hogy a hívó ne dolgozzon szemétből.
+  if (snapcastSettingsMux == NULL) {
+    ESP_LOGW(TAG, "%s: settings mutex nem letezik, ures beallitas", __func__);
+    if (setting) memset(setting, 0, sizeof(snapcastSetting_t));
+    return pdFAIL;
+  }
 
   xSemaphoreTake(snapcastSettingsMux, portMAX_DELAY);
 
@@ -1397,8 +1413,11 @@ int32_t insert_pcm_chunk(pcm_chunk_message_t *pcmChunk) {
     free_pcm_chunk(pcmChunk);
 
     snapcastSetting_t curSet;
-    player_get_snapcast_settings(&curSet);
-    if (!curSet.muted && gotSettings) {
+    // A visszatérési értéket MUSZÁJ nézni: ha a settings mutex nincs meg,
+    // a curSet nullázott, és a start_player() érvénytelen paraméterekkel
+    // (sr=0, ch=0, bits=0) próbálna I2S-t konfigurálni.
+    if (player_get_snapcast_settings(&curSet) == pdPASS &&
+        !curSet.muted && gotSettings) {
         start_player(&curSet);
     }
 
@@ -2172,11 +2191,17 @@ static void player_task(void *pvParameters) {
   }
   ret = 0;
 
-  xSemaphoreTake(snapcastSettingsMux, portMAX_DELAY);
+  if (snapcastSettingsMux != NULL) {
+    xSemaphoreTake(snapcastSettingsMux, portMAX_DELAY);
+  }
   // delete the queue
-  vQueueDelete(snapcastSettingQueueHandle);
-  snapcastSettingQueueHandle = NULL;
-  xSemaphoreGive(snapcastSettingsMux);
+  if (snapcastSettingQueueHandle != NULL) {
+    vQueueDelete(snapcastSettingQueueHandle);
+    snapcastSettingQueueHandle = NULL;
+  }
+  if (snapcastSettingsMux != NULL) {
+    xSemaphoreGive(snapcastSettingsMux);
+  }
 
 #if CONFIG_PM_ENABLE
   esp_pm_lock_release(player_pm_lock_handle);
