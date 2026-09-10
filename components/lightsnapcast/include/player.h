@@ -19,6 +19,64 @@ extern "C" {
 // size?!
 #define CHNK_CTRL_CNT 2
 
+/*
+ * ── Összeomlás-morzsa (crash breadcrumb) ───────────────────────────────────
+ *
+ * A pánik pillanatában a soros port csak akkor segít, ha valaki épp nézi –
+ * és a csengetéshez kötött hiba óránként egyszer jön elő, távoli iskolában
+ * pedig egyáltalán nincs, aki nézze.
+ *
+ * Ezért a lejátszó-út fontos pontjain beállítunk egy sorszámot az RTC
+ * memóriában. Az RTC RAM-ot a pánik utáni újraindulás NEM törli (csak a
+ * tápelvétel), így a KÖVETKEZŐ induláskor kiolvasható, hol járt a kód, amikor
+ * összeomlott. Az érték a beaconnel a backendre is felmegy, tehát a
+ * Hibajelzések ablakból is látszik – kiszállás nélkül.
+ *
+ * A jelölés egyetlen írás egy RTC-változóba: ISR-ből is biztonságos, és a
+ * futásidőre mérhetetlen a hatása.
+ */
+typedef enum {
+  PLAYER_MARK_NONE            = 0,
+  PLAYER_MARK_TASK_ENTRY      = 1,   // player_task elindult
+  PLAYER_MARK_SETUP_I2S       = 2,   // player_setup_i2s fut
+  PLAYER_MARK_TIMER_INIT      = 3,   // tg0_timer_init fut
+  PLAYER_MARK_TIMER_START     = 4,   // tg0_timer1_start fut
+  PLAYER_MARK_TIMER_ISR       = 5,   // riasztás ISR fut
+  PLAYER_MARK_SETTINGS_CHANGE = 6,   // beállítás-változás ága
+  PLAYER_MARK_QUEUE_RECV      = 7,   // chunkra vár a sorban
+  PLAYER_MARK_CHUNK_PROCESS   = 8,   // chunk feldolgozás / osztások
+  PLAYER_MARK_I2S_WRITE       = 9,   // i2s_channel_write / preload
+  PLAYER_MARK_TASK_EXIT       = 10,  // takarító ág, a task leáll
+  PLAYER_MARK_INSERT_CHUNK    = 11,  // insert_pcm_chunk (http_get_task)
+  PLAYER_MARK_START_PLAYER    = 12,  // start_player fut
+
+  // ── Alkalmazásréteg ──────────────────────────────────────────────────────
+  // A morzsa NEM csak a snap lejátszóé: ha a pánik az app-kódban van, a
+  // lejátszó utolsó állapota félrevezetne. Ezért a periodikusan futó
+  // alkalmazás-utak is jelölnek.
+  APP_MARK_LOOP_AUDIO         = 13,  // loop(): audioManager.loop()
+  APP_MARK_LOOP_UI            = 14,  // loop(): uiManager.loop()
+  APP_MARK_NET_WS             = 15,  // TaskNetwork: wsClient.loop()
+  APP_MARK_NET_SNAPSTART      = 16,  // TaskNetwork: tryStartSnapcastClient()
+  APP_MARK_NET_BELLS          = 17,  // TaskNetwork: bellManager
+  APP_MARK_NET_OTA            = 18,  // TaskNetwork: otaManager.loop()
+  APP_MARK_BEACON             = 19,  // DeviceAgent: beacon osszeallitas/kuldes
+  APP_MARK_WS_MESSAGE         = 20,  // WS uzenet feldolgozas
+} player_mark_t;
+
+/** Morzsa beállítása. Egyetlen RTC-írás.
+ *  A paraméter SZÁNDÉKOSAN `int` és nem `player_mark_t`: az app-réteg (C++)
+ *  a fejléc behúzása nélkül, kézi `extern "C"` deklarációval hívja, és így
+ *  a két oldal szignatúrája biztosan egyezik. */
+void player_mark(int mark);
+
+/** Az ELŐZŐ futásban utoljára beállított morzsa (0, ha nincs érvényes adat,
+ *  pl. tápelvétel után). Csak induláskor van értelme kiolvasni. */
+uint32_t player_last_crash_mark(void);
+
+/** Hányadik másodpercben járt az előző futás, amikor a morzsa készült. */
+uint32_t player_last_crash_uptime(void);
+
 //#define LATENCY_MEDIAN_FILTER_LEN 199
 #define LATENCY_TIME_FILTER_FULL 29
 

@@ -6,6 +6,12 @@
 
 #include "Config.h"
 #include <esp_heap_caps.h>
+
+// Összeomlás-morzsa a snap lejátszóból (components/lightsnapcast/player.c).
+// A fejlécet szándékosan nem húzzuk be – I2S/snapcast típusokat vonzana ide.
+extern "C" void     player_mark(int mark);
+extern "C" uint32_t player_last_crash_mark(void);
+extern "C" uint32_t player_last_crash_uptime(void);
 #include "PersistStore.h"
 #include "ProvisioningManager.h"
 #include "AudioManager.h"
@@ -60,6 +66,7 @@ void afterLocalPlayback() {
 // --- Snapcast indítás, ha már van backend config ---
 
 void tryStartSnapcastClient() {
+    player_mark(16 /* APP_MARK_NET_SNAPSTART */);
     if (!backend.hasSnapConfig()) return;
     if (snapClient.isStarted()) return;
 
@@ -187,6 +194,7 @@ void TaskNetwork(void* pvParameters) {
         networkManager.loop();
 
         // WS loop – event feldolgozás + automata reconnect
+        player_mark(15 /* APP_MARK_NET_WS */);
         wsClient.loop();
 
         tryStartSnapcastClient();
@@ -212,6 +220,7 @@ void TaskNetwork(void* pvParameters) {
         // processz, így egy backend-deploy/összeomlás alatt a snapclient
         // kapcsolat élve maradt, az eszköz "online"-nak hitte magát, és a
         // csengetés SEHOL nem szólalt meg.
+        player_mark(17 /* APP_MARK_NET_BELLS */);
         bellManager.setBackendReachable(wsConnected && snapConnected);
 
         // A csengetés-figyelő MINDIG fut; hogy kell-e helyben lejátszani, azt
@@ -226,6 +235,7 @@ void TaskNetwork(void* pvParameters) {
             }
         }
 
+        player_mark(18 /* APP_MARK_NET_OTA */);
         otaManager.loop();
 
         vTaskDelay(100 / portTICK_PERIOD_MS);
@@ -390,6 +400,28 @@ void setup() {
         }
     }
 
+    // ── Összeomlás-morzsa az ELŐZŐ futásból ────────────────────────────────
+    // Az RTC memória túléli a pánik utáni újraindulást, ezért megmondja, hol
+    // járt a snap lejátszó-út, amikor az eszköz összeomlott. Ez a soros
+    // monitor kiváltása: nem kell ott ülni a pánik pillanatában.
+    {
+        const uint32_t mark = player_last_crash_mark();
+        if (mark != 0) {
+            static const char* MARK_NAMES[] = {
+                "-", "player_task belepes", "i2s beallitas", "timer init",
+                "timer start", "timer ISR", "beallitas-valtozas",
+                "chunk-varakozas", "chunk feldolgozas", "i2s iras",
+                "task kilepes", "insert_pcm_chunk", "start_player",
+                "loop: audio", "loop: UI", "net: WS", "net: snap indit",
+                "net: csengetes", "net: OTA", "beacon", "WS uzenet"
+            };
+            const char* name = (mark < (sizeof(MARK_NAMES)/sizeof(MARK_NAMES[0])))
+                             ? MARK_NAMES[mark] : "ismeretlen";
+            Serial.printf("[CRASH] Elozo futas utolso pontja: %s (#%u), %u mp uzemido utan\n",
+                          name, (unsigned)mark, (unsigned)player_last_crash_uptime());
+        }
+    }
+
     store.begin();
 
     audioManager.begin(&store);
@@ -474,7 +506,9 @@ void loop() {
          * A Snapcast audio külön taskban fut.
          * Itt csak UI és offline AudioManager loop marad.
          */
+        player_mark(13 /* APP_MARK_LOOP_AUDIO */);
         audioManager.loop();
+        player_mark(14 /* APP_MARK_LOOP_UI */);
         uiManager->loop();
     } else {
         uiManager->loop();

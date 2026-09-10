@@ -61,6 +61,7 @@ static inline void rtc_clk_apll_coeff_set(uint32_t o_div,
 #include "driver/gptimer.h"
 #include "driver/i2s_std.h"
 #include "player.h"
+#include "esp_attr.h"
 #include "snapcast.h"
 
 // Sample insertion ON for ESP32-S3: APLL fine-tune (rtc_clk_apll_coeff_calc) is
@@ -148,6 +149,51 @@ static void player_task(void *pvParameters);
 
 bool gotSettings = false;
 bool playerstarted = false;
+
+/*
+ * Összeomlás-morzsa (ld. player.h). Az RTC memóriát a pánik utáni
+ * újraindulás megőrzi, a tápelvétel viszont nem – ezért kell a magic:
+ * enélkül egy hidegindítás után memóriaszemetet jelentenénk hibaként.
+ */
+#define PLAYER_MARK_MAGIC 0x5343524Du   /* "SCRM" */
+
+static RTC_DATA_ATTR uint32_t s_markMagic;
+static RTC_DATA_ATTR uint32_t s_markCurrent;
+static RTC_DATA_ATTR uint32_t s_markUptimeSec;
+
+/* Az induláskor kimentett ELŐZŐ értékek – a futás közbeni írások ezeket
+ * már nem módosítják, tehát a beacon bármikor jelentheti őket. */
+static uint32_t s_prevMark       = 0;
+static uint32_t s_prevMarkUptime = 0;
+static bool     s_markLoaded     = false;
+
+void player_mark(int mark) {
+  if (!s_markLoaded) {
+    // Első hívás: eltesszük az előző futás értékeit, mielőtt felülírnánk.
+    s_prevMark       = (s_markMagic == PLAYER_MARK_MAGIC) ? s_markCurrent   : 0;
+    s_prevMarkUptime = (s_markMagic == PLAYER_MARK_MAGIC) ? s_markUptimeSec : 0;
+    s_markLoaded     = true;
+    s_markMagic      = PLAYER_MARK_MAGIC;
+  }
+  s_markCurrent   = (uint32_t)mark;
+  s_markUptimeSec = (uint32_t)(esp_timer_get_time() / 1000000LL);
+}
+
+uint32_t player_last_crash_mark(void) {
+  if (!s_markLoaded) {
+    s_prevMark       = (s_markMagic == PLAYER_MARK_MAGIC) ? s_markCurrent   : 0;
+    s_prevMarkUptime = (s_markMagic == PLAYER_MARK_MAGIC) ? s_markUptimeSec : 0;
+    s_markLoaded     = true;
+    s_markMagic      = PLAYER_MARK_MAGIC;
+    s_markCurrent    = PLAYER_MARK_NONE;
+  }
+  return s_prevMark;
+}
+
+uint32_t player_last_crash_uptime(void) {
+  (void)player_last_crash_mark();   // biztosítja a betöltést
+  return s_prevMarkUptime;
+}
 // Csak egyszer naplózzuk az érvénytelen beállítást, hogy egy tartós hiba ne
 // árassza el a soros portot (a player_task 100 ms-onként pörögne rajta).
 static bool s_warnedInvalidSetting = false;
@@ -333,6 +379,8 @@ static esp_err_t player_setup_i2s(snapcastSetting_t *setting) {
   }
 #endif
 
+  player_mark(PLAYER_MARK_SETUP_I2S);
+
   if (tx_chan) {
     my_i2s_channel_disable(tx_chan);
     i2s_del_channel(tx_chan);
@@ -346,7 +394,22 @@ static esp_err_t player_setup_i2s(snapcastSetting_t *setting) {
       .dma_frame_num = i2sDmaBufMaxLen,
       .auto_clear = true,
   };
-  ESP_ERROR_CHECK(i2s_new_channel(&tx_chan_cfg, &tx_chan, NULL));
+  // SchoolLive: ESP_ERROR_CHECK VOLT ITT – az ABORTÁL, azaz Guru Meditation
+  // pánikkal újraindítja az egész eszközt. Az `i2s_new_channel()` viszont
+  // teljesen normális körülmények között is hibázhat: ESP_ERR_NOT_FOUND, ha
+  // az I2S port épp foglalt (a helyi MP3-lejátszó AudioManager ugyanazt a
+  // portot használja), vagy ha két hívó egyszerre konfigurálja újra a
+  // csatornát (a player_task beállítás-ága ÉS az insert_pcm_chunk-ból induló
+  // start_player). Egy sikertelen I2S-foglalás legyen néma hiba, ne
+  // újraindulás – a hívók már kezelik a negatív visszatérést.
+  {
+    esp_err_t e = i2s_new_channel(&tx_chan_cfg, &tx_chan, NULL);
+    if (e != ESP_OK) {
+      ESP_LOGE(TAG, "player_setup_i2s: i2s_new_channel hiba: %s", esp_err_to_name(e));
+      tx_chan = NULL;
+      return -1;
+    }
+  }
 
   ESP_LOGI(TAG,
            "player_setup_i2s: dma_buf_len is %ld, dma_buf_count is %ld, sample "
@@ -379,7 +442,16 @@ static esp_err_t player_setup_i2s(snapcastSetting_t *setting) {
       .gpio_cfg = pin_config0,
   };
 
-  ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_chan, &tx_std_cfg));
+  {
+    esp_err_t e = i2s_channel_init_std_mode(tx_chan, &tx_std_cfg);
+    if (e != ESP_OK) {
+      ESP_LOGE(TAG, "player_setup_i2s: i2s_channel_init_std_mode hiba: %s",
+               esp_err_to_name(e));
+      i2s_del_channel(tx_chan);
+      tx_chan = NULL;
+      return -1;
+    }
+  }
   // This prevents pops/clicks on some I2S codecs
   ensure_noiseless(tx_chan);
 
@@ -556,6 +628,7 @@ int init_player(i2s_std_gpio_config_t pin_config0_, i2s_port_t i2sNum_) {
  * call to start the player task
  */
 int start_player(snapcastSetting_t *setting) {
+    player_mark(PLAYER_MARK_START_PLAYER);
     if (playerstarted){
         return -1;
     }
@@ -1011,6 +1084,24 @@ static bool IRAM_ATTR timer_group0_alarm_cb(
     void *user_data) {
   // timer_spinlock_take(TIMER_GROUP_1);
 
+  // SchoolLive: a `playerTaskHandle` NULL lehet – a player_task a saját
+  // leállásakor (2 mp-es chunk-timeout) és a `deinit_player()` is nullázza,
+  // miközben a riasztás még élesítve van. A `xTaskNotifyFromISR(NULL, ...)`
+  // FreeRTOS-assertet dob, és egy ISR-ben az AZONNALI Guru Meditation pánik.
+  // Ez a fő gyanúsított a csengetésekhez kötött, szórványos újraindulásokra:
+  // a forrásváltásnál kiéhezett FIFO miatt a player_task leáll, és ha a
+  // beállított riasztás épp ekkor sül el, az eszköz pánikol.
+  if (playerTaskHandle == NULL) {
+    return false;
+  }
+
+  // A morzsát ITT KÖZVETLENÜL írjuk, nem a `player_mark()`-on át: az a
+  // függvény a flashben van, egy ISR-ből hívva pedig flash-művelet közben
+  // (NVS-mentés, LittleFS-írás – épp csengetéskor!) a kikapcsolt cache miatt
+  // összeomlana. Az RTC memóriába írás cache-független, tehát biztonságos.
+  // A magic-et a task-oldali első `player_mark()` már beállította.
+  s_markCurrent = (uint32_t)PLAYER_MARK_TIMER_ISR;
+
   BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
   uint64_t timer_counter_value = edata->count_value;
@@ -1055,9 +1146,28 @@ esp_err_t my_gptimer_start(gptimer_handle_t timer) {
 static void tg0_timer_deinit(void) {
   //  timer_deinit(TIMER_GROUP_1, TIMER_1);
   if (gptimer) {
-    ESP_ERROR_CHECK(my_gptimer_stop(gptimer));
-    ESP_ERROR_CHECK(gptimer_del_timer(gptimer));
+    // SchoolLive: ESP_ERROR_CHECK volt mindkét soron. A `gptimer_del_timer()`
+    // ESP_ERR_INVALID_STATE-tel tér vissza, ha a timer még ENGEDÉLYEZETT –
+    // és a `my_gptimer_stop()` csak akkor tilt le, ha a `gpTimerRunning` flag
+    // igaz volt. A két állapot elcsúszhat, és akkor az ESP_ERROR_CHECK
+    // ABORTÁL, azaz Guru Meditation pánikkal újraindítja az eszközt.
+    // Egy timer-takarítás sosem érhet ennyit: naplózunk és megyünk tovább.
+    esp_err_t e = my_gptimer_stop(gptimer);
+    if (e != ESP_OK) {
+      ESP_LOGW(TAG, "tg0_timer_deinit: stop/disable: %s", esp_err_to_name(e));
+    }
+
+    // Biztos ami biztos: ha a stop nem tiltotta le (mert a flag hamis volt),
+    // itt még egyszer megpróbáljuk. A már letiltott timeren ez hibát ad,
+    // amit elnyelünk – csak az számít, hogy a törlés előtt tiltva legyen.
+    (void)gptimer_disable(gptimer);
+
+    e = gptimer_del_timer(gptimer);
+    if (e != ESP_OK) {
+      ESP_LOGW(TAG, "tg0_timer_deinit: del_timer: %s", esp_err_to_name(e));
+    }
     gptimer = NULL;
+    gpTimerRunning = false;
   }
 }
 
@@ -1065,6 +1175,7 @@ static void tg0_timer_deinit(void) {
  *
  */
 static void tg0_timer_init(void) {
+  player_mark(PLAYER_MARK_TIMER_INIT);
   tg0_timer_deinit();
 
   // Select and initialize basic parameters of the timer
@@ -1073,12 +1184,20 @@ static void tg0_timer_init(void) {
       .direction = GPTIMER_COUNT_UP,
       .resolution_hz = 1000000,  // 1MHz, 1 tick=1us
   };
-  ESP_ERROR_CHECK(gptimer_new_timer(&timer_config, &gptimer));
+  esp_err_t e = gptimer_new_timer(&timer_config, &gptimer);
+  if (e != ESP_OK) {
+    ESP_LOGE(TAG, "tg0_timer_init: gptimer_new_timer: %s", esp_err_to_name(e));
+    gptimer = NULL;
+    return;                      // szinkron-timer nélkül is szól a hang
+  }
 
   gptimer_event_callbacks_t cbs = {
       .on_alarm = timer_group0_alarm_cb,
   };
-  ESP_ERROR_CHECK(gptimer_register_event_callbacks(gptimer, &cbs, NULL));
+  e = gptimer_register_event_callbacks(gptimer, &cbs, NULL);
+  if (e != ESP_OK) {
+    ESP_LOGE(TAG, "tg0_timer_init: register_callbacks: %s", esp_err_to_name(e));
+  }
 
   ESP_LOGI(TAG, "init initial sync timer");
 }
@@ -1087,17 +1206,42 @@ static void tg0_timer_init(void) {
  *
  */
 static void tg0_timer1_start(uint64_t alarm_value) {
+  player_mark(PLAYER_MARK_TIMER_START);
   if (gptimer) {
     my_gptimer_stop(gptimer);
-    ESP_ERROR_CHECK(gptimer_enable(gptimer));
-    ESP_ERROR_CHECK(gptimer_set_raw_count(gptimer, 0));
+
+    // SchoolLive: a `gptimer_enable()` NEM idempotens – már engedélyezett
+    // timeren ESP_ERR_INVALID_STATE-et ad. Ez itt ESP_ERROR_CHECK-ben volt,
+    // tehát abortot (pánikot) okozott. Ez az útvonal MINDEN újraszinkronnál
+    // lefut, vagyis pont a csengetés körüli forrásváltásoknál a legsűrűbb.
+    // Az INVALID_STATE-et szándékosan elnyeljük: az azt jelenti, hogy már
+    // engedélyezve van – pontosan az, amit el akartunk érni.
+    esp_err_t e = gptimer_enable(gptimer);
+    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) {
+      ESP_LOGW(TAG, "tg0_timer1_start: enable: %s", esp_err_to_name(e));
+      return;
+    }
+
+    e = gptimer_set_raw_count(gptimer, 0);
+    if (e != ESP_OK) {
+      ESP_LOGW(TAG, "tg0_timer1_start: set_raw_count: %s", esp_err_to_name(e));
+    }
+
     gptimer_alarm_config_t alarm_config1 = {
         .alarm_count = alarm_value,  // period
         .reload_count = 0,
         .flags.auto_reload_on_alarm = false,
     };
-    ESP_ERROR_CHECK(gptimer_set_alarm_action(gptimer, &alarm_config1));
-    ESP_ERROR_CHECK(my_gptimer_start(gptimer));
+    e = gptimer_set_alarm_action(gptimer, &alarm_config1);
+    if (e != ESP_OK) {
+      ESP_LOGW(TAG, "tg0_timer1_start: set_alarm_action: %s", esp_err_to_name(e));
+      return;
+    }
+
+    e = my_gptimer_start(gptimer);
+    if (e != ESP_OK) {
+      ESP_LOGW(TAG, "tg0_timer1_start: start: %s", esp_err_to_name(e));
+    }
   }
 
   // ESP_LOGI(TAG, "started age timer");
@@ -1437,6 +1581,7 @@ int32_t allocate_pcm_chunk_memory(pcm_chunk_message_t **pcmChunk,
  *
  */
 int32_t insert_pcm_chunk(pcm_chunk_message_t *pcmChunk) {
+  player_mark(PLAYER_MARK_INSERT_CHUNK);
   if (pcmChunk == NULL) {
     ESP_LOGE(TAG, "Parameter Error");
 
@@ -1509,6 +1654,7 @@ static bool audioCodecCanSleep = false;
  *
  */
 static void player_task(void *pvParameters) {
+  player_mark(PLAYER_MARK_TASK_ENTRY);
   pcm_chunk_message_t *chnk = NULL;
   int64_t age;
   int64_t serverNow = 0;
@@ -1621,6 +1767,7 @@ static void player_task(void *pvParameters) {
     // reinitialize
     ret = xQueueReceive(snapcastSettingQueueHandle, &scSetChgd, 0);
     if (ret == pdTRUE) {
+      player_mark(PLAYER_MARK_SETTINGS_CHANGE);
       snapcastSetting_t __scSet;
 
       player_get_snapcast_settings(&__scSet);
@@ -1646,9 +1793,19 @@ static void player_task(void *pvParameters) {
 
           ret = player_setup_i2s(&__scSet);
           if (ret < 0) {
-            ESP_LOGE(TAG, "player_setup_i2s failed: %d", ret);
-
-            return;
+            // SchoolLive: itt `return;` volt. Egy FreeRTOS task-függvényből
+            // TILOS visszatérni: az ESP-IDF ilyenkor
+            // `esp_system_abort("FreeRTOS: Return from task function")`-t hív,
+            // ami szintén Guru Meditation pánik és újraindulás. Ráadásul a
+            // queue-k és az I2S csatorna is felszabadítatlanul maradtak volna.
+            //
+            // Helyette a ciklusból kilépünk a rendes takarító ágra, ami
+            // felszabadít mindent és `vTaskDelete(NULL)`-lal zár. A lejátszó
+            // így újraindítható: a következő beérkező chunk `pcmChkQHdl == NULL`-t
+            // lát, és az `insert_pcm_chunk` újra meghívja a `start_player()`-t.
+            ESP_LOGE(TAG, "player_setup_i2s failed: %d – player_task leall, ujrainditasra var", ret);
+            if (chnk != NULL) { free_pcm_chunk(chnk); chnk = NULL; }
+            break;
           }
 
           dmaDescDuration_us =
@@ -1732,6 +1889,7 @@ static void player_task(void *pvParameters) {
 
     if (chnk == NULL) {
       if (pcmChkQHdl != NULL) {
+        player_mark(PLAYER_MARK_QUEUE_RECV);
         ret = xQueueReceive(pcmChkQHdl, &chnk, pdMS_TO_TICKS(2000));
       } else {
          //ESP_LOGE (TAG, "Couldn't get PCM chunk, pcm queue not created");
@@ -1742,6 +1900,7 @@ static void player_task(void *pvParameters) {
       }
 
       if (ret != pdFAIL) {
+        player_mark(PLAYER_MARK_CHUNK_PROCESS);
         chunkDuration_us =
             1000000LL *
             (int64_t)(chnk->totalSize / ((scSet.bits >> 3) * scSet.ch)) /
@@ -1810,8 +1969,18 @@ static void player_task(void *pvParameters) {
             p_payload = fragment->payload;
             size = fragment->size;
 
-            ESP_ERROR_CHECK(
-                i2s_channel_preload_data(tx_chan, p_payload, size, &written));
+            // SchoolLive: abort helyett kezelt hiba. Az
+            // `i2s_channel_preload_data()` ESP_ERR_INVALID_STATE-et ad, ha a
+            // csatorna épp engedélyezett – ez a szinkron-út újrafutásakor
+            // előfordulhat, és nem érhet egy eszköz-újraindítást.
+            {
+              esp_err_t e =
+                  i2s_channel_preload_data(tx_chan, p_payload, size, &written);
+              if (e != ESP_OK) {
+                ESP_LOGW(TAG, "i2s_channel_preload_data: %s", esp_err_to_name(e));
+                written = 0;
+              }
+            }
 
             // check if DMA is full at first try here
             if (written != size) {
@@ -2276,13 +2445,16 @@ static void player_task(void *pvParameters) {
       audio_set_mute(true);
       audio_dac_enable(false);
       my_i2s_channel_disable(tx_chan);
-      i2s_del_channel(tx_chan);
-      tx_chan = NULL;
+      if (tx_chan != NULL) {
+        i2s_del_channel(tx_chan);
+        tx_chan = NULL;
+      }
 
       break;
     }
   }
   ret = 0;
+  player_mark(PLAYER_MARK_TASK_EXIT);
 
   if (snapcastSettingsMux != NULL) {
     xSemaphoreTake(snapcastSettingsMux, portMAX_DELAY);
