@@ -47,6 +47,15 @@ struct BellEntry {
 #define NVS_BELL_DEF_DATA   "data"
 #define NVS_BELL_DEF_VER    "ver"
 
+// NVS kulcsok – "ma már elcsengetve" állapot.
+//
+// KRITIKUS, hogy ez TÚLÉLJE az újraindulást: a csengetésnek van egy 120 mp-es
+// pótlási ablaka (BELL_CATCHUP_MAX_S), és ha az eszköz ezen belül újraindul, a
+// RAM-beli bitmező elvész, a csengetés pedig ÚJRA megszólal. Egy újraindulási
+// ciklusban ez percekig tartó, ismétlődő csengetést okoz.
+#define NVS_BELL_DONE_BITS  "hbits"
+#define NVS_BELL_DONE_DATE  "hdate"
+
 // NVS kulcsok – teljes tanévnyi naptár (sablonok + naptár-kivételek).
 // A /bells/sync válasz `templates`/`calendar`/`defaultTemplateId` mezőit
 // nyers JSON string-ként tároljuk (ArduinoJson v7 JsonDocument, nincs
@@ -183,6 +192,12 @@ private:
     // (vagy csak félig) érhető el – ilyenkor a `loop()` szinkron-ága nem fut,
     // és a rend enélkül üres maradna, azaz EGYETLEN csengetés sem szólalna meg.
     bool loadScheduleFromCache(const String& today);
+
+    // "Ma már elcsengetve" bitmező mentése/betöltése NVS-be. A mentés csak
+    // akkor fut, amikor TÉNYLEGESEN változik az állapot (naponta néhányszor),
+    // tehát a flash élettartama szempontjából elhanyagolható.
+    void saveBellDoneState();
+    void loadBellDoneState();
     String getTodayDateStr();
 };
 

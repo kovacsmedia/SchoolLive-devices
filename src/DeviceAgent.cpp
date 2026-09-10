@@ -1,4 +1,5 @@
 #include "DeviceAgent.h"
+#include <esp_system.h>   // esp_reset_reason() – távoli diagnosztika
 
 void DeviceAgent::begin(
     SLNetworkManager& net,
@@ -227,6 +228,23 @@ void DeviceAgent::sendBeaconIfDue() {
     if (_tel) {
         JsonDocument statusDoc;
         _tel->fillJson(statusDoc);
+
+        // ── Távoli diagnosztika ────────────────────────────────────────────
+        // Enélkül egy újraindulás okát CSAK a helyszínen, soros monitorral
+        // lehetne kideríteni – egy távoli iskolába kiszállással. Ezek a mezők
+        // a backend `Device.statusPayload` oszlopába kerülnek, tehát az admin
+        // felületről/adatbázisból is látszanak.
+        //
+        //   resetReason – esp_reset_reason(): 1=POWERON, 3=SW, 4=PANIC,
+        //                 5=INT_WDT, 6=TASK_WDT, 7=WDT, 8=DEEPSLEEP, 9=BROWNOUT
+        //   uptimeSec   – ha ez rendre alacsony, újraindulási ciklus van
+        //   minFreeHeap – a valaha mért legkisebb szabad heap; ha vészesen
+        //                 alacsony, memóriakifogyás okozza a pánikot
+        statusDoc["resetReason"] = (int)esp_reset_reason();
+        statusDoc["uptimeSec"]   = (uint32_t)(millis() / 1000UL);
+        statusDoc["freeHeap"]    = (uint32_t)ESP.getFreeHeap();
+        statusDoc["minFreeHeap"] = (uint32_t)ESP.getMinFreeHeap();
+
         beacon["statusPayload"] = statusDoc;
     }
 

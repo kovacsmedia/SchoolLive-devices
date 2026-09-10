@@ -694,6 +694,42 @@ String BellManager::resolveLocalSound(const char* soundFile, BellType type) {
 }
 
 // ---------------------------------------------------------------------------
+// "Ma már elcsengetve" állapot – NVS-ben, hogy TÚLÉLJE az újraindulást
+// ---------------------------------------------------------------------------
+// Enélkül egy újraindulás a csengetés utáni 120 mp-es pótlási ablakon belül
+// ÚJRA megszólaltatja a csengetést (a bitmező nullázódik, a `dt` még belefér
+// az ablakba, a WS pedig még nem áll fel, tehát "offline"-nak látszunk).
+// Újraindulási ciklusban ez percekig ismétlődő csengetés.
+void BellManager::saveBellDoneState() {
+    Preferences p;
+    if (!p.begin(NVS_BELL_NS, false)) return;
+    p.putString(NVS_BELL_DONE_DATE, getTodayDateStr());
+    p.putBytes(NVS_BELL_DONE_BITS, _bellHandledBits, sizeof(_bellHandledBits));
+    p.end();
+}
+
+void BellManager::loadBellDoneState() {
+    Preferences p;
+    if (!p.begin(NVS_BELL_NS, true)) return;
+
+    const String storedDate = p.getString(NVS_BELL_DONE_DATE, "");
+    const String today      = getTodayDateStr();
+
+    if (storedDate.length() > 0 && storedDate == today) {
+        uint8_t buf[sizeof(_bellHandledBits)] = { 0 };
+        const size_t n = p.getBytes(NVS_BELL_DONE_BITS, buf, sizeof(buf));
+        if (n == sizeof(buf)) {
+            memcpy(_bellHandledBits, buf, sizeof(buf));
+            Serial.printf("[BELL] Elcsengetve-allapot visszatoltve NVS-bol (%s)\n", today.c_str());
+        }
+    } else if (storedDate.length() > 0) {
+        Serial.printf("[BELL] Tarolt elcsengetve-allapot mas napra szol (%s != %s) – eldobva\n",
+                      storedDate.c_str(), today.c_str());
+    }
+    p.end();
+}
+
+// ---------------------------------------------------------------------------
 // checkSchedule
 // ---------------------------------------------------------------------------
 // Napon belüli perc (0..1439) alapú bit-tárolók – ld. BellManager.h.
@@ -734,9 +770,20 @@ void BellManager::checkSchedule() {
 
     // Napváltáskor nullázzuk a napi állapotot.
     if (_bellStateDay != t.tm_yday) {
+        const bool firstRun = (_bellStateDay == -1);
         _bellStateDay = t.tm_yday;
         memset(_bellHandledBits, 0, sizeof(_bellHandledBits));
         memset(_bellArmedBits,   0, sizeof(_bellArmedBits));
+
+        if (firstRun) {
+            // BOOT: a RAM üres, de lehet, hogy MA már csengettünk. Az NVS-ből
+            // visszatöltött állapot akadályozza meg, hogy egy újraindulás
+            // megismételje a csengetést.
+            loadBellDoneState();
+        } else {
+            // Valódi napváltás – a tegnapi állapot nem érdekes, felül is írjuk.
+            saveBellDoneState();
+        }
     }
 
     const long nowSec = (long)t.tm_hour * 3600 + (long)t.tm_min * 60 + (long)t.tm_sec;
@@ -773,12 +820,14 @@ void BellManager::checkSchedule() {
         if (dt > BELL_CATCHUP_MAX_S) {
             bellBitSet(_bellHandledBits, bellMin, true);
             bellBitSet(_bellArmedBits,   bellMin, false);
+            saveBellDoneState();
             continue;
         }
 
         // 2) A csengetés pillanata (és utána).
         if (onlineBellEvidence) {
             bellBitSet(_bellHandledBits, bellMin, true);
+            saveBellDoneState();   // a backend lejátszotta – nálunk is végleges
             continue;
         }
 
@@ -807,6 +856,7 @@ void BellManager::checkSchedule() {
 
         bellBitSet(_bellHandledBits, bellMin, true);
         bellBitSet(_bellArmedBits,   bellMin, false);
+        saveBellDoneState();   // AZONNAL, hogy egy közvetlen újraindulás se ismételje meg
 
         if (_mode == BELL_MODE_TODAY) {
             const int curMin = t.tm_hour * 60 + t.tm_min;
