@@ -1,4 +1,5 @@
 #include "BellManager.h"
+#include "PsramJson.h"
 #include "Config.h"
 #include <Preferences.h>
 #include <LittleFS.h>
@@ -243,7 +244,7 @@ bool BellManager::fetchVersion(String& outTodayVer,
                                bool& outIsHoliday) {
     if (!backend.isReady()) return false;
 
-    JsonDocument resp;
+    PSRAM_JSON_DOC(resp);   // teljes tanev valasza – PSRAM-ba
     int code = 0;
     if (!backend.getJson("/bells/version", resp, code)) return false;
 
@@ -260,7 +261,7 @@ bool BellManager::fetchVersion(String& outTodayVer,
 bool BellManager::fetchFullSync() {
     if (!backend.isReady()) return false;
 
-    JsonDocument resp;
+    PSRAM_JSON_DOC(resp);   // teljes tanev valasza – PSRAM-ba
     int code = 0;
     if (!backend.getJson("/bells/sync", resp, code)) {
         Serial.printf("[BELL] GET /bells/sync -> %d\n", code);
@@ -538,13 +539,13 @@ bool BellManager::loadDefaultFromNVS(const String& version) {
 void BellManager::saveFullYearToNVS(const String& version, const JsonDocument& src) {
     // Csak a szükséges almezőket mentjük (nem a teljes /bells/sync választ,
     // ami a "ma" nézetet is tartalmazza – azt a napi cache már kezeli).
-    JsonDocument fy;
+    // MEMÓRIA: a fa és a szerializált szöveg is PSRAM-ba megy. Korábban a
+    // belső DRAM-ban állt egyszerre a hívó `src` fája, ez a másolat, ÉS egy
+    // akár 24 kB-os String – ez volt a heap-mélypont fő oka.
+    PSRAM_JSON_DOC(fy);
     fy["templates"]          = src["templates"];
     fy["calendar"]           = src["calendar"];
     fy["defaultTemplateId"]  = src["defaultTemplateId"];
-
-    String json;
-    serializeJson(fy, json);
 
     // Védőháló: ha valamiért kirívóan nagy lenne (pl. sok naptár-kivétel +
     // sok sablon), inkább kihagyjuk a mentést, mint hogy egy sérült/csonka
@@ -552,31 +553,60 @@ void BellManager::saveFullYearToNVS(const String& version, const JsonDocument& s
     // több oldalra is szétosztható, de a gyakorlatban egy tanév naptára
     // (max 6 sablon × 40 bejegyzés + néhány tucat kivétel-nap) jóval e
     // limit alatt marad.
-    const size_t MAX_FY_JSON_BYTES = 24 * 1024;
-    if (json.length() > MAX_FY_JSON_BYTES) {
-        Serial.printf("[BELL] Full-year JSON túl nagy (%d byte) – mentés kihagyva\n",
-                      json.length());
+    // A méretet ELŐBB megmérjük, és csak akkor foglalunk puffert, ha belefér –
+    // így egy elszabadult naptár sem tud nagy foglalást kikényszeríteni.
+    const size_t needed = measureJson(fy);
+    if (needed > MAX_FY_JSON_BYTES) {
+        Serial.printf("[BELL] Full-year JSON tul nagy (%u byte) – mentes kihagyva\n",
+                      (unsigned)needed);
         return;
     }
+
+    PsramBuffer buf(needed + 1);
+    if (!buf.valid()) {
+        Serial.println("[BELL] Full-year JSON: nincs memoria a szerializalashoz – mentes kihagyva");
+        return;
+    }
+    const size_t written = serializeJson(fy, buf.data(), buf.size());
+    if (written == 0 || written > needed) {
+        Serial.println("[BELL] Full-year JSON szerializalas sikertelen – mentes kihagyva");
+        return;
+    }
+    buf.data()[written] = '\0';
 
     Preferences prefs;
     if (!prefs.begin(NVS_BELL_FY_NS, false)) return;
     prefs.putString(NVS_BELL_FY_VER,  version);
-    prefs.putString(NVS_BELL_FY_DATA, json);
+    prefs.putString(NVS_BELL_FY_DATA, buf.data());
     prefs.end();
 }
 
 bool BellManager::resolveFullYearForDate(const String& dateStr, bool& outIsHoliday) {
     outIsHoliday = false;
 
+    // MEMÓRIA: ez a metódus MINDEN dátum-feloldásnál lefut. Korábban a teljes
+    // tanévnyi JSON-t egy String-be (belső DRAM) olvasta, majd mellé felépült
+    // a parse-olt fa is – két nagy foglalás egyszerre, ismétlődően. Most
+    // mindkettő PSRAM-ban van.
+    // A puffert FIX méretre foglaljuk, nem a tárolt hosszra: a
+    // `getBytesLength()` csak BLOB típusra ad értéket, a mentés viszont
+    // `putString()`-gel (PT_STR) történik – arra 0-t adna, és a gyorsítótár
+    // sosem töltődne be. A mentés amúgy is MAX_FY_JSON_BYTES-ra van vágva,
+    // és a puffer PSRAM-ban van, ahol 24 kB elhanyagolható.
+    PsramBuffer buf(MAX_FY_JSON_BYTES + 1);
+    if (!buf.valid()) {
+        Serial.println("[BELL] Full-year cache: nincs memoria az olvasashoz");
+        return false;
+    }
+
     Preferences prefs;
     if (!prefs.begin(NVS_BELL_FY_NS, true)) return false;
-    String json = prefs.getString(NVS_BELL_FY_DATA, "");
+    const size_t got = prefs.getString(NVS_BELL_FY_DATA, buf.data(), buf.size());
     prefs.end();
-    if (json.isEmpty()) return false;
+    if (got == 0) return false;
 
-    JsonDocument fy;
-    if (deserializeJson(fy, json) != DeserializationError::Ok) return false;
+    PSRAM_JSON_DOC(fy);
+    if (deserializeJson(fy, buf.data()) != DeserializationError::Ok) return false;
 
     JsonArray calendar  = fy["calendar"].as<JsonArray>();
     JsonArray templates = fy["templates"].as<JsonArray>();

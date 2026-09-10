@@ -66,6 +66,12 @@ struct BellEntry {
 #define NVS_BELL_FY_DATA    "data"
 #define NVS_BELL_FY_VER     "ver"
 
+// A teljes tanévnyi JSON felső korlátja az NVS-ben. Egy tanév naptára
+// (max 6 sablon × 40 bejegyzés + néhány tucat kivétel-nap) ennél jóval
+// kisebb; a korlát azt akadályozza meg, hogy egy elszabadult adat sérült
+// vagy csonka NVS bejegyzést hozzon létre.
+#define MAX_FY_JSON_BYTES   (24 * 1024)
+
 class BellManager {
 public:
     BellManager(AudioManager& audioMgr, SLNetworkManager& netMgr, BackendClient& backend);

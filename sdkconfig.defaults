@@ -18,8 +18,25 @@ CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_BOOT_INIT=y
 CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
-CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
-CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
+
+# ── Belső DRAM tehermentesítése (2026-09-10) ────────────────────────────────
+# Az S3-on a belső DRAM ~320 kB, a mért mélypont 61 kB volt. A PSRAM 8 MB,
+# tehát a szűk keresztmetszet KIZÁRÓLAG a belső RAM.
+#
+# ALWAYSINTERNAL: ekkora méret ALATT minden malloc a belső DRAM-ba megy.
+# A 16 kB-os alapérték gyakorlatilag MINDENT bent tartott (a legtöbb foglalás
+# ennél kisebb). 4 kB-ra levivé a nagyobb pufferek (TLS, HTTP, WS, fájl-I/O)
+# átkerülnek a PSRAM-ba. A DMA-t igénylő foglalások NEM érintettek: azok
+# explicit MALLOC_CAP_DMA / MALLOC_CAP_INTERNAL kéréssel jönnek, és azt a
+# heap allokátor tiszteletben tartja.
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+
+# RESERVE_INTERNAL: ennyi belső DRAM-ot tartunk fenn azoknak, amiknek MUSZÁJ
+# belülre kerülniük (DMA-pufferek, ISR-ből elért adat, task-stackek). Ha a
+# belső szabad terület e alá csökkenne, az általános malloc a PSRAM-ba tér ki
+# ahelyett, hogy felélné a maradékot. 32 → 64 kB, mert épp az volt a baj, hogy
+# a mélypont 61 kB-ig ment le.
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
 
 # Flash méret: 16 MB. Csak N16R8 modulokat használunk az éles eszközökön.
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
@@ -27,6 +44,16 @@ CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 
 # WiFiClientSecure pre-shared-key ciphersuite-okat igényel.
 # Enélkül az ssl_client.cpp belső implementáció nem fordul be a binarybe.
+# A WS kapcsolat wss://, azaz TARTÓSAN nyitott TLS session. Enélkül a
+# 16 kB-os bejövő és a 4 kB-os kimenő rekord-puffer VÉGIG foglalva marad a
+# belső DRAM-ban, a HTTP-hívások alatt pedig egy második session is felépül.
+# A dynamic buffer a rekordok között felszabadítja őket, és csak a tényleges
+# rekordmérethez foglal – tipikusan 20-30 kB belső DRAM-ot ad vissza.
+#
+# HA A TLS BÁRMIÉRT HIBÁZNA (kézfogás-hiba, "mbedtls" logok), EZ AZ EGY SOR
+# az első, amit érdemes visszavenni – a többi memória-optimalizálás független tőle.
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+
 CONFIG_MBEDTLS_PSK_MODES=y
 CONFIG_MBEDTLS_KEY_EXCHANGE_PSK=y
 CONFIG_MBEDTLS_KEY_EXCHANGE_DHE_PSK=y

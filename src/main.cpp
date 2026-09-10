@@ -5,6 +5,7 @@
 #include <ArduinoJson.h>
 
 #include "Config.h"
+#include <esp_heap_caps.h>
 #include "PersistStore.h"
 #include "ProvisioningManager.h"
 #include "AudioManager.h"
@@ -368,6 +369,25 @@ void setup() {
         Serial.printf("[FS] LittleFS: %u / %u bajt hasznalva (%u szabad)\n",
                       (unsigned)use, (unsigned)tot,
                       (unsigned)(tot > use ? tot - use : 0));
+    }
+
+    // ── Memória-riport indulaskor ──────────────────────────────────────────
+    // A szűk keresztmetszet a BELSŐ DRAM (~320 kB), nem a PSRAM (8 MB). Ez a
+    // sor azonnal megmutatja, hogy a PSRAM egyáltalán felállt-e: ha nem, a
+    // JSON-fák és a nagy pufferek visszaesnek a belső heap-re (működik, csak
+    // szűkösebben – ld. PsramJson.h).
+    {
+        const size_t iFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        const size_t iBlk  = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        const size_t pTot  = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+        const size_t pFree = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+
+        Serial.printf("[MEM] Belso DRAM: %u szabad, legnagyobb blokk %u | PSRAM: %u / %u\n",
+                      (unsigned)iFree, (unsigned)iBlk, (unsigned)pFree, (unsigned)pTot);
+
+        if (pTot == 0) {
+            Serial.println("[MEM] FIGYELEM: nincs elerheto PSRAM – minden foglalas a belso DRAM-bol megy");
+        }
     }
 
     store.begin();

@@ -1,4 +1,5 @@
 #include "WsClient.h"
+#include "PsramJson.h"
 
 void WsClient::begin(const String& host, uint16_t port, const String& deviceKey) {
     _host      = host;
@@ -72,12 +73,28 @@ void WsClient::wsEvent(WStype_t type, uint8_t* payload, size_t length) {
 
         case WStype_TEXT:
             if (_msgCb && payload && length > 0) {
-                JsonDocument doc;
-                DeserializationError err = deserializeJson(doc, (const char*)payload, length);
-                if (!err) {
-                    _msgCb(doc);
+                auto handle = [&](JsonDocument& doc) {
+                    DeserializationError err =
+                        deserializeJson(doc, (const char*)payload, length);
+                    if (!err) {
+                        _msgCb(doc);
+                    } else {
+                        Serial.printf("[WS] JSON parse hiba: %s\n", err.c_str());
+                    }
+                };
+
+                // A NAGY üzeneteket (SCHEDULE_SYNC: teljes napi rend +
+                // hanglista) PSRAM-ban dolgozzuk fel – azok tíz kB-os fát
+                // építenek a szűkös belső DRAM-ban. A kicsiket (PREPARE,
+                // PLAY, BEACON_ACK) SZÁNDÉKOSAN a gyorsabb belső RAM-ban
+                // hagyjuk: azok a csengetés időzítési útján vannak, és a
+                // PSRAM lassabb elérésű.
+                if (length > WS_PSRAM_PARSE_THRESHOLD) {
+                    PSRAM_JSON_DOC(doc);
+                    handle(doc);
                 } else {
-                    Serial.printf("[WS] JSON parse hiba: %s\n", err.c_str());
+                    JsonDocument doc;
+                    handle(doc);
                 }
             }
             break;

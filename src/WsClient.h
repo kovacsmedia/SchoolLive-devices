@@ -13,6 +13,11 @@ using WsMsgCb = std::function<void(const JsonDocument&)>;
 // detekció a sikertelen próbálkozások számlálásán alapul, nem a 4009 kódon.
 using WsRelocateCb = std::function<void()>;
 
+// Ekkora WS-üzenet fölött a JSON-fát PSRAM-ban építjük (ld. WsClient.cpp).
+// 2 kB alatt minden vezérlő üzenet elfér (PREPARE/PLAY/COMMAND/BEACON_ACK);
+// e fölé gyakorlatilag csak a SCHEDULE_SYNC megy.
+#define WS_PSRAM_PARSE_THRESHOLD 2048
+
 class WsClient {
 public:
     void begin(const String& host, uint16_t port, const String& deviceKey);

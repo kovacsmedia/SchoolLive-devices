@@ -148,6 +148,9 @@ static void player_task(void *pvParameters);
 
 bool gotSettings = false;
 bool playerstarted = false;
+// Csak egyszer naplózzuk az érvénytelen beállítást, hogy egy tartós hiba ne
+// árassza el a soros portot (a player_task 100 ms-onként pörögne rajta).
+static bool s_warnedInvalidSetting = false;
 
 /*
  * SchoolLive: a lokális (offline) audio (TTS, MP3, mintatészta) lejátszás
@@ -1551,8 +1554,29 @@ static void player_task(void *pvParameters) {
 
   buf_us = (int64_t)(scSet.buf_ms) * 1000LL;
   clientDacLatency_us = (int64_t)scSet.cDacLat_ms * 1000LL;
-  dmaDescDuration_us =
+
+  // SchoolLive: EZ AZ OSZTÁS ŐRIZETLEN VOLT.
+  //
+  // A `player_get_snapcast_settings()` fent adhat csupa nullát: ha a settings
+  // mutex épp nem létezik (deinit közben), vagy ha a start_player() olyan
+  // állapotban fut le, amikor a codec-header még nem érkezett meg – ilyenkor
+  // az `sr` nulla. A `/ (int64_t)scSet.sr` ekkor `IntegerDivideByZero`
+  // kivétel, ami az ESP32-n azonnali Guru Meditation pánik és újraindulás.
+  //
+  // MIÉRT ÉPP A CSENGETÉSEKNÉL: a player_task MINDEN `start_player()`-nél
+  // újra létrejön, tehát minden kemény újraszinkronnál – és a csengetés körüli
+  // forrásváltás pont resync-hullámot okozott (ld. a snapserver időbélyeg-
+  // ugrását). Így lett a hibából csengetésekhez kötött, szórványos pánik.
+  //
+  // Nulla esetén nem osztunk: a lenti védőháló megvárja az első ÉRVÉNYES
+  // beállítást, és az ott lefutó ág újraszámolja ezt az értéket.
+  if (scSet.sr > 0) {
+    dmaDescDuration_us =
               1000000LL * (int64_t)i2sDmaBufMaxLen / (int64_t)scSet.sr;
+  } else {
+    dmaDescDuration_us = 0;
+    ESP_LOGW(TAG, "player_task: indulaskor nincs ervenyes sample rate – varakozas a beallitasra");
+  }
 #if !USE_SAMPLE_INSERTION
   // force adjust_apll() to set playback speed
   currentDir = 1;
@@ -1601,8 +1625,15 @@ static void player_task(void *pvParameters) {
 
       player_get_snapcast_settings(&__scSet);
 
+      // SchoolLive: a `bits` és a `ch` is KELL az őrbe. Lentebb a chunk-
+      // feldolgozás ezekkel OSZT (chunkDuration_us, framesToBytes,
+      // samples_written, outputBufferDacTime_us …); egy nullás osztó az
+      // ESP32-n `IntegerDivideByZero` kivétel, azaz azonnali Guru Meditation
+      // pánik. A snapserver ServerSettings üzenete csak a buf_ms/latency
+      // mezőket hozza – az sr/bits/ch a codec-headerből jön –, ezért egy
+      // rosszkor érkező beállítás-frissítés félkész struktúrát adhat át.
       if ((__scSet.buf_ms > 0) && (__scSet.chkInFrames > 0) &&
-          (__scSet.sr > 0)) {
+          (__scSet.sr > 0) && (__scSet.bits > 0) && (__scSet.ch > 0)) {
         buf_us = (int64_t)(__scSet.buf_ms) * 1000LL;
 
         clientDacLatency_us = (int64_t)__scSet.cDacLat_ms * 1000LL;
@@ -1679,6 +1710,25 @@ static void player_task(void *pvParameters) {
       }
 
     }
+
+    // VÉGSŐ VÉDŐHÁLÓ: innentől a teljes lejátszó-út oszt a scSet mezőivel.
+    // Ha bármelyik nulla, NEM osztunk, hanem várunk a következő érvényes
+    // beállításra. Az eszköz így legfeljebb néma marad pár száz ms-ig –
+    // szemben azzal, hogy pánikol és újraindul, ami a csengetést is elvinné.
+    if ((scSet.sr == 0) || (scSet.ch == 0) || (scSet.bits == 0)) {
+      if (!s_warnedInvalidSetting) {
+        s_warnedInvalidSetting = true;
+        ESP_LOGW(TAG, "player_task: ervenytelen beallitas (sr=%ld ch=%d bits=%d) – varakozas",
+                 scSet.sr, scSet.ch, scSet.bits);
+      }
+      if (chnk != NULL) {
+        free_pcm_chunk(chnk);
+        chnk = NULL;
+      }
+      vTaskDelay(pdMS_TO_TICKS(100));
+      continue;
+    }
+    s_warnedInvalidSetting = false;
 
     if (chnk == NULL) {
       if (pcmChkQHdl != NULL) {
