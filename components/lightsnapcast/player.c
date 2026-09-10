@@ -580,6 +580,20 @@ int start_player(snapcastSetting_t *setting) {
   
   // create message queue to inform task of changed settings
   snapcastSettingQueueHandle = xQueueCreate(1, sizeof(uint8_t));
+  // SchoolLive: a FreeRTOS NULL queue-ra assert-tel ABORTÁL (Guru Meditation).
+  // A start_player() minden kemény újraszinkronnál lefut, tehát a belső DRAM
+  // elfogyása/töredezése itt azonnal pánikot okozna. Inkább hibával térünk
+  // vissza: a snap stream elnémul, de az eszköz FUT, és a helyi csengetés
+  // (BellManager) tovább működik.
+  if (snapcastSettingQueueHandle == NULL) {
+    ESP_LOGE(TAG, "start_player: nincs eleg memoria a settings queue-hoz (free %u B)",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    // A `playerstarted` flaget VISSZA KELL állítani, különben a player soha
+    // többé nem indulhatna el – az tartós némaság lenne, ami rosszabb, mint
+    // a pánik, amit itt elkerülünk.
+    playerstarted = false;
+    return -1;
+  }
   
   if (pcmChkQHdl == NULL) 
   {
@@ -600,16 +614,35 @@ int start_player(snapcastSetting_t *setting) {
     // so we can save a little RAM here
     entries -= ((i2sDmaBufMaxLen * i2sDmaBufCnt) / chkInFrames);
 
+    if (entries < 1) entries = 1;   // negativ/0 meret eseten a create NULL-t adna
+
     pcmChkQHdl = xQueueCreate(entries, sizeof(pcm_chunk_message_t *));
+    if (pcmChkQHdl == NULL) {
+      ESP_LOGE(TAG, "start_player: nincs eleg memoria a pcm queue-hoz (%d elem, free %u B)",
+               entries, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+      vQueueDelete(snapcastSettingQueueHandle);
+      snapcastSettingQueueHandle = NULL;
+      playerstarted = false;
+      return -1;
+    }
 
     ESP_LOGI(TAG, "created new queue with %d", entries);
   }
 
   ESP_LOGI(TAG, "Start player_task");
 
-  xTaskCreatePinnedToCore(player_task, "player", 1024 * 3, NULL,
-                          SYNC_TASK_PRIORITY, &playerTaskHandle,
-                          SYNC_TASK_CORE_ID);
+  if (xTaskCreatePinnedToCore(player_task, "player", 1024 * 3, NULL,
+                              SYNC_TASK_PRIORITY, &playerTaskHandle,
+                              SYNC_TASK_CORE_ID) != pdPASS) {
+    ESP_LOGE(TAG, "start_player: player_task letrehozasa sikertelen (free %u B)",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    playerTaskHandle = NULL;
+    destroy_pcm_queue(&pcmChkQHdl);
+    vQueueDelete(snapcastSettingQueueHandle);
+    snapcastSettingQueueHandle = NULL;
+    playerstarted = false;
+    return -1;
+  }
 
 
   ESP_LOGI(TAG, "start player done");
@@ -1614,9 +1647,19 @@ static void player_task(void *pvParameters) {
 
           queueCreatedWithChkInFrames = __scSet.chkInFrames;
 
-          pcmChkQHdl = xQueueCreate(entries, sizeof(pcm_chunk_message_t *));
+          if (entries < 1) entries = 1;
 
-          ESP_LOGI(TAG, "created new queue with %d", entries);
+          pcmChkQHdl = xQueueCreate(entries, sizeof(pcm_chunk_message_t *));
+          // Ld. start_player: NULL queue = azonnali assert/abort. Itt nem
+          // tudunk visszatérni, ezért csak jelezzük – a következő chunk
+          // beszúrása (insert_pcm_chunk) NULL-ellenőrzött, és megpróbálja
+          // újra létrehozni a sort.
+          if (pcmChkQHdl == NULL) {
+            ESP_LOGE(TAG, "player_task: nincs eleg memoria a pcm queue-hoz (%d elem, free %u B)",
+                     entries, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+          } else {
+            ESP_LOGI(TAG, "created new queue with %d", entries);
+          }
         }
 
         if ((scSet.sr != __scSet.sr) || (scSet.bits != __scSet.bits) ||
