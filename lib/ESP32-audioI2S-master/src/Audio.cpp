@@ -173,7 +173,17 @@ Audio::Audio(bool internalDAC /* = false */, uint8_t channelEnabled /* = I2S_SLO
     m_i2s_chan_cfg.dma_desc_num  = 16;                     // number of DMA buffer
     m_i2s_chan_cfg.dma_frame_num = 512;                    // I2S frame number in one DMA buffer.
     m_i2s_chan_cfg.auto_clear    = true;                   // i2s will always send zero automatically if no data to send
-    i2s_new_channel(&m_i2s_chan_cfg, &m_i2s_tx_handle, NULL);
+    // SchoolLive: a visszateresi erteket EDDIG eldobtuk. Ha az I2S 0-s
+    // vezerlot mar a Snapcast lejatszo birtokolja, a foglalas ESP_ERR_NOT_FOUND-dal
+    // elbukik, a handle NULL marad, es a lejatszas nema, vegtelen
+    // "i2s_channel_write: handle is NULL" hibafolyamba fullad.
+    {
+        esp_err_t e = i2s_new_channel(&m_i2s_chan_cfg, &m_i2s_tx_handle, NULL);
+        if(e != ESP_OK) {
+            m_i2s_tx_handle = NULL;
+            log_e("i2s_new_channel failed: %d (i2s port busy?)", (int)e);
+        }
+    }
 
     m_i2s_std_cfg.slot_cfg.data_bit_width = I2S_DATA_BIT_WIDTH_16BIT;  // Bits per sample
     m_i2s_std_cfg.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO;   // I2S channel slot bit-width equals to data bit-width
@@ -288,7 +298,14 @@ Audio::~Audio() {
         m_playlistBuff = NULL;
     }
 #if ESP_IDF_VERSION_MAJOR == 5
-    i2s_del_channel(m_i2s_tx_handle);
+    // SchoolLive: az i2s_del_channel() ESP_ERR_INVALID_STATE-tel VISSZAUTASITJA
+    // az engedelyezett csatornat, es a vezerlo foglalva marad – ettol a Snapcast
+    // lejatszo tobbe nem tud I2S-t foglalni. Eloszor tehat letiltjuk.
+    if(m_i2s_tx_handle) {
+        i2s_channel_disable(m_i2s_tx_handle);
+        i2s_del_channel(m_i2s_tx_handle);
+        m_i2s_tx_handle = NULL;
+    }
 #else
     i2s_driver_uninstall((i2s_port_t)m_i2s_num); // #215 free I2S buffer
 #endif
@@ -4793,6 +4810,11 @@ bool Audio::playSample(int16_t sample[2]) {
     }
 
     if(m_f_internalDAC) { s32 += 0x80008000; }
+    // SchoolLive: NULL handle-lel az i2s_channel_write mindig hibat naploz.
+    // Mivel ez mintankent egyszer fut le, egy sikertelen I2S-foglalas utan
+    // masodpercenkent tizezres nagysagrendu hibasort ontott a soros portra,
+    // kiehezteve az IDLE taskot. Ilyenkor nincs mit tenni: csendben kilepunk.
+    if(m_i2s_tx_handle == NULL) { return false; }
     m_i2s_bytesWritten = 0;
     #if(ESP_IDF_VERSION_MAJOR == 5)
     esp_err_t err = i2s_channel_write(m_i2s_tx_handle, (const char*)&s32, sizeof(uint32_t), &m_i2s_bytesWritten, 0);

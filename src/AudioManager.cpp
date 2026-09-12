@@ -42,6 +42,10 @@ void AudioManager::begin(PersistStore* store) {
     _instance = this;
     _store = store;
 
+    if (_audioMux == nullptr) {
+        _audioMux = xSemaphoreCreateRecursiveMutex();
+    }
+
     if (_store) {
         currentVolume = _store->getVolume(9);
         Serial.printf("[AUDIO] Restored volume: %d\n", currentVolume);
@@ -69,26 +73,88 @@ void AudioManager::setI2SCallbacks(
     _afterLocalPlayback = afterLocalPlayback;
 }
 
-void AudioManager::ensureAudio() {
-    if (audio) return;
+bool AudioManager::ensureAudio() {
+    _releaseAudioPending = false;
 
-    audio = new Audio();
+    if (audio) {
+        if (audio->i2sReady()) return true;
 
-    audio->setPinout(I2S_BCLK, I2S_LRC, I2S_DIN);
-    audio->forceMono(true);
+        // Egy korábbi próbálkozás I2S nélkül maradt – ilyen példánnyal
+        // lejátszani nem lehet, csak hibát ontana. Eldobjuk, és újra
+        // próbáljuk lentebb.
+        Serial.println("[AUDIO] A meglevo Audio peldany I2S nelkul van – eldobjuk");
+        delete audio;
+        audio = nullptr;
+    }
 
-    setVolume(currentVolume);
+    /*
+     * Két kísérlet. Az elsőnél a Snapcast már elvileg elengedte az I2S-t
+     * (beforeLocalPlayback). Ha mégsem – például épp egy hard resync alatt
+     * foglalta vissza –, még egyszer megkérjük rá, és újrapróbáljuk.
+     * A csengetés SOSEM maradhat el egy versenyhelyzet miatt.
+     */
+    for (int attempt = 1; attempt <= 2; attempt++) {
+        audio = new Audio();
 
-    Serial.printf(
-        "[AUDIO] Local Audio initialized on I2S BCLK=%d LRC=%d DIN=%d\n",
-        I2S_BCLK,
-        I2S_LRC,
-        I2S_DIN
-    );
+        if (audio->i2sReady()) {
+            audio->setPinout(I2S_BCLK, I2S_LRC, I2S_DIN);
+            audio->forceMono(true);
+
+            setVolume(currentVolume);
+
+            Serial.printf(
+                "[AUDIO] Local Audio initialized on I2S BCLK=%d LRC=%d DIN=%d\n",
+                I2S_BCLK,
+                I2S_LRC,
+                I2S_DIN
+            );
+            return true;
+        }
+
+        Serial.printf("[AUDIO] I2S foglalas sikertelen (%d. probalkozas)\n", attempt);
+        delete audio;
+        audio = nullptr;
+
+        if (attempt == 1 && _beforeLocalPlayback) {
+            _beforeLocalPlayback();
+            delay(150);
+        }
+    }
+
+    Serial.println("[AUDIO] ❌ Az I2S vezerlot nem sikerult megszerezni – helyi lejatszas kimarad");
+    return false;
+}
+
+void AudioManager::destroyAudioIfPending() {
+    if (!_releaseAudioPending) return;
+    _releaseAudioPending = false;
+
+    if (audio) {
+        /*
+         * A destruktor letiltja és felszabadítja az I2S csatornát, így a
+         * Snapcast lejátszó vissza tudja venni. Ez a HELYE: az
+         * `Audio::loop()` már visszatért, nem az objektum belsejéből törlünk.
+         */
+        delete audio;
+        audio = nullptr;
+        Serial.println("[AUDIO] Helyi lejatszo lezarva, I2S elengedve");
+    }
+
+    if (_afterLocalPlayback) {
+        _afterLocalPlayback();
+    }
 }
 
 void AudioManager::loop() {
-    if (!audio) return;
+    lockAudio();
+
+    if (!audio) {
+        // A felszabadítás akkor is le kell fusson, ha az Audio példány már
+        // eltűnt – ilyenkor csak az afterLocalPlayback callback marad hátra.
+        destroyAudioIfPending();
+        unlockAudio();
+        return;
+    }
 
     if (_urlActive && audio->isRunning()) {
         _urlHasPlayed = true;
@@ -120,6 +186,11 @@ void AudioManager::loop() {
         Serial.println("[AUDIO] Local file stopped without EOF callback – cleanup");
         notifyEof();
     }
+
+    // Az `audio->loop()` már visszatért: innen biztonságos törölni.
+    destroyAudioIfPending();
+
+    unlockAudio();
 }
 
 void AudioManager::setVolume(uint8_t vol) {
@@ -179,9 +250,11 @@ void AudioManager::applyEffectiveVolume() {
     uint8_t eff = getEffectiveVolume();
     uint8_t internalVolume = map(eff, 1, 10, 2, 21);
 
+    lockAudio();
     if (audio) {
         audio->setVolume(internalVolume);
     }
+    unlockAudio();
 
     if (_onVolumeChanged) {
         // A Snapcast oldali skála (0..100) konverziót a SnapcastClient végzi
@@ -207,12 +280,22 @@ void AudioManager::playFile(const char* filename) {
      * előbb a Snapcast engedje el az I2S drivert,
      * utána inicializálhat az ESP32-audioI2S.
      */
+    lockAudio();
+
     if (_beforeLocalPlayback) {
         _beforeLocalPlayback();
         delay(100);
     }
 
-    ensureAudio();
+    if (!ensureAudio()) {
+        // Nincs I2S – a Snapcastot vissza kell engedni, különben némán állna
+        // a lejátszó, miközben a csatornát senki nem használja.
+        if (_afterLocalPlayback) {
+            _afterLocalPlayback();
+        }
+        unlockAudio();
+        return;
+    }
 
     _eofReceived = false;
     _eofTimeMs = 0;
@@ -225,6 +308,8 @@ void AudioManager::playFile(const char* filename) {
     _localFileActive = true;
 
     audio->connecttoFS(LittleFS, filename);
+
+    unlockAudio();
 }
 
 void AudioManager::playUrl(const char* url) {
@@ -246,22 +331,24 @@ void AudioManager::playUrl(const char* url) {
 void AudioManager::releaseLocalPlaybackIfNeeded() {
     if (!_localFileActive) return;
 
+    lockAudio();
+
     _localFileActive = false;
 
     if (audio) {
         audio->stopSong();
-
-        /*
-         * Itt nem töröljük az Audio példányt, mert az ESP32-audioI2S belső
-         * állapotának destruktora/driver-kezelése boardonként eltérő lehet.
-         * Viszont a Snapcast csak az after callback után próbál újra I2S-t foglalni.
-         */
     }
 
-    if (_afterLocalPlayback) {
-        delay(100);
-        _afterLocalPlayback();
-    }
+    /*
+     * Az Audio példány törlése (és vele az I2S csatorna felszabadítása) NEM
+     * történhet itt: ez a metódus az EOF callbackből, azaz az `Audio::loop()`
+     * belsejéből is hívódik, és a saját objektumát törölné ki maga alól.
+     * A loop() végén, a visszatérés után zárjuk le – ott hívjuk az
+     * afterLocalPlayback callbacket is, amikor az I2S tényleg szabad.
+     */
+    _releaseAudioPending = true;
+
+    unlockAudio();
 }
 
 void AudioManager::notifyEof() {
@@ -295,6 +382,8 @@ void AudioManager::notifyError() {
 }
 
 void AudioManager::stop() {
+    lockAudio();
+
     if (audio) {
         audio->stopSong();
     }
@@ -309,12 +398,15 @@ void AudioManager::stop() {
     _eofTimeMs = 0;
 
     releaseLocalPlaybackIfNeeded();
+
+    unlockAudio();
 }
 
 bool AudioManager::isPlaying() const {
-    if (!audio) return false;
-
-    return audio->isRunning();
+    lockAudio();
+    const bool running = (audio != nullptr) && audio->isRunning();
+    unlockAudio();
+    return running;
 }
 
 bool AudioManager::isStreamMode() const {

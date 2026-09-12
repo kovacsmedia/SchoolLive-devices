@@ -111,14 +111,14 @@ void SnapcastClient::setLocalVolume(uint8_t volume) {
 
 void SnapcastClient::pauseForLocalPlayback() {
     if (_pausedForLocalPlayback) return;
-    Serial.println("[SNAP] pauseForLocalPlayback (stub)");
+    Serial.println("[SNAP] I2S atadasa a helyi lejatszonak");
     _pausedForLocalPlayback = true;
     snap_app_pause();
 }
 
 void SnapcastClient::resumeAfterLocalPlayback() {
     if (!_pausedForLocalPlayback) return;
-    Serial.println("[SNAP] resumeAfterLocalPlayback (stub)");
+    Serial.println("[SNAP] I2S visszavetele a Snapcasthoz");
     snap_app_resume();
     _pausedForLocalPlayback = false;
 }

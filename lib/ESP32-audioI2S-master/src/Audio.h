@@ -182,6 +182,10 @@ public:
     bool setPinout(uint8_t BCLK, uint8_t LRC, uint8_t DOUT, int8_t MCLK = I2S_GPIO_UNUSED);
     bool pauseResume();
     bool isRunning() {return m_f_running;}
+    // SchoolLive: az I2S 0-s vezerlot a Snapcast lejatszo is hasznalja. Ha a
+    // konstruktorban nem sikerult megszerezni, a handle NULL marad, es minden
+    // i2s_channel_write hibaval tér vissza – ezt a hivo fel tudja deriteni.
+    bool i2sReady() const {return m_i2s_tx_handle != NULL;}
     void loop();
     uint32_t stopSong();
     void forceMono(bool m);

@@ -172,6 +172,23 @@ static bool s_warnedInvalidSetting = false;
  */
 static volatile bool s_player_paused = false;
 
+/*
+ * I2S-ÁTADÁS A HELYI LEJÁTSZÓNAK.
+ *
+ * A szünet önmagában NEM volt elég: a player_task felfüggesztve is TARTOTTA az
+ * I2S 0-s vezérlőt, így az ESP32-audioI2S `Audio` konstruktora némán elbukott
+ * ("i2s controller 0 has been occupied by i2s_driver"), a handle NULL maradt,
+ * és a helyi csengetés végtelen `i2s_channel_write: handle is NULL` hibába
+ * fulladt – kiéheztetve az IDLE taskot.
+ *
+ * A csatornát viszont NEM törölhetjük egy másik taskból, amíg a player_task
+ * bent lehet az `i2s_channel_write()`-ban: a driver mutexén holtpontra
+ * futnánk. Ezért KOOPERATÍV a szünet: a `player_pause()` csak jelez, a
+ * felszabadítást maga a player_task végzi el a ciklusa elején, majd magát
+ * függeszti fel. Ébredéskor újra megszerzi a csatornát.
+ */
+static volatile bool s_player_i2s_released = false;
+
 extern void audio_set_mute(bool mute);
 extern void audio_dac_enable(bool enabled);
 
@@ -1178,7 +1195,7 @@ static void tg0_timer_deinit(void) {
     // amit elnyelünk – csak az számít, hogy a törlés előtt tiltva legyen.
     (void)gptimer_disable(gptimer);
 
-    e = gptimer_del_timer(gptimer);
+    esp_err_t e = gptimer_del_timer(gptimer);
     if (e != ESP_OK) {
       ESP_LOGW(TAG, "tg0_timer_deinit: del_timer: %s", esp_err_to_name(e));
     }
@@ -1827,6 +1844,43 @@ static void player_task(void *pvParameters) {
   }
 
   while (1) {
+    // ── Kooperatív szünet: itt biztosan nem vagyunk az I2S driver belsejében ──
+    if (s_player_paused) {
+      player_release_i2s();
+      s_player_i2s_released = true;
+      ESP_LOGI(TAG, "player_task: I2S elengedve, felfuggesztes");
+
+      vTaskSuspend(NULL);  // innen a player_resume() ébreszt
+
+      s_player_i2s_released = false;
+
+      if ((scSet.sr > 0) && (scSet.bits > 0) && (scSet.ch > 0)) {
+        if (player_setup_i2s(&scSet) < 0) {
+          // Nem sikerült visszavenni a csatornát (a helyi lejátszó még
+          // tartja). Nem pörgünk rá: a következő körben újrapróbáljuk.
+          ESP_LOGW(TAG, "player_task: I2S visszavetele sikertelen – ujraprobalas");
+          vTaskDelay(pdMS_TO_TICKS(200));
+          continue;
+        }
+        my_i2s_channel_enable(tx_chan);
+        ESP_LOGI(TAG, "player_task: I2S visszaveve, folytatas");
+      }
+
+      initialSync = 0;
+      if (chnk != NULL) {
+        free_pcm_chunk(chnk);
+        chnk = NULL;
+      }
+      continue;
+    }
+
+    // Ha bármilyen okból nincs csatornánk, NEM írunk rá: az ESP-IDF minden
+    // hívásra hibát naplózna, és a ciklus teljes sebességgel pörögne.
+    if (tx_chan == NULL) {
+      vTaskDelay(pdMS_TO_TICKS(50));
+      continue;
+    }
+
     //ESP_LOGD(TAG, "HIGH: %u", uxTaskGetStackHighWaterMark( NULL ));
     
     // ESP_LOGW( TAG, "32b f %d b %d", heap_caps_get_free_size
@@ -2595,12 +2649,41 @@ void player_pause(void) {
      * Itt nincs mit suspendálni.
      */
     s_player_paused = true;
-    ESP_LOGI(TAG, "player_pause: player_task not running yet, flag set");
+
+    /*
+     * A task nem fut, de a csatorna EDDIG akkor is foglalt maradhatott (pl. a
+     * setup sikerült, a task indítása nem, vagy a task időközben kilépett).
+     * Ilyenkor a helyi lejátszó sosem kapott volna I2S-t. Itt nincs kivel
+     * versenyeznünk, ezért közvetlenül elengedjük.
+     */
+    player_release_i2s();
+    s_player_i2s_released = true;
+
+    ESP_LOGI(TAG, "player_pause: player_task not running yet, I2S elengedve");
     return;
   }
 
+  s_player_i2s_released = false;
   s_player_paused = true;
-  vTaskSuspend(playerTaskHandle);
+
+  /*
+   * Megvárjuk, amíg a player_task a ciklusa elején elengedi az I2S-t és
+   * felfüggeszti magát. Normál esetben ez egy chunk-időn belül (~20 ms)
+   * megtörténik. Ha mégsem – mert épp egy hosszú blokkoló híváson áll –,
+   * kényszerítünk: a csengetés nem maradhat el egy beragadt task miatt.
+   */
+  const uint32_t waitStart = (uint32_t)(esp_timer_get_time() / 1000ULL);
+  while (!s_player_i2s_released) {
+    if (((uint32_t)(esp_timer_get_time() / 1000ULL) - waitStart) > 1500) {
+      ESP_LOGW(TAG, "player_pause: a task nem valaszolt 1500 ms alatt – kenyszeritett felfuggesztes");
+      vTaskSuspend(playerTaskHandle);
+      player_release_i2s();
+      s_player_i2s_released = true;
+      break;
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+
   ESP_LOGI(TAG, "player_pause: player_task suspended");
 }
 
@@ -2621,6 +2704,8 @@ void player_resume(void) {
    */
   reset_latency_buffer();
 
+  // Az I2S-t maga a player_task veszi vissza az ébredés után (ld. a ciklus
+  // elején lévő kooperatív szünet-ágat) – innen nem nyúlunk a driverhez.
   vTaskResume(playerTaskHandle);
   ESP_LOGI(TAG, "player_resume: player_task resumed, latency buffer reset");
 }

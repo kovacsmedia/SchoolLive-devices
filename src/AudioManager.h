@@ -80,6 +80,42 @@ private:
     Audio* audio = nullptr;
     PersistStore* _store = nullptr;
 
+    /*
+     * I2S-TULAJDONLÁS.
+     *
+     * Az I2S 0-s vezérlő EGY darab van, és két gazdája lenne: a Snapcast
+     * player_task (components/lightsnapcast/player.c) és az itteni
+     * ESP32-audioI2S példány. Amelyik előbb megszerzi, az tartja – eddig
+     * ÖRÖKRE, mert az `Audio` példányt sosem töröltük. Ennek két végzetes
+     * következménye volt:
+     *
+     *  1. Ha egy offline csengetés a Snapcast indulása ELŐTT szólalt meg, a
+     *     Snapcast onnantól sosem kapott csatornát:
+     *       "i2s controller 0 has been occupied by i2s_driver"
+     *     → a lejátszó 30 s után újraindította az eszközt, végtelen ciklusban.
+     *  2. Fordítva: ha a Snapcast tartotta, az `Audio` konstruktora némán
+     *     elbukott, a handle NULL maradt, és a lejátszás
+     *       "i2s_channel_write: handle is NULL"
+     *     hibasorok végtelen áradatába fulladt, kiéheztetve az IDLE taskot.
+     *
+     * Ezért mostantól a helyi lejátszás VÉGÉN az `Audio` példányt TÖRÖLJÜK
+     * (a destruktora letiltja és felszabadítja a csatornát), így a Snapcast
+     * vissza tudja venni. A törlés soha nem történhet az EOF callbackből –
+     * az `Audio::loop()`-on belülről jön –, ezért halasztjuk a loop() végére.
+     */
+    bool _releaseAudioPending = false;
+    void destroyAudioIfPending();
+
+    /*
+     * A playFile()/stop() a TaskNetwork-ből, a loop() az Arduino loopTask-ból
+     * fut. Ugyanaz az `Audio` objektum és ugyanaz a megnyitott fájl – ez
+     * 2026-09-13-án `assert failed: _lock_close` pánikot okozott, mert a
+     * connecttoFS() a másik task alatt zárta le a FILE*-ot. Egy mutex zárja.
+     */
+    mutable SemaphoreHandle_t _audioMux = nullptr;
+    void lockAudio() const   { if (_audioMux) xSemaphoreTakeRecursive(_audioMux, portMAX_DELAY); }
+    void unlockAudio() const { if (_audioMux) xSemaphoreGiveRecursive(_audioMux); }
+
     uint8_t currentVolume = 9;
 
     // 0 = nincs override, 1..10 = effective volume erre van rögzítve.
@@ -105,7 +141,7 @@ private:
     void (*_beforeLocalPlayback)() = nullptr;
     void (*_afterLocalPlayback)() = nullptr;
 
-    void ensureAudio();
+    bool ensureAudio();
     void releaseLocalPlaybackIfNeeded();
 };
 
