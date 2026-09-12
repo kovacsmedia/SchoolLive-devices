@@ -444,6 +444,11 @@ void startNormalMode() {
         "ESP32_S3"
     );
 
+    // Csengetés-védelem: az OTA nem indulhat, ha a következő jelzés 5 percen
+    // belül esedékes (ld. OTA_BELL_GUARD_S). A frissítés alatt az eszköz ~2
+    // percig néma – még a helyi, offline csengetés sem szólal meg.
+    otaManager.setBellManager(bellManager);
+
     xTaskCreatePinnedToCore(
         TaskNetwork,
         "NetworkTask",

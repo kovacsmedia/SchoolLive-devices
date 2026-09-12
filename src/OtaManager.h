@@ -4,6 +4,7 @@
 #include "BackendClient.h"
 
 class SLNetworkManager;
+class BellManager;
 class SnapcastClient;
 class AudioManager;
 struct DeviceTelemetry;
@@ -26,6 +27,11 @@ struct DeviceTelemetry;
  * blokkoló a TaskNetwork-ön belül. A felhasználó hangtelenül érzékel egy
  * ~30-60 másodperces kihagyást, majd a reboot után visszatér a stream.
  */
+// Ennyivel a következő csengetés előtt már NEM indítunk OTA-t. A frissítés
+// tipikusan ~2 perc (1,6 MB HTTPS-en + újraindulás), tehát 5 perc kényelmes
+// tartalékot ad egy lassabb hálózatra is.
+#define OTA_BELL_GUARD_S 300
+
 class OtaManager {
 public:
     OtaManager() = default;
@@ -41,12 +47,29 @@ public:
     );
 
     /** A TaskNetwork loop-jából hívjuk, ütemezi a check-eket. */
+    /**
+     * Csengetés-védelem bekötése (opcionális).
+     *
+     * Az OTA alatt az eszköz ~2 percig NEM tud hangot adni: a flash írása és
+     * az újraindulás alatt még a helyi, offline csengetés sem szólal meg. Ha
+     * egy beállított jelzés ebbe az ablakba esik, KIMARAD – ami a rendszer
+     * alapszabályát sértené.
+     *
+     * Ezért ha a következő csengetés BELL_GUARD_S-en belül esedékes, a
+     * frissítés elhalasztódik a következő ellenőrzési körre.
+     *
+     * Ha nincs beállítva, a védelem egyszerűen nem működik – a frissítés
+     * ilyenkor is elindul, tehát a bekötés hiánya nem bénítja meg az OTA-t.
+     */
+    void setBellManager(BellManager& bells) { _bells = &bells; }
+
     void loop();
 
     /** Explicit OTA kényszerítés (pl. admin command-ról). */
     void forceCheckNow();
 
 private:
+    BellManager*      _bells = nullptr;
     SLNetworkManager* _net      = nullptr;
     BackendClient*    _backend  = nullptr;
     SnapcastClient*   _snap     = nullptr;

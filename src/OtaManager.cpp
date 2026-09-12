@@ -6,6 +6,7 @@
 #include "SLNetworkManager.h"
 #include "SnapcastClient.h"
 #include "DeviceTelemetry.h"
+#include "BellManager.h"
 
 // A beragadás-felügyelet szívverése (main.cpp). Az OTA-letöltés percekig a
 // hálózati szálban tartja a vezérlést, ezért onnan is etetni kell – különben
@@ -174,6 +175,38 @@ void OtaManager::runCheckAndMaybeUpdate() {
     if (!fw.mandatory) {
         Serial.println("[OTA] Not mandatory, skip auto-install");
         return;
+    }
+
+    /*
+     * CSENGETÉS-VÉDELEM.
+     *
+     * Az OTA alatt az eszköz ~2 percig NÉMA: a flash írása és az azt követő
+     * újraindulás alatt még a helyi, offline csengetés sem tud megszólalni.
+     * Egy ebbe az ablakba eső jelzés tehát KIMARADNA – ami a rendszer
+     * alapszabályát sértené.
+     *
+     * A `getSecondsToNextEvent()` -1-et ad, ha nincs időszinkron, ki van
+     * kapcsolva a csengetés, nincs betöltött menetrend, vagy MA már nincs
+     * több jelzés. Mindegyik esetben nyugodtan frissíthetünk.
+     *
+     * A halasztás nem vész el: a következő ellenőrzési körben (CHECK_INTERVAL_MS,
+     * 30 perc) újra megpróbáljuk, és a backend `OTA_UPDATE` ébresztője is
+     * bármikor újra indíthatja a kört.
+     */
+    if (_bells) {
+        const int secToBell = _bells->getSecondsToNextEvent();
+        if (secToBell >= 0 && secToBell <= (int)OTA_BELL_GUARD_S) {
+            Serial.printf(
+                "[OTA] HALASZTVA: %d mp mulva csengetes (vedelem: %d mp). "
+                "A frissites a kovetkezo korben ujraprobalkozik.\n",
+                secToBell, (int)OTA_BELL_GUARD_S
+            );
+            if (_backend) {
+                _backend->reportOtaStatus(fw.version, "PENDING", 0,
+                                          "halasztva: kozeli csengetes");
+            }
+            return;
+        }
     }
 
     performUpdate(fw);
