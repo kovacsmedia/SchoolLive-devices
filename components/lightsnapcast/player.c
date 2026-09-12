@@ -178,6 +178,46 @@ extern void audio_dac_enable(bool enabled);
 static i2s_chan_handle_t tx_chan = NULL;  // I2S tx channel handler
 static bool i2sEnabled = false;
 
+/*
+ * ── I2S FELSZABADÍTÁS EGY HELYEN (2026-09-13) ─────────────────────────────
+ *
+ * Korábban két helyen is ez állt:
+ *     my_i2s_channel_disable(tx_chan);
+ *     i2s_del_channel(tx_chan);     // <- a visszatérést ELDOBTUK
+ *     tx_chan = NULL;               // <- a handle-t mindenképp elengedtük
+ *
+ * Az `i2s_del_channel()` viszont HIBÁVAL tér vissza, ha a csatorna még
+ * engedélyezett – a `my_i2s_channel_disable()` pedig csak akkor tilt le, ha az
+ * `i2sEnabled` flag igaz. A két állapot el tud csúszni (pl. a hálózat
+ * elvesztésekor a player_task a takarító ágon lép ki). Ilyenkor a vezérlő
+ * FOGLALVA MARAD, a handle-t viszont eldobtuk – az I2S-t onnantól soha többé
+ * nem lehet megszerezni:
+ *     i2s controller 0 has been occupied by i2s_driver
+ *     i2s_new_channel(1032): no available channel found
+ * Az AP visszakapcsolása után ez végtelen újrapróbálkozást és naplóözönt
+ * okozott, ami a UART-on keresztül kiéheztette az IDLE taskot → watchdog.
+ *
+ * Ezért: MINDIG tiltunk (a "már tiltva" hibát elnyelve), és a handle-t CSAK
+ * sikeres törlés után engedjük el. Ha a törlés nem megy, megtartjuk – így a
+ * következő próbálkozás újra megkísérelheti, nem szivárog el a vezérlő.
+ */
+static void player_release_i2s(void) {
+  if (tx_chan == NULL) return;
+
+  // Feltétel nélkül: a flag hazudhat. Az "already disabled" hibát elnyeljük.
+  (void)i2s_channel_disable(tx_chan);
+  i2sEnabled = false;
+
+  esp_err_t e = i2s_del_channel(tx_chan);
+  if (e == ESP_OK) {
+    tx_chan = NULL;
+    return;
+  }
+
+  ESP_LOGW(TAG, "i2s_del_channel: %s – a handle megmarad ujraprobalasra",
+           esp_err_to_name(e));
+}
+
 i2s_std_gpio_config_t pin_config0;
 i2s_port_t i2sNum;
 
@@ -346,11 +386,7 @@ static esp_err_t player_setup_i2s(snapcastSetting_t *setting) {
 #endif
 
 
-  if (tx_chan) {
-    my_i2s_channel_disable(tx_chan);
-    i2s_del_channel(tx_chan);
-    tx_chan = NULL;
-  }
+  player_release_i2s();
 
   i2s_chan_config_t tx_chan_cfg = {
       .id = i2sNum,
@@ -369,8 +405,26 @@ static esp_err_t player_setup_i2s(snapcastSetting_t *setting) {
   // újraindulás – a hívók már kezelik a negatív visszatérést.
   {
     esp_err_t e = i2s_new_channel(&tx_chan_cfg, &tx_chan, NULL);
+
+    // Ha a vezérlő foglaltnak látszik, de mi még tartunk egy handle-t, akkor
+    // egy korábbi törlés bukott el. Egyszer megpróbáljuk elengedni és újra.
+    if (e == ESP_ERR_NOT_FOUND && tx_chan != NULL) {
+      player_release_i2s();
+      e = i2s_new_channel(&tx_chan_cfg, &tx_chan, NULL);
+    }
+
     if (e != ESP_OK) {
-      ESP_LOGE(TAG, "player_setup_i2s: i2s_new_channel hiba: %s", esp_err_to_name(e));
+      // NAPLÓ-FOJTÁS: ez az út másodpercenként ~50-szer fut le, ha a lejátszó
+      // nem tud elindulni, és az IDF is naplóz minden kísérletnél. 115200
+      // baudon ez megbénítja a UART-ot, kiéhezteti az IDLE taskot, és a
+      // watchdog újraindítja az eszközt – pontosan ez történt az AP
+      // visszakapcsolásakor.
+      static uint32_t lastLogMs = 0;
+      const uint32_t nowMs = (uint32_t)(esp_timer_get_time() / 1000LL);
+      if ((uint32_t)(nowMs - lastLogMs) >= 1000) {
+        lastLogMs = nowMs;
+        ESP_LOGE(TAG, "player_setup_i2s: i2s_new_channel hiba: %s", esp_err_to_name(e));
+      }
       tx_chan = NULL;
       return -1;
     }
@@ -410,8 +464,13 @@ static esp_err_t player_setup_i2s(snapcastSetting_t *setting) {
   {
     esp_err_t e = i2s_channel_init_std_mode(tx_chan, &tx_std_cfg);
     if (e != ESP_OK) {
-      ESP_LOGE(TAG, "player_setup_i2s: i2s_channel_init_std_mode hiba: %s",
-               esp_err_to_name(e));
+      static uint32_t lastInitLogMs = 0;
+      const uint32_t nowMs2 = (uint32_t)(esp_timer_get_time() / 1000LL);
+      if ((uint32_t)(nowMs2 - lastInitLogMs) >= 1000) {
+        lastInitLogMs = nowMs2;
+        ESP_LOGE(TAG, "player_setup_i2s: i2s_channel_init_std_mode hiba: %s",
+                 esp_err_to_name(e));
+      }
       i2s_del_channel(tx_chan);
       tx_chan = NULL;
       return -1;
@@ -1110,10 +1169,9 @@ static void tg0_timer_deinit(void) {
     // igaz volt. A két állapot elcsúszhat, és akkor az ESP_ERROR_CHECK
     // ABORTÁL, azaz Guru Meditation pánikkal újraindítja az eszközt.
     // Egy timer-takarítás sosem érhet ennyit: naplózunk és megyünk tovább.
-    esp_err_t e = my_gptimer_stop(gptimer);
-    if (e != ESP_OK) {
-      ESP_LOGW(TAG, "tg0_timer_deinit: stop/disable: %s", esp_err_to_name(e));
-    }
+    // A "nincs engedélyezve" teljesen normális (a timer már le volt tiltva),
+    // ezért nem naplózzuk – csak zajt csinálna a soros porton.
+    (void)my_gptimer_stop(gptimer);
 
     // Biztos ami biztos: ha a stop nem tiltotta le (mert a flag hamis volt),
     // itt még egyszer megpróbáljuk. A már letiltott timeren ez hibát ad,
@@ -1577,13 +1635,31 @@ int32_t insert_pcm_chunk(pcm_chunk_message_t *pcmChunk) {
 
     free_pcm_chunk(pcmChunk);
 
-    snapcastSetting_t curSet;
-    // A visszatérési értéket MUSZÁJ nézni: ha a settings mutex nincs meg,
-    // a curSet nullázott, és a start_player() érvénytelen paraméterekkel
-    // (sr=0, ch=0, bits=0) próbálna I2S-t konfigurálni.
-    if (player_get_snapcast_settings(&curSet) == pdPASS &&
-        !curSet.muted && gotSettings) {
-        start_player(&curSet);
+    /*
+     * ÚJRAPRÓBÁLKOZÁS-FOJTÁS (2026-09-13).
+     *
+     * Ez az ág másodpercenként ~50-szer fut le. Ha a `start_player()` tartósan
+     * bukik (pl. a foglalva maradt I2S-vezérlő miatt), akkor minden egyes
+     * kísérlet naplóz – NEM csak mi, hanem az IDF is (`i2s_platform`,
+     * `i2s_common`). 115200 baudon ez telíti a UART-ot, a `snap_http` task
+     * beragad a `uart_tx_char`-ba, kiéhezteti az IDLE taskot, és a watchdog
+     * újraindítja az eszközt. Pontosan ez történt az AP visszakapcsolásakor.
+     *
+     * Másodpercenként EGY kísérlet bőven elég: ha az I2S felszabadul, egy
+     * másodpercen belül elindul a lejátszás.
+     */
+    static uint32_t lastTryMs = 0;
+    if ((uint32_t)(nowMs - lastTryMs) >= 1000) {
+      lastTryMs = nowMs;
+
+      snapcastSetting_t curSet;
+      // A visszatérési értéket MUSZÁJ nézni: ha a settings mutex nincs meg,
+      // a curSet nullázott, és a start_player() érvénytelen paraméterekkel
+      // (sr=0, ch=0, bits=0) próbálna I2S-t konfigurálni.
+      if (player_get_snapcast_settings(&curSet) == pdPASS &&
+          !curSet.muted && gotSettings) {
+          start_player(&curSet);
+      }
     }
 
     if ((uint32_t)(nowMs - s_noStartFirstMs) > RECOVER_TIMEOUT_MS) {
@@ -2475,11 +2551,7 @@ static void player_task(void *pvParameters) {
 
       audio_set_mute(true);
       audio_dac_enable(false);
-      my_i2s_channel_disable(tx_chan);
-      if (tx_chan != NULL) {
-        i2s_del_channel(tx_chan);
-        tx_chan = NULL;
-      }
+      player_release_i2s();
 
       break;
     }
