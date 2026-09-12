@@ -107,6 +107,17 @@ private:
     void destroyAudioIfPending();
 
     /*
+     * A helyi MP3-at ez a task (Arduino loopTask) dekódolja, PRIORITÁS 1-en.
+     * Ugyanazon a magon fut a snap_http (17) és a snap_dac (23) – mindkettő
+     * mindig megelőzi, így a dekóder kiéhezett, a DMA kiürült, és a hang
+     * darabos lett. A lejátszás idejére megemeljük a saját prioritásunkat
+     * (a snap oldalon a snap_app_pause() leengedi a magáét).
+     */
+    bool        _prioRaised = false;
+    UBaseType_t _prioSaved  = 1;
+    void applyPlaybackPriority(bool playing);
+
+    /*
      * A playFile()/stop() a TaskNetwork-ből, a loop() az Arduino loopTask-ból
      * fut. Ugyanaz az `Audio` objektum és ugyanaz a megnyitott fájl – ez
      * 2026-09-13-án `assert failed: _lock_close` pánikot okozott, mert a

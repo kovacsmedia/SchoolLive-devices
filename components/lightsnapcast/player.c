@@ -1618,6 +1618,21 @@ int32_t insert_pcm_chunk(pcm_chunk_message_t *pcmChunk) {
     return -1;
   }
 
+  /*
+   * SZÜNET ALATT ELDOBJUK. A player_task fel van függesztve és az I2S-t is
+   * elengedte, tehát ezekkel a chunkokkal senki nem kezd semmit: a sor
+   * megtelne, és minden beszúrás 1 ms-ot várakozna a `xQueueSend`-ben –
+   * másodpercenként ~50-szer, tiszta pazarlás a helyi lejátszás rovására.
+   *
+   * A "nem indul a lejátszó" órát is nullázzuk: a szünet nem hiba, nem
+   * szabad, hogy a 30 s-os kényszer-újraindítás felé számoljon.
+   */
+  if (s_player_paused) {
+    free_pcm_chunk(pcmChunk);
+    player_reset_nostart_timer();
+    return 0;
+  }
+
   if (pcmChkQHdl == NULL) {
     /*
      * SchoolLive: EZ AZ ÚT PERCENKÉNT HÁROMEZERSZER FUT LE, ha a lejátszó nem

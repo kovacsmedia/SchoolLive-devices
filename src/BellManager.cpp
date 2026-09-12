@@ -847,6 +847,48 @@ static inline void bellBitSet(uint8_t* bits, int minuteOfDay, bool v) {
 //     játszunk
 //   • ha bizonytalan (kapcsolat él, de PREPARE nem jött) → türelmi idő, utána
 //     mégis helyben játszunk, hogy a csengetés ne maradjon el
+void BellManager::noteOnlineBell() {
+    _lastOnlineBellMs = millis();
+
+    if (!network.isTimeSynced() || _entryCount == 0) return;
+
+    struct tm t = network.getTimeInfo();
+    const long nowSec = (long)t.tm_hour * 3600 + (long)t.tm_min * 60 + (long)t.tm_sec;
+
+    /*
+     * A PREPARE néhány másodperccel a csengetés pillanata ELŐTT érkezik, ezért
+     * a hozzá tartozó bejegyzést a "most"-hoz LEGKÖZELEBBI, még el nem
+     * intézett időpontként azonosítjuk. Percbontású menetrendnél a ±45 s-os
+     * ablak legfeljebb két szomszédos percet érinthet – a legközelebbi nyer.
+     */
+    static const long MATCH_WINDOW_S = 45;
+
+    int  bestMin  = -1;
+    long bestDist = MATCH_WINDOW_S + 1;
+
+    for (uint8_t i = 0; i < _entryCount; i++) {
+        const int bellMin = _entries[i].hour * 60 + _entries[i].minute;
+        if (bellBitGet(_bellHandledBits, bellMin)) continue;
+
+        long dist = nowSec - (long)bellMin * 60;
+        if (dist < 0) dist = -dist;
+
+        if (dist <= MATCH_WINDOW_S && dist < bestDist) {
+            bestDist = dist;
+            bestMin  = bellMin;
+        }
+    }
+
+    if (bestMin < 0) return;
+
+    bellBitSet(_bellHandledBits, bestMin, true);
+    bellBitSet(_bellArmedBits,   bestMin, false);
+    saveBellDoneState();
+
+    Serial.printf("[BELL] %02d:%02d – a backend jatssza le (PREPARE), helyben nem csengetunk\n",
+                  bestMin / 60, bestMin % 60);
+}
+
 void BellManager::checkSchedule() {
     struct tm t = network.getTimeInfo();
 
@@ -933,6 +975,14 @@ void BellManager::checkSchedule() {
                       path.isEmpty() ? "(nincs)" : path.c_str(),
                       _scheduleSource.c_str(), _backendReachable ? 1 : 0,
                       bellBitGet(_bellArmedBits, bellMin) ? 1 : 0);
+
+        /*
+         * Ha épp szól valami (vagy még tart az EOF utáni cooldown), NEM
+         * indítunk rá egy másodikat – de a bejegyzést sem jelöljük
+         * elintézettnek: a következő körökben újrapróbáljuk, amíg a
+         * BELL_CATCHUP_MAX_S ablak tart. Így a csengetés nem vész el.
+         */
+        if (audio.isBusy() || audio.isInCooldown()) return;
 
         if (!path.isEmpty()) audio.playFile(path.c_str());
 

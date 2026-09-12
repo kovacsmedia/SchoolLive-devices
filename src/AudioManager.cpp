@@ -125,6 +125,19 @@ bool AudioManager::ensureAudio() {
     return false;
 }
 
+void AudioManager::applyPlaybackPriority(bool playing) {
+    if (playing == _prioRaised) return;
+
+    if (playing) {
+        _prioSaved = uxTaskPriorityGet(nullptr);
+        vTaskPrioritySet(nullptr, _prioSaved + 1);
+        _prioRaised = true;
+    } else {
+        vTaskPrioritySet(nullptr, _prioSaved);
+        _prioRaised = false;
+    }
+}
+
 void AudioManager::destroyAudioIfPending() {
     if (!_releaseAudioPending) return;
     _releaseAudioPending = false;
@@ -152,9 +165,13 @@ void AudioManager::loop() {
         // A felszabadítás akkor is le kell fusson, ha az Audio példány már
         // eltűnt – ilyenkor csak az afterLocalPlayback callback marad hátra.
         destroyAudioIfPending();
+        applyPlaybackPriority(false);
         unlockAudio();
         return;
     }
+
+    // A dekódolás erre a körre elsőbbséget kap a snap taskok előtt.
+    applyPlaybackPriority(_localFileActive || _urlActive);
 
     if (_urlActive && audio->isRunning()) {
         _urlHasPlayed = true;
@@ -189,6 +206,8 @@ void AudioManager::loop() {
 
     // Az `audio->loop()` már visszatért: innen biztonságos törölni.
     destroyAudioIfPending();
+
+    if (!_localFileActive && !_urlActive) applyPlaybackPriority(false);
 
     unlockAudio();
 }

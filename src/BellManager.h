@@ -113,7 +113,19 @@ public:
     // A DeviceAgent hívja, amikor BELL PREPARE érkezik: bizonyíték arra, hogy
     // az online csengetés-út működik, tehát helyben NEM szabad lejátszani
     // (különben duplán szólna).
-    void noteOnlineBell() { _lastOnlineBellMs = millis(); }
+    /*
+     * A backend elkezdte lejátszani az egyik csengetést (BELL PREPARE).
+     *
+     * Eddig ez csak egy időbélyeget állított, amit a checkSchedule() 15 s-ig
+     * "bizonyítéknak" fogadott el. Csakhogy a checkSchedule() NEM futott a
+     * helyi lejátszás + 10 s-os cooldown alatt (~18-20 s), tehát mire sorra
+     * került, a bizonyíték lejárt – és a már online elcsengetett jelzést az
+     * eszköz MÉG EGYSZER lejátszotta helyben. Egy ilyen dupla csengetés
+     * blokkolta a következőt is: lánc alakult ki.
+     *
+     * Ezért most AZONNAL, itt jelöljük elintézettnek az érintett bejegyzést.
+     */
+    void noteOnlineBell();
 
 private:
     AudioManager&   audio;

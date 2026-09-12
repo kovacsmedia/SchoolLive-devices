@@ -330,12 +330,29 @@ void TaskNetwork(void* pvParameters) {
         // a BellManager::checkSchedule() dönti el (T-60 mp-es előellenőrzés +
         // BELL PREPARE bizonyíték + türelmi idő). Teljesen offline állapotban
         // a `loop()`-ot hívjuk, mert az a HTTP ütemezés-szinkront is elvégzi.
-        if (!audioManager.isBusy() && !audioManager.isInCooldown()) {
-            if (!wsConnected && !snapConnected) {
+        /*
+         * A csengetés-ÁLLAPOTGÉP MINDIG fut – lejátszás és cooldown alatt is.
+         *
+         * Korábban az egész blokk `!isBusy() && !isInCooldown()` mögött volt.
+         * Egy helyi csengetés (~8 s) + a 10 s-os EOF-cooldown alatt tehát a
+         * checkSchedule() ~18-20 másodpercig VAK volt, miközben az online
+         * bizonyíték ablaka csak 15 s. Így a backend által már elcsengetett
+         * jelzést az eszköz utólag MÉG EGYSZER lejátszotta helyben – az pedig
+         * újabb cooldownt indított, és a következő csengetés is ugyanígy járt.
+         *
+         * Most az állapotgép fut; azt, hogy szabad-e ténylegesen lejátszani,
+         * a checkSchedule() dönti el (ott van a busy/cooldown vizsgálat).
+         * A `loop()` HTTP-szinkron ága viszont továbbra is várhat: az drága,
+         * és lejátszás közben nem szabad a hálózatot terhelnie.
+         */
+        if (!wsConnected && !snapConnected) {
+            if (!audioManager.isBusy() && !audioManager.isInCooldown()) {
                 bellManager.loop();
             } else {
                 bellManager.checkBells();
             }
+        } else {
+            bellManager.checkBells();
         }
 
         otaManager.loop();

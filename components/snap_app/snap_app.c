@@ -1493,6 +1493,51 @@ static void snap_dac_control_task_wrapper(void *pvParameters) {
   vTaskDelete(NULL);
 }
 
+/*
+ * TASK-PRIORITÁS A HELYI LEJÁTSZÁS IDEJÉRE.
+ *
+ * A helyi MP3-at az Arduino `loopTask` dekódolja – az PRIORITÁS 1, az
+ * ARDUINO_RUNNING_CORE-on (1-es mag). Ugyanazon a magon fut a `snap_http`
+ * (17, Opus-dekódolás) és a `snap_dac` (23). Mindkettő MINDIG megelőzi a
+ * loopTask-ot, így a helyi lejátszás alatt az MP3-dekóder alig jutott CPU-hoz:
+ * a DMA kiürült, a hang darabossá ("grízessé") vált, és egy 8,3 s-os fájl
+ * 19-20 s alatt játszódott le.
+ *
+ * A szünet idejére tehát mindkét snap taskot leengedjük 1-re; a
+ * `AudioManager::loop()` pedig a saját (loopTask) prioritását emeli 2-re,
+ * így a dekóder mindig elsőbbséget élvez. A snap hálózati útja közben él,
+ * csak lassabban kap sort – az Opus-stream ~100 kbit/s, ez bőven elég.
+ */
+static UBaseType_t s_savedHttpPrio = 0;
+static UBaseType_t s_savedDacPrio  = 0;
+static bool        s_snapPrioLowered = false;
+
+static void snap_app_lower_task_priority(void) {
+  if (s_snapPrioLowered) return;
+
+  if (t_http_get_task != NULL) {
+    s_savedHttpPrio = uxTaskPriorityGet(t_http_get_task);
+    vTaskPrioritySet(t_http_get_task, 1);
+  }
+  if (s_snap_dac_task != NULL) {
+    s_savedDacPrio = uxTaskPriorityGet(s_snap_dac_task);
+    vTaskPrioritySet(s_snap_dac_task, 1);
+  }
+  s_snapPrioLowered = true;
+}
+
+static void snap_app_restore_task_priority(void) {
+  if (!s_snapPrioLowered) return;
+  s_snapPrioLowered = false;
+
+  if (t_http_get_task != NULL && s_savedHttpPrio > 0) {
+    vTaskPrioritySet(t_http_get_task, s_savedHttpPrio);
+  }
+  if (s_snap_dac_task != NULL && s_savedDacPrio > 0) {
+    vTaskPrioritySet(s_snap_dac_task, s_savedDacPrio);
+  }
+}
+
 esp_err_t snap_app_start(const snap_app_config_t *cfg) {
   if (!cfg)                  return ESP_ERR_INVALID_ARG;
   if (s_snap_running)        return ESP_ERR_INVALID_STATE;
@@ -1615,6 +1660,13 @@ esp_err_t snap_app_start(const snap_app_config_t *cfg) {
     return ESP_FAIL;
   }
 
+  /*
+   * Friss taskok = teljes prioritás. A jelző azért kell, mert egy lejátszás
+   * alatti újraindulás után a "már leengedtük" állapot bent ragadna, és a
+   * következő szünet nem engedné le az új taskokat.
+   */
+  s_snapPrioLowered = false;
+
   s_snap_running = true;
   ESP_LOGI(TAG, "snap_app_start: snap tasks started");
   return ESP_OK;
@@ -1649,6 +1701,7 @@ esp_err_t snap_app_pause(void) {
    * nincs TCP backpressure.
    */
   player_pause();
+  snap_app_lower_task_priority();
   return ESP_OK;
 }
 
@@ -1657,6 +1710,7 @@ esp_err_t snap_app_resume(void) {
    * Helyi lejátszás vége: a player_task-ot újraindítjuk, a time-sync
    * latency buffer reseteltük, egy hard resync várható az első chunknál.
    */
+  snap_app_restore_task_priority();
   player_resume();
   return ESP_OK;
 }
