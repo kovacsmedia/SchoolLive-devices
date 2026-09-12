@@ -53,6 +53,17 @@ void ProvisioningManager::loop() {
     case ProvState::WAITING_ACTIVATION:
       if (millis() - _lastPoll >= PROV_POLL_INTERVAL) {
         _lastPoll = millis();
+
+        // A várakozás eddig TELJESEN NÉMA volt: ha az eszköz itt ragadt vagy
+        // elhalt, a soros logból nem derült ki, hogy egyáltalán próbálkozik-e.
+        // Tízpercenként... nem: minden tizedik kör elég, hogy lássuk, él.
+        static uint32_t polls = 0;
+        if ((polls++ % 10) == 0) {
+          Serial.printf("[PROV] Varakozas aktivalasra (%lu. lekerdezes, %lu mp)\n",
+                        (unsigned long)polls,
+                        (unsigned long)((millis() - _startTime) / 1000UL));
+        }
+
         if (doPollStatus()) {
           _state = ProvState::ACTIVATED;
           Serial.println("[PROV] Activated! name=" + _activatedConfig.deviceName);
@@ -159,11 +170,26 @@ bool ProvisioningManager::doPollStatus() {
 }
 
 void ProvisioningManager::applyAndReboot() {
-  // NVS mentés
+  /*
+   * LÉPÉSENKÉNTI JELZÉS. Ez a metódus flash-írásokat végez (NVS + LittleFS),
+   * és ha bármelyik beragad, az eszköz némán megáll – pontosan ez történt
+   * 2026-09-12-én. Minden lépés után `flush()`: így a soros log akkor is
+   * megmutatja, hol álltunk meg, ha utána már semmi nem fut.
+   */
+  auto step = [](const char* what) {
+    Serial.printf("[PROV] > %s\n", what);
+    Serial.flush();
+  };
+
+  step("NVS: wifi");
   _store.setWifi(_activatedConfig.wifiSsid, _activatedConfig.wifiPassword);
+  step("NVS: wifiUser");
   _store.setWifiUser(_activatedConfig.wifiUser);
+  step("NVS: wifiSecurity");
   _store.setWifiSecurity(_activatedConfig.wifiSecurity);
+  step("NVS: deviceKey");
   _store.setDeviceKey(_activatedConfig.deviceKey);
+  step("NVS: visszaolvasas");
 
   /*
    * VISSZAOLVASÁS. A Preferences/NVS írás CSENDBEN elbukik, ha a partíció
@@ -180,14 +206,23 @@ void ProvisioningManager::applyAndReboot() {
   const bool okWifi = _store.hasWifi();
   const bool okKey  = _store.hasDeviceKey();
   if (!okWifi || !okKey) {
-    Serial.printf("[PROV] ❌ MENTES SIKERTELEN (wifi=%d key=%d)\n", okWifi, okKey);
-    Serial.println("[PROV] Az NVS valoszinuleg tele van. Az eszkoz NEM indul ujra,");
-    Serial.println("[PROV] mert azzal ugyanide jutna vissza. Teljes torles: esptool erase_flash.");
+    // CSAK EGYSZER jelentünk: az állapotgép addig hívja ezt a metódust, amíg
+    // aktivált állapotban van, és a másodpercenkénti ismétlés csak elárasztaná
+    // a soros portot – pont azt a hibát okozva, ami ellen máshol küzdünk.
+    static bool reported = false;
+    if (!reported) {
+      reported = true;
+      Serial.printf("[PROV] ❌ MENTES SIKERTELEN (wifi=%d key=%d)\n", okWifi, okKey);
+      Serial.println("[PROV] A tarolo nem irhato. Az eszkoz NEM indul ujra, mert azzal");
+      Serial.println("[PROV] ugyanide jutna vissza. Teljes torles: pio run -t erase_flash");
+    }
     return;
   }
   if (_activatedConfig.tenantId.length() > 0) {
     _store.setTenantId(_activatedConfig.tenantId);
   }
+
+  step("LittleFS: wifi.txt");
 
   // wifi.txt írása – SLNetworkManager ebből olvas
   File f = LittleFS.open("/wifi.txt", "w");

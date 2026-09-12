@@ -47,11 +47,14 @@ CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 # A WS kapcsolat wss://, azaz TARTÓSAN nyitott TLS session. Enélkül a
 # 16 kB-os bejövő és a 4 kB-os kimenő rekord-puffer VÉGIG foglalva marad a
 # belső DRAM-ban, a HTTP-hívások alatt pedig egy második session is felépül.
-# A dynamic buffer a rekordok között felszabadítja őket, és csak a tényleges
-# rekordmérethez foglal – tipikusan 20-30 kB belső DRAM-ot ad vissza.
+# A dynamic buffer a rekordok között felszabadítja őket – tipikusan 20-30 kB
+# belső DRAM-ot ad vissza.
 #
-# HA A TLS BÁRMIÉRT HIBÁZNA (kézfogás-hiba, "mbedtls" logok), EZ AZ EGY SOR
-# az első, amit érdemes visszavenni – a többi memória-optimalizálás független tőle.
+# 2026-09-12: egy ideig gyanúsítottam a provisioning elakadásával, ezért
+# kikapcsoltam. A gyanú ALAPTALAN volt – a hiba a main.cpp-ből kiesett
+# `store.begin()` volt. Ugyanaz a futás bizonyítja, hogy a TLS ezzel a
+# beállítással hibátlan: regisztráció, státusz-poll, /bells/sync és hat
+# hangfájl letöltése (egy 415 kB-os) mind gond nélkül lement. Visszakapcsolva.
 CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 
 CONFIG_MBEDTLS_PSK_MODES=y

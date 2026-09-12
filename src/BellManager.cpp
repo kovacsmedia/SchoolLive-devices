@@ -366,7 +366,7 @@ bool BellManager::fetchFullSync() {
     if (fullYearVer.length() > 0 && fullYearVer != _fullYearVersionKnown) {
         saveFullYearToNVS(fullYearVer, resp);
         _fullYearVersionKnown = fullYearVer;
-        Serial.printf("[BELL] Full-year calendar saved to NVS (ver: %s)\n",
+        Serial.printf("[BELL] Full-year naptar elmentve (ver: %s)\n",
                       fullYearVer.c_str());
     }
 

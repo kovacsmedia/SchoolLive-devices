@@ -93,16 +93,29 @@ static void slUpdateLogGating() {
     static uint32_t lastMs    = 0;
 
     const uint32_t now = millis();
+
+    // Az első percben SOHA nem némítunk: indulási hibát vadászni napló nélkül
+    // reménytelen, és a USB-enumeráció is eltarthat pár másodpercig.
+    if (now < 60000UL) return;
+
     if ((uint32_t)(now - lastMs) < 1000) return;
     lastMs = now;
 
     // A HWCDC bool-operátora az isCDC_Connected()-et adja vissza, ami a
     // host SOF-csomagjain alapul: igaz, ha van enumerált USB-host – akkor is,
     // ha épp nincs megnyitva a soros monitor.
+    // STABIL mérés kell: a HWCDC `isPlugged()` néhány ms toleranciájú
+    // SOF-figyelőn alapul, és a keretrendszer saját kommentje szerint
+    // "ép kapcsolaton is tud pillanatnyilag hamisra billenni". Egy ilyen
+    // villanásra NEM némítunk el mindent – öt egymás utáni azonos mérés kell.
+    static uint8_t stable = 0;
     const bool usb = (bool)Serial;
-    if (usb == enabled) return;
+    if (usb == enabled) { stable = 0; return; }
+    if (++stable < 5) return;
+    stable = 0;
 
     enabled = usb;
+    if (!usb) Serial.println("[LOG] Nincs USB host – ESP-IDF naplozas KI");
     // A CONFIG_LOG_MAXIMUM_LEVEL=3 (INFO) miatt ennél magasabbra nincs értelme.
     esp_log_level_set("*", usb ? ESP_LOG_INFO : ESP_LOG_NONE);
     if (usb) Serial.println("[LOG] USB host eszlelve – ESP-IDF naplozas BE");
@@ -446,11 +459,19 @@ void startNormalMode() {
 
 void setup() {
     Serial.begin(115200);
-    // A HWCDC alapból akár 20 x 100 ms-ot is VÁR, ha a host nem olvas (megtelt
-    // OS-puffer, lefagyott monitor). Egy naplósor emiatt 2 másodpercre
-    // megállíthatná a hívó szálat – csengetőrendszerben elfogadhatatlan.
-    // 0 = sose várjunk: inkább vesszen el egy sor, mint hogy a lejátszás álljon.
-    Serial.setTxTimeoutMs(0);
+    /*
+     * A `setTxTimeoutMs(0)` IDE VOLT BEÍRVA, és VISSZAVETTEM (2026-09-12).
+     *
+     * Az indoka jó volt: a HWCDC alapból akár 20 x 100 ms-ot is vár, ha a host
+     * nem olvas, és egy naplósor így 2 másodpercre megállíthatja a hívó szálat.
+     * A 0 viszont a MÁSIK irányba téved: nulla várakozással a sorok NÉMÁN
+     * elvesznek, amint a gyűrűpuffer egy pillanatra megtelik – és pont azokat
+     * veszítenénk el, amikre a hibakereséshez szükség van.
+     *
+     * Amíg az eszköz padon, kábelen lóg, a megbízható napló többet ér.
+     * A blokkolás elleni védelem a naplófojtás (ld. player.c) és a
+     * beragadás-felügyelet, nem a kimenet eldobása.
+     */
     delay(500);
 
     Serial.println("=== SETUP START ===");
@@ -474,6 +495,29 @@ void setup() {
                       (unsigned)use, (unsigned)tot,
                       (unsigned)(tot > use ? tot - use : 0));
     }
+
+    store.begin();
+
+    audioManager.begin(&store);
+
+    /*
+     * I2S arbitration:
+     * helyi/offline csengetés idejére a Snapcast engedje el az I2S-t.
+     */
+    audioManager.setI2SCallbacks(
+        beforeLocalPlayback,
+        afterLocalPlayback
+    );
+
+    /*
+     * Volume‐láncolás:
+     * a manuális hangerő (gombnyomás vagy backend SET_VOLUME parancs) és az
+     * emergency override is azonnal érvényesüljön a Snapcast streamen.
+     * AudioManager az effective volume-ot (override vagy manual) küldi át.
+     */
+    audioManager.setVolumeChangedCallback([](uint8_t effectiveVol) {
+        snapClient.setLocalVolume(effectiveVol);
+    });
 
     uiManager = new UIManager(audioManager, networkManager, bellManager, store);
     uiManager->begin();
