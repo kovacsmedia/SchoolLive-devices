@@ -1,18 +1,4 @@
 #include "DeviceAgent.h"
-#include <esp_heap_caps.h>
-
-// A NetworkTask handle-je a main.cpp-ben él; a beacon a stack high-water
-// markját jelenti, hogy a stackméretet mérés alapján lehessen hangolni.
-extern TaskHandle_t TaskNetworkHandle;
-
-// Összeomlás-morzsa a snap lejátszóból (components/lightsnapcast/player.c).
-// A fejlécet szándékosan NEM húzzuk be – az I2S/snapcast típusokat vonzana
-// ide –, csak a két olvasó függvényt deklaráljuk.
-extern "C" {
-    void     player_mark(int mark);
-    uint32_t player_last_crash_mark(void);
-    uint32_t player_last_crash_uptime(void);
-}
 #include <esp_system.h>   // esp_reset_reason() – távoli diagnosztika
 #include <LittleFS.h>     // fájlrendszer-telítettség a beaconban
 
@@ -68,7 +54,6 @@ void DeviceAgent::loop() {
 // ── WS üzenet dispatch ────────────────────────────────────────────────────────
 
 void DeviceAgent::onWsMessage(const JsonDocument& msg) {
-    player_mark(20 /* APP_MARK_WS_MESSAGE */);
     String type = msg["type"] | "";
     String phase = msg["phase"] | "";
 
@@ -255,7 +240,6 @@ void DeviceAgent::sendBeaconIfDue() {
     if ((now - _lastBeaconMs) < BEACON_INTERVAL_MS) return;
     _lastBeaconMs = now;
 
-    player_mark(19 /* APP_MARK_BEACON */);
 
     JsonDocument beacon;
     beacon["type"]            = "BEACON";
@@ -283,45 +267,6 @@ void DeviceAgent::sendBeaconIfDue() {
         statusDoc["freeHeap"]    = (uint32_t)ESP.getFreeHeap();
         statusDoc["minFreeHeap"] = (uint32_t)ESP.getMinFreeHeap();
 
-        // ── Memória-részletek ──────────────────────────────────────────────
-        // A puszta "szabad byte" félrevezető: a foglalások NEM tetszőleges
-        // helyre mennek. Ha a szabad terület sok apró darabra tört, egy 8 kB-os
-        // kérés akkor is elbukhat, amikor összesen 60 kB szabad – és egy
-        // sikertelen belső foglalás NULL-t ad, amit a snap-kliens rétegei nem
-        // mindenhol ellenőriznek (ld. a 2026-09-10-i pánikokat).
-        //
-        //   heapLargestBlock – a legnagyobb ÖSSZEFÜGGŐ belső blokk. Ha ez
-        //                      jóval kisebb, mint a szabad terület, a heap
-        //                      töredezett.
-        //   psramFree        – a PSRAM-ba terelt foglalások mozgástere.
-        //                      0, ha a panelon nincs PSRAM (a firmware ilyenkor
-        //                      is működik, csak a belső RAM-ból gazdálkodik).
-        //   stackNetFree     – a NetworkTask stackjének SOSEM használt része
-        //                      (high-water mark). Ebből tudjuk MÉRÉS alapján
-        //                      csökkenteni a 16 kB-os stackfoglalást, tippelés
-        //                      helyett. Ha ez tartósan magas, van mit levenni;
-        //                      ha 1 kB alá megy, növelni kell.
-        statusDoc["heapLargestBlock"] =
-            (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-        statusDoc["psramFree"]  = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-        statusDoc["psramTotal"] = (uint32_t)heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
-        // Hol járt a lejátszó-út, amikor az ELŐZŐ futás összeomlott. Az RTC
-        // memóriában él, tehát a pánik utáni újraindulást túléli – így egy
-        // távoli iskolában is megtudjuk, hol keressük a hibát, kiszállás és
-        // soros monitor nélkül. 0 = nincs adat (hidegindítás/tápelvétel).
-        {
-            const uint32_t mark = player_last_crash_mark();
-            if (mark != 0) {
-                statusDoc["lastCrashMark"]   = mark;
-                statusDoc["lastCrashUptime"] = player_last_crash_uptime();
-            }
-        }
-
-        if (TaskNetworkHandle) {
-            // A high-water mark szavakban jön, byte-ra váltjuk.
-            statusDoc["stackNetFree"] =
-                (uint32_t)(uxTaskGetStackHighWaterMark(TaskNetworkHandle) * sizeof(StackType_t));
-        }
 
         // Fájlrendszer-kihasználtság: ha megtelik, a csengetőhangok nem
         // tölthetők le ("Cannot open for write"), és az eszköz csak a gyári

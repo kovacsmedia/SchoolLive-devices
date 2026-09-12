@@ -7,6 +7,11 @@
 #include "SnapcastClient.h"
 #include "DeviceTelemetry.h"
 
+// A beragadás-felügyelet szívverése (main.cpp). Az OTA-letöltés percekig a
+// hálózati szálban tartja a vezérlést, ezért onnan is etetni kell – különben
+// a felügyelet beragadásnak hinné a frissítést, és újraindítaná az eszközt.
+extern void slHeartbeatNet();
+
 namespace {
 
 /**
@@ -207,6 +212,8 @@ void OtaManager::performUpdate(const FirmwareCheckResult& fw) {
         if (total <= 0) return;
         int pct = (int)((int64_t)cur * 100 / total);
         // Csak 10%-onként report-olunk, hogy ne fojtsuk meg a backendet HTTP-vel.
+        slHeartbeatNet();   // a felügyelet lássa, hogy a szál él
+
         if (pct / 10 != lastReportedPct / 10) {
             lastReportedPct = pct;
             Serial.printf("[OTA] Progress: %d%% (%d/%d)\n", pct, cur, total);

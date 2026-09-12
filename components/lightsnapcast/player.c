@@ -61,7 +61,7 @@ static inline void rtc_clk_apll_coeff_set(uint32_t o_div,
 #include "driver/gptimer.h"
 #include "driver/i2s_std.h"
 #include "player.h"
-#include "esp_attr.h"
+#include "esp_system.h"
 #include "snapcast.h"
 
 // Sample insertion ON for ESP32-S3: APLL fine-tune (rtc_clk_apll_coeff_calc) is
@@ -150,50 +150,16 @@ static void player_task(void *pvParameters);
 bool gotSettings = false;
 bool playerstarted = false;
 
-/*
- * Összeomlás-morzsa (ld. player.h). Az RTC memóriát a pánik utáni
- * újraindulás megőrzi, a tápelvétel viszont nem – ezért kell a magic:
- * enélkül egy hidegindítás után memóriaszemetet jelentenénk hibaként.
- */
-#define PLAYER_MARK_MAGIC 0x5343524Du   /* "SCRM" */
+/* Az `insert_pcm_chunk()` "nem indul a lejátszó" állapotának követése.
+ * Fájl-szintű, hogy a sikeres ág is nullázni tudja. */
+static uint32_t s_noStartFirstMs = 0;
+static uint32_t s_noStartLastLog = 0;
 
-static RTC_DATA_ATTR uint32_t s_markMagic;
-static RTC_DATA_ATTR uint32_t s_markCurrent;
-static RTC_DATA_ATTR uint32_t s_markUptimeSec;
-
-/* Az induláskor kimentett ELŐZŐ értékek – a futás közbeni írások ezeket
- * már nem módosítják, tehát a beacon bármikor jelentheti őket. */
-static uint32_t s_prevMark       = 0;
-static uint32_t s_prevMarkUptime = 0;
-static bool     s_markLoaded     = false;
-
-void player_mark(int mark) {
-  if (!s_markLoaded) {
-    // Első hívás: eltesszük az előző futás értékeit, mielőtt felülírnánk.
-    s_prevMark       = (s_markMagic == PLAYER_MARK_MAGIC) ? s_markCurrent   : 0;
-    s_prevMarkUptime = (s_markMagic == PLAYER_MARK_MAGIC) ? s_markUptimeSec : 0;
-    s_markLoaded     = true;
-    s_markMagic      = PLAYER_MARK_MAGIC;
-  }
-  s_markCurrent   = (uint32_t)mark;
-  s_markUptimeSec = (uint32_t)(esp_timer_get_time() / 1000000LL);
+static void player_reset_nostart_timer(void) {
+  s_noStartFirstMs = 0;
+  s_noStartLastLog = 0;
 }
 
-uint32_t player_last_crash_mark(void) {
-  if (!s_markLoaded) {
-    s_prevMark       = (s_markMagic == PLAYER_MARK_MAGIC) ? s_markCurrent   : 0;
-    s_prevMarkUptime = (s_markMagic == PLAYER_MARK_MAGIC) ? s_markUptimeSec : 0;
-    s_markLoaded     = true;
-    s_markMagic      = PLAYER_MARK_MAGIC;
-    s_markCurrent    = PLAYER_MARK_NONE;
-  }
-  return s_prevMark;
-}
-
-uint32_t player_last_crash_uptime(void) {
-  (void)player_last_crash_mark();   // biztosítja a betöltést
-  return s_prevMarkUptime;
-}
 // Csak egyszer naplózzuk az érvénytelen beállítást, hogy egy tartós hiba ne
 // árassza el a soros portot (a player_task 100 ms-onként pörögne rajta).
 static bool s_warnedInvalidSetting = false;
@@ -379,7 +345,6 @@ static esp_err_t player_setup_i2s(snapcastSetting_t *setting) {
   }
 #endif
 
-  player_mark(PLAYER_MARK_SETUP_I2S);
 
   if (tx_chan) {
     my_i2s_channel_disable(tx_chan);
@@ -628,7 +593,6 @@ int init_player(i2s_std_gpio_config_t pin_config0_, i2s_port_t i2sNum_) {
  * call to start the player task
  */
 int start_player(snapcastSetting_t *setting) {
-    player_mark(PLAYER_MARK_START_PLAYER);
     if (playerstarted){
         return -1;
     }
@@ -1095,12 +1059,6 @@ static bool IRAM_ATTR timer_group0_alarm_cb(
     return false;
   }
 
-  // A morzsát ITT KÖZVETLENÜL írjuk, nem a `player_mark()`-on át: az a
-  // függvény a flashben van, egy ISR-ből hívva pedig flash-művelet közben
-  // (NVS-mentés, LittleFS-írás – épp csengetéskor!) a kikapcsolt cache miatt
-  // összeomlana. Az RTC memóriába írás cache-független, tehát biztonságos.
-  // A magic-et a task-oldali első `player_mark()` már beállította.
-  s_markCurrent = (uint32_t)PLAYER_MARK_TIMER_ISR;
 
   BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
@@ -1175,7 +1133,6 @@ static void tg0_timer_deinit(void) {
  *
  */
 static void tg0_timer_init(void) {
-  player_mark(PLAYER_MARK_TIMER_INIT);
   tg0_timer_deinit();
 
   // Select and initialize basic parameters of the timer
@@ -1206,7 +1163,6 @@ static void tg0_timer_init(void) {
  *
  */
 static void tg0_timer1_start(uint64_t alarm_value) {
-  player_mark(PLAYER_MARK_TIMER_START);
   if (gptimer) {
     my_gptimer_stop(gptimer);
 
@@ -1581,7 +1537,6 @@ int32_t allocate_pcm_chunk_memory(pcm_chunk_message_t **pcmChunk,
  *
  */
 int32_t insert_pcm_chunk(pcm_chunk_message_t *pcmChunk) {
-  player_mark(PLAYER_MARK_INSERT_CHUNK);
   if (pcmChunk == NULL) {
     ESP_LOGE(TAG, "Parameter Error");
 
@@ -1589,7 +1544,36 @@ int32_t insert_pcm_chunk(pcm_chunk_message_t *pcmChunk) {
   }
 
   if (pcmChkQHdl == NULL) {
-    ESP_LOGW(TAG, "pcm chunk queue not created. Player started: %s", playerstarted ? "True": "False");
+    /*
+     * SchoolLive: EZ AZ ÚT PERCENKÉNT HÁROMEZERSZER FUT LE, ha a lejátszó nem
+     * tud elindulni – a snap szerver másodpercenként ~50 chunkot küld.
+     *
+     * Eredetileg a `start_player()` belseje ESP_ERROR_CHECK-kel ABORTÁLT, így
+     * egy tartós I2S-hiba újraindította az eszközt. Amikor ezt (helyesen)
+     * kezelt hibára cseréltük, a mellékhatás az lett, hogy az eszköz NEM indul
+     * újra, hanem VÉGTELENÜL pörög: másodpercenként ötven naplósor a 115200
+     * baudos soros porton gyakorlatilag folyamatosan lefoglalja a UART-ot
+     * (a TX LED végig világít), és elveszi a CPU-t a többi szál elől.
+     * Az eszköz "él", de használhatatlan – ami CSENGETÉS-KIMARADÁS.
+     *
+     * Ezért két korlát:
+     *   • a naplósor másodpercenként legfeljebb egyszer megy ki;
+     *   • ha az állapot RECOVER_TIMEOUT_MS-ig tart, az eszköz ÚJRAINDUL.
+     *     Egy 10 másodperces újraindulás mindig jobb, mint egy határozatlan
+     *     ideig néma hangszóró.
+     */
+    static const uint32_t LOG_THROTTLE_MS     = 1000;
+    static const uint32_t RECOVER_TIMEOUT_MS  = 30000;
+
+    const uint32_t nowMs = (uint32_t)(esp_timer_get_time() / 1000LL);
+    if (s_noStartFirstMs == 0) s_noStartFirstMs = nowMs;
+
+    if ((uint32_t)(nowMs - s_noStartLastLog) >= LOG_THROTTLE_MS) {
+      s_noStartLastLog = nowMs;
+      ESP_LOGW(TAG, "pcm chunk queue not created. Player started: %s (%lu ms ota)",
+               playerstarted ? "True" : "False",
+               (unsigned long)(nowMs - s_noStartFirstMs));
+    }
 
     free_pcm_chunk(pcmChunk);
 
@@ -1602,8 +1586,19 @@ int32_t insert_pcm_chunk(pcm_chunk_message_t *pcmChunk) {
         start_player(&curSet);
     }
 
+    if ((uint32_t)(nowMs - s_noStartFirstMs) > RECOVER_TIMEOUT_MS) {
+      ESP_LOGE(TAG, "A lejatszo %lu ms-ig nem indult el – ujrainditas",
+               (unsigned long)(nowMs - s_noStartFirstMs));
+      esp_restart();
+    }
+
     return -2;
   }
+
+  // Idáig csak akkor jutunk, ha a sor LÉTEZIK – a lejátszó tehát elindult.
+  // A "nem indul" időzítőt nullázzuk, hogy egy későbbi, átmeneti hiba megint
+  // a teljes 30 másodperces türelmi időt kapja.
+  player_reset_nostart_timer();
 
   bool isFull = false;
   latency_buffer_full(&isFull);
@@ -1654,7 +1649,6 @@ static bool audioCodecCanSleep = false;
  *
  */
 static void player_task(void *pvParameters) {
-  player_mark(PLAYER_MARK_TASK_ENTRY);
   pcm_chunk_message_t *chnk = NULL;
   int64_t age;
   int64_t serverNow = 0;
@@ -1767,7 +1761,6 @@ static void player_task(void *pvParameters) {
     // reinitialize
     ret = xQueueReceive(snapcastSettingQueueHandle, &scSetChgd, 0);
     if (ret == pdTRUE) {
-      player_mark(PLAYER_MARK_SETTINGS_CHANGE);
       snapcastSetting_t __scSet;
 
       player_get_snapcast_settings(&__scSet);
@@ -1889,7 +1882,6 @@ static void player_task(void *pvParameters) {
 
     if (chnk == NULL) {
       if (pcmChkQHdl != NULL) {
-        player_mark(PLAYER_MARK_QUEUE_RECV);
         ret = xQueueReceive(pcmChkQHdl, &chnk, pdMS_TO_TICKS(2000));
       } else {
          //ESP_LOGE (TAG, "Couldn't get PCM chunk, pcm queue not created");
@@ -1900,11 +1892,22 @@ static void player_task(void *pvParameters) {
       }
 
       if (ret != pdFAIL) {
-        player_mark(PLAYER_MARK_CHUNK_PROCESS);
+        // A számítás EGÉSZ osztás: egy a keretméretnél kisebb chunk 0-t ad.
+        // A 0 innentől mérgező – lentebb `(float)age / (float)chunkDuration_us`
+        // lesz belőle, ami `inf`, a `(uint32_t)inf` pedig DEFINIÁLATLAN
+        // viselkedés (az Xtensa tipikusan UINT32_MAX-ra telít). Ezért a
+        // számítás után korlátozzuk (ld. a lenti ellenőrzést).
         chunkDuration_us =
             1000000LL *
             (int64_t)(chnk->totalSize / ((scSet.bits >> 3) * scSet.ch)) /
             (int64_t)scSet.sr;
+
+        if (chunkDuration_us <= 0) {
+          // Nem dobjuk el a chunkot – csak egy épkézláb hosszat használunk,
+          // hogy az ütemezés-matematika ne romoljon el. 20 ms a snapcast
+          // szokásos chunk-hossza (ld. az "initial sync" naplósort).
+          chunkDuration_us = 20000;
+        }
 
         // ESP_LOGI(TAG, "got pcm chunk with size %d", chnk->fragment->size);
       }
@@ -2061,14 +2064,42 @@ static void player_task(void *pvParameters) {
           
           int msgWaiting = uxQueueMessagesWaiting(pcmChkQHdl);
 
-          ESP_LOGW(TAG,
-                   "RESYNCING HARD 1: age %lldus, latency %lldus, free %d, "
-                   "largest block %d, rssi: %d, left in queue %d",
-                   age, diff2Server, heap_caps_get_free_size(MALLOC_CAP_32BIT),
-                   heap_caps_get_largest_free_block(MALLOC_CAP_32BIT), ap.rssi, msgWaiting);
-                   
+          // SchoolLive: NAPLÓ-FOJTÁS. Ez az ág egy resync-hullámban
+          // másodpercenként több százszor lefut (a korábbi mérésben ~500 sor
+          // 5 mp alatt). 115200 baudon ez folyamatosan lefoglalja a UART-ot
+          // és elveszi a CPU-t – az eszköz "él", de használhatatlan, a TX LED
+          // pedig végig világít. Másodpercenként EGY sor épp elég a
+          // diagnosztikához.
+          {
+            static uint32_t lastResyncLogMs = 0;
+            static uint32_t suppressed      = 0;
+            const uint32_t nowMs = (uint32_t)(esp_timer_get_time() / 1000LL);
+            if ((uint32_t)(nowMs - lastResyncLogMs) >= 1000) {
+              ESP_LOGW(TAG,
+                       "RESYNCING HARD 1: age %lldus, latency %lldus, free %d, "
+                       "largest block %d, rssi: %d, left in queue %d (elnyomva: %lu)",
+                       age, diff2Server, heap_caps_get_free_size(MALLOC_CAP_32BIT),
+                       heap_caps_get_largest_free_block(MALLOC_CAP_32BIT),
+                       ap.rssi, msgWaiting, (unsigned long)suppressed);
+              lastResyncLogMs = nowMs;
+              suppressed = 0;
+            } else {
+              suppressed++;
+            }
+          }
+
           // get count of chunks we are late for
-          uint32_t c = ceil((float)age / (float)chunkDuration_us);  // round up
+          //
+          // SchoolLive: a `chunkDuration_us` fent már garantáltan > 0, de a
+          // hányados így is abszurd nagy lehet (nagy `age`). A `(uint32_t)`
+          // konverzió ilyenkor definiálatlan, a ciklus pedig milliárdszor
+          // futna. A sorban lévő elemek számánál többet úgysem lehet eldobni,
+          // ezért ARRA korlátozzuk – ez egyben a ciklus felső korlátja is.
+          uint32_t c = 0;
+          if (age > 0 && chunkDuration_us > 0) {
+            const int64_t late = age / chunkDuration_us + 1;   // felfelé kerekítve
+            c = (late > (int64_t)msgWaiting) ? (uint32_t)msgWaiting : (uint32_t)late;
+          }
 
           // now clear all those chunks which are probably late too
           while (c--) {
@@ -2454,7 +2485,6 @@ static void player_task(void *pvParameters) {
     }
   }
   ret = 0;
-  player_mark(PLAYER_MARK_TASK_EXIT);
 
   if (snapcastSettingsMux != NULL) {
     xSemaphoreTake(snapcastSettingsMux, portMAX_DELAY);

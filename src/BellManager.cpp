@@ -57,6 +57,39 @@ void BellManager::begin() {
     _todayVersionKnown   = "";
     _defaultVersionKnown = "";
     _fullYearVersionKnown = "";
+
+    // ── A RÉGI NVS-CACHE TAKARÍTÁSA (2026-09-12) ────────────────────────────
+    //
+    // A tanévnyi naptár korábban NVS-be került, ahol a partíció MINDÖSSZE
+    // 20 480 bájt. A megtelt NVS-re minden további írás elbukik – csendben,
+    // mert a Preferences visszatérési értékét a hívók nem nézték. Egy ilyen
+    // eszköz a provisioning után sem tudta elmenteni a WiFi-t és az
+    // eszközkulcsot, tehát ÖRÖKRE provisioning módban ragadt.
+    //
+    // Ez a takarítás visszanyeri a helyet az ilyen állapotban lévő
+    // eszközökön is. Olcsó: ha a névtér már nincs meg, a `begin()` hamisat
+    // ad és nem csinálunk semmit.
+    {
+        Preferences old;
+        if (old.begin(NVS_BELL_FY_NS, false)) {
+            const bool had = old.isKey(FY_LEGACY_DATA_KEY);
+            old.clear();
+            old.end();
+            if (had) {
+                Serial.println("[BELL] Regi NVS tanev-cache torolve – NVS hely felszabaditva");
+            }
+        }
+    }
+
+    // A LittleFS-re költöztetett cache verziója (ld. FY_VERSION_PATH).
+    {
+        File vf = LittleFS.open(FY_VERSION_PATH, "r");
+        if (vf) {
+            _fullYearVersionKnown = vf.readString();
+            _fullYearVersionKnown.trim();
+            vf.close();
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -574,11 +607,25 @@ void BellManager::saveFullYearToNVS(const String& version, const JsonDocument& s
     }
     buf.data()[written] = '\0';
 
-    Preferences prefs;
-    if (!prefs.begin(NVS_BELL_FY_NS, false)) return;
-    prefs.putString(NVS_BELL_FY_VER,  version);
-    prefs.putString(NVS_BELL_FY_DATA, buf.data());
-    prefs.end();
+    File f = LittleFS.open(FY_CACHE_PATH, "w");
+    if (!f) {
+        Serial.println("[BELL] Full-year cache: nem nyithato irasra – mentes kihagyva");
+        return;
+    }
+    const size_t w = f.write((const uint8_t*)buf.data(), written);
+    f.close();
+    if (w != written) {
+        Serial.printf("[BELL] Full-year cache: csonka iras (%u / %u) – torlom\n",
+                      (unsigned)w, (unsigned)written);
+        LittleFS.remove(FY_CACHE_PATH);
+        return;
+    }
+
+    File vf = LittleFS.open(FY_VERSION_PATH, "w");
+    if (vf) { vf.print(version); vf.close(); }
+
+    Serial.printf("[BELL] Full-year cache mentve: %u bajt (ver: %s)\n",
+                  (unsigned)written, version.c_str());
 }
 
 bool BellManager::resolveFullYearForDate(const String& dateStr, bool& outIsHoliday) {
@@ -593,17 +640,22 @@ bool BellManager::resolveFullYearForDate(const String& dateStr, bool& outIsHolid
     // `putString()`-gel (PT_STR) történik – arra 0-t adna, és a gyorsítótár
     // sosem töltődne be. A mentés amúgy is MAX_FY_JSON_BYTES-ra van vágva,
     // és a puffer PSRAM-ban van, ahol 24 kB elhanyagolható.
-    PsramBuffer buf(MAX_FY_JSON_BYTES + 1);
+    File f = LittleFS.open(FY_CACHE_PATH, "r");
+    if (!f) return false;
+
+    const size_t len = f.size();
+    if (len == 0 || len > MAX_FY_JSON_BYTES) { f.close(); return false; }
+
+    PsramBuffer buf(len + 1);
     if (!buf.valid()) {
+        f.close();
         Serial.println("[BELL] Full-year cache: nincs memoria az olvasashoz");
         return false;
     }
-
-    Preferences prefs;
-    if (!prefs.begin(NVS_BELL_FY_NS, true)) return false;
-    const size_t got = prefs.getString(NVS_BELL_FY_DATA, buf.data(), buf.size());
-    prefs.end();
-    if (got == 0) return false;
+    const size_t got = f.read((uint8_t*)buf.data(), len);
+    f.close();
+    if (got != len) return false;
+    buf.data()[got] = '\0';
 
     PSRAM_JSON_DOC(fy);
     if (deserializeJson(fy, buf.data()) != DeserializationError::Ok) return false;

@@ -82,6 +82,21 @@ CONFIG_I2S_SKIP_LEGACY_CONFLICT_CHECK=y
 CONFIG_USE_DSP_PROCESSOR=y
 CONFIG_SNAPCLIENT_USE_SOFT_VOL=y
 
+# ── Task Watchdog: elsüléskor INDÍTSON ÚJRA ────────────────────────────────
+# Eddig `CONFIG_ESP_TASK_WDT_PANIC` NÉLKÜL futott, azaz a watchdog elsülésekor
+# CSAK NAPLÓZOTT – a beragadt eszköz beragadva maradt, és a csengetés
+# határozatlan ideig elmaradt. Egy felügyelet nélküli csengetőrendszernél ez
+# elfogadhatatlan: inkább induljon újra 10 másodperc alatt.
+#
+# A timeout 5 → 10 mp: a flash-műveletek (OTA-írás, LittleFS hangletöltés)
+# másodpercekre leköthetik a magot, és nem akarunk téves újraindulásokat.
+#
+# FIGYELEM: ez CSAK a kiéheztetett idle taskot veszi észre (pörgő, nem
+# yieldelő kód). A blokkolva beragadt szálakat — mutex, socket — nem látja,
+# mert az idle task olyankor fut. Azokra a main.cpp kereszt-szívverése való.
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+
 # WPA2 Enterprise (EAP-PEAP/MSCHAPv2) támogatás az eduroam-szerű hálózatokhoz.
 # A SLNetworkManager::connectEnterprise() használja az esp_eap_client.h API-t.
 # Plus a server cert validáció kikapcsolva (disable_time_check=true), mert a

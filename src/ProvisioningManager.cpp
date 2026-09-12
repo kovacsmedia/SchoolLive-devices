@@ -164,6 +164,27 @@ void ProvisioningManager::applyAndReboot() {
   _store.setWifiUser(_activatedConfig.wifiUser);
   _store.setWifiSecurity(_activatedConfig.wifiSecurity);
   _store.setDeviceKey(_activatedConfig.deviceKey);
+
+  /*
+   * VISSZAOLVASÁS. A Preferences/NVS írás CSENDBEN elbukik, ha a partíció
+   * megtelt – a hívók pedig eddig nem nézték a visszatérési értéket. Egy ilyen
+   * eszköz aktiválás után is `hasWifi=0 hasKey=0`-val indult, azaz ÖRÖKRE
+   * provisioning módban ragadt, és a soros logból sem derült ki, miért.
+   * (A 2026-09-12-i eset oka: a tanévnyi csengetési rend NVS-be került,
+   *  miközben az egész partíció 20 kB – ld. BellManager.h.)
+   *
+   * Innentől ha a mentés nem sikerül, azt HANGOSAN kiírjuk, és NEM indítunk
+   * újra – az újraindítás úgyis csak visszahozná ugyanide. Így a készülék
+   * aktiválható marad, amint a hely felszabadult.
+   */
+  const bool okWifi = _store.hasWifi();
+  const bool okKey  = _store.hasDeviceKey();
+  if (!okWifi || !okKey) {
+    Serial.printf("[PROV] ❌ MENTES SIKERTELEN (wifi=%d key=%d)\n", okWifi, okKey);
+    Serial.println("[PROV] Az NVS valoszinuleg tele van. Az eszkoz NEM indul ujra,");
+    Serial.println("[PROV] mert azzal ugyanide jutna vissza. Teljes torles: esptool erase_flash.");
+    return;
+  }
   if (_activatedConfig.tenantId.length() > 0) {
     _store.setTenantId(_activatedConfig.tenantId);
   }

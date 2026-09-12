@@ -56,21 +56,29 @@ struct BellEntry {
 #define NVS_BELL_DONE_BITS  "hbits"
 #define NVS_BELL_DONE_DATE  "hdate"
 
-// NVS kulcsok – teljes tanévnyi naptár (sablonok + naptár-kivételek).
-// A /bells/sync válasz `templates`/`calendar`/`defaultTemplateId` mezőit
-// nyers JSON string-ként tároljuk (ArduinoJson v7 JsonDocument, nincs
-// fix méretkorlát mint a napi/default cache-nél) – így egy teljesen offline
-// eszköz is helyesen fel tudja oldani BÁRMELYIK jövőbeli nap csengetési
-// rendjét, nem csak a legutóbb cache-elt "ma"-t.
-#define NVS_BELL_FY_NS      "bellfy"
-#define NVS_BELL_FY_DATA    "data"
-#define NVS_BELL_FY_VER     "ver"
+// LittleFS fájlok – teljes tanévnyi naptár (sablonok + naptár-kivételek).
+//
+// EZ KORÁBBAN NVS-BEN VOLT, ÉS AZ SÚLYOS HIBA VOLT (2026-09-12):
+// az NVS partíció a partitions.csv szerint MINDÖSSZE 0x5000 = 20 480 bájt,
+// a mentés felső határa viszont 24 kB volt – vagyis EGYETLEN érték nagyobb
+// lehetett, mint a teljes partíció. A tanév naptára így megtöltötte az NVS-t,
+// és onnantól MINDEN további írás elbukott: a provisioning `setWifi()` /
+// `setDeviceKey()` hívásai csendben nem mentek végbe, az eszköz pedig
+// újraindulás után újra provisioning módba esett – örökre.
+//
+// Az NVS-t megosztjuk a WiFi driverrel is (`wifi:config NVS flash: enabled`),
+// tehát ott KIZÁRÓLAG rövid, konfigurációs értékeknek van helye. A tanévnyi
+// JSON a LittleFS-re való, ahol 8 MB áll rendelkezésre.
+#define FY_CACHE_PATH       "/bellfy.json"
+#define FY_VERSION_PATH     "/bellfy.ver"
 
-// A teljes tanévnyi JSON felső korlátja az NVS-ben. Egy tanév naptára
-// (max 6 sablon × 40 bejegyzés + néhány tucat kivétel-nap) ennél jóval
-// kisebb; a korlát azt akadályozza meg, hogy egy elszabadult adat sérült
-// vagy csonka NVS bejegyzést hozzon létre.
-#define MAX_FY_JSON_BYTES   (24 * 1024)
+// A régi NVS névtér – csak azért maradt meg a neve, hogy induláskor
+// TÖRÖLNI tudjuk, és visszanyerjük a helyet a már megtelt eszközökön.
+#define NVS_BELL_FY_NS      "bellfy"
+#define FY_LEGACY_DATA_KEY  "data"
+
+// A teljes tanévnyi JSON felső korlátja. LittleFS-en ez már kényelmes.
+#define MAX_FY_JSON_BYTES   (64 * 1024)
 
 class BellManager {
 public:

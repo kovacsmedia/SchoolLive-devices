@@ -5,13 +5,8 @@
 #include <ArduinoJson.h>
 
 #include "Config.h"
-#include <esp_heap_caps.h>
+#include <esp_log.h>
 
-// Összeomlás-morzsa a snap lejátszóból (components/lightsnapcast/player.c).
-// A fejlécet szándékosan nem húzzuk be – I2S/snapcast típusokat vonzana ide.
-extern "C" void     player_mark(int mark);
-extern "C" uint32_t player_last_crash_mark(void);
-extern "C" uint32_t player_last_crash_uptime(void);
 #include "PersistStore.h"
 #include "ProvisioningManager.h"
 #include "AudioManager.h"
@@ -28,7 +23,91 @@ extern "C" uint32_t player_last_crash_uptime(void);
 
 extern "C" {
 #include "snap_app.h"
+
+
 }
+
+/*
+ * ── BERAGADÁS-FELÜGYELET (hang watchdog) ───────────────────────────────────
+ *
+ * MIÉRT KELL: az ESP-IDF Task Watchdogja nálunk `CONFIG_ESP_TASK_WDT_PANIC`
+ * NÉLKÜL futott, azaz elsüléskor CSAK NAPLÓZOTT – a beragadt eszköz beragadva
+ * maradt. Ráadásul a TWDT alapból csak az idle taskokat figyeli: ha a
+ * `TaskNetwork` egy mutexen vagy egy socketen blokkol örökre, az idle task
+ * továbbra is fut, tehát a TWDT észre sem veszi.
+ *
+ * Egy csengetőrendszernél a beragadás ELFOGADHATATLAN: inkább induljon újra
+ * 10 másodperc alatt, mint hogy egy teljes tanítási napon át néma maradjon.
+ *
+ * MEGOLDÁS: a két periodikus szál KERESZTBE figyeli egymást. Mindkettő lép
+ * egy számlálót minden körben; a másik ellenőrzi, hogy az változik-e. Ha
+ * valamelyik HANG_TIMEOUT_MS-ig nem mozdul, az eszköz újraindul, és az RTC
+ * morzsába bejegyzi, MELYIK szál ragadt be – így a következő induláskor
+ * (és a beaconben) látszik az ok.
+ *
+ * A küszöb SZÁNDÉKOSAN bőkezű: az OTA-letöltés percekig a hálózati szálban
+ * tartja a vezérlést. Azt az `OtaManager` progress-visszahívása eteti
+ * (`slHeartbeatNet()`), de a tartalék így is nagy.
+ */
+static const uint32_t HANG_TIMEOUT_MS = 90000UL;
+
+volatile uint32_t slNetTick  = 0;   // TaskNetwork körszámláló
+volatile uint32_t slLoopTick = 0;   // Arduino loop() körszámláló
+
+void slHeartbeatNet() { slNetTick = slNetTick + 1; }
+
+/** A beragadt szál nevét kiírjuk a soros portra, majd újraindulunk. */
+static void slHangReboot(const char* who) {
+    Serial.printf("[HANG] %s nem lepett %lu ms-ig – ujrainditas\n",
+                  who, (unsigned long)HANG_TIMEOUT_MS);
+    Serial.flush();
+    delay(50);          // hogy a soros kiírás biztosan kimenjen
+    ESP.restart();
+}
+
+/*
+ * ── NAPLÓZÁS KAPUZÁSA USB-JELENLÉT SZERINT ────────────────────────────────
+ *
+ * Két KÜLÖNBÖZŐ kimenetünk van, és csak az egyik olcsó:
+ *
+ *   • Az Arduino `Serial` ezen a buildon NATÍV USB CDC (ARDUINO_USB_CDC_ON_BOOT).
+ *     Ha nincs host, a HWCDC::write nem blokkol – csak forgat egy gyűrűpuffert
+ *     és visszatér. Mikroszekundumok, elhanyagolható.
+ *
+ *   • Az ESP-IDF `ESP_LOGx` viszont a UART0-ra megy (CONFIG_ESP_CONSOLE_UART,
+ *     115200 baud), és a UART AKKOR IS kitolja a biteket a drótra, ha a világon
+ *     senki nem olvassa. Ez valódi, folyamatos munka: 115200 baud ~11,5 kB/mp,
+ *     és ha a napló ennél többet termel, a TX FIFO megtelik, a hívó szál pedig
+ *     VÁR. Pontosan ez történt a resync-hullámban (~500 sor 5 mp alatt).
+ *
+ * Ezért: ha nincs USB-host, az IDF naplózást teljesen elnémítjuk. Csatlakoztatott
+ * USB-nél visszakapcsol – a laptopos bench-tesztnél minden látszik, éles
+ * üzemben viszont nulla a költsége.
+ *
+ * A `Serial` bool-operátora a HWCDC kapcsolat-állapotát adja. Az `isPlugged()`
+ * néhány ms toleranciájú SOF-figyelőn alapul és tud pillanatnyilag "villódzni",
+ * ezért csak másodpercenként nézzük, és csak VÁLTÁSKOR nyúlunk a szinthez.
+ */
+static void slUpdateLogGating() {
+    static bool     enabled   = true;
+    static uint32_t lastMs    = 0;
+
+    const uint32_t now = millis();
+    if ((uint32_t)(now - lastMs) < 1000) return;
+    lastMs = now;
+
+    // A HWCDC bool-operátora az isCDC_Connected()-et adja vissza, ami a
+    // host SOF-csomagjain alapul: igaz, ha van enumerált USB-host – akkor is,
+    // ha épp nincs megnyitva a soros monitor.
+    const bool usb = (bool)Serial;
+    if (usb == enabled) return;
+
+    enabled = usb;
+    // A CONFIG_LOG_MAXIMUM_LEVEL=3 (INFO) miatt ennél magasabbra nincs értelme.
+    esp_log_level_set("*", usb ? ESP_LOG_INFO : ESP_LOG_NONE);
+    if (usb) Serial.println("[LOG] USB host eszlelve – ESP-IDF naplozas BE");
+}
+
 
 // --- Globális objektumok ---
 SLNetworkManager networkManager;
@@ -66,7 +145,6 @@ void afterLocalPlayback() {
 // --- Snapcast indítás, ha már van backend config ---
 
 void tryStartSnapcastClient() {
-    player_mark(16 /* APP_MARK_NET_SNAPSTART */);
     if (!backend.hasSnapConfig()) return;
     if (snapClient.isStarted()) return;
 
@@ -190,11 +268,24 @@ void TaskNetwork(void* pvParameters) {
 
     networkManager.begin();
 
+    // A loop() szál figyeléséhez: utoljára látott érték + mikor változott.
+    uint32_t seenLoopTick   = slLoopTick;
+    uint32_t seenLoopAtMs   = millis();
+
     for (;;) {
+        slNetTick = slNetTick + 1;
+
+        // A másik szál él-e még?
+        if (slLoopTick != seenLoopTick) {
+            seenLoopTick = slLoopTick;
+            seenLoopAtMs = millis();
+        } else if ((uint32_t)(millis() - seenLoopAtMs) > HANG_TIMEOUT_MS) {
+            slHangReboot("Fo loop()");
+        }
+
         networkManager.loop();
 
         // WS loop – event feldolgozás + automata reconnect
-        player_mark(15 /* APP_MARK_NET_WS */);
         wsClient.loop();
 
         tryStartSnapcastClient();
@@ -220,7 +311,6 @@ void TaskNetwork(void* pvParameters) {
         // processz, így egy backend-deploy/összeomlás alatt a snapclient
         // kapcsolat élve maradt, az eszköz "online"-nak hitte magát, és a
         // csengetés SEHOL nem szólalt meg.
-        player_mark(17 /* APP_MARK_NET_BELLS */);
         bellManager.setBackendReachable(wsConnected && snapConnected);
 
         // A csengetés-figyelő MINDIG fut; hogy kell-e helyben lejátszani, azt
@@ -235,7 +325,6 @@ void TaskNetwork(void* pvParameters) {
             }
         }
 
-        player_mark(18 /* APP_MARK_NET_OTA */);
         otaManager.loop();
 
         vTaskDelay(100 / portTICK_PERIOD_MS);
@@ -357,6 +446,11 @@ void startNormalMode() {
 
 void setup() {
     Serial.begin(115200);
+    // A HWCDC alapból akár 20 x 100 ms-ot is VÁR, ha a host nem olvas (megtelt
+    // OS-puffer, lefagyott monitor). Egy naplósor emiatt 2 másodpercre
+    // megállíthatná a hívó szálat – csengetőrendszerben elfogadhatatlan.
+    // 0 = sose várjunk: inkább vesszen el egy sor, mint hogy a lejátszás álljon.
+    Serial.setTxTimeoutMs(0);
     delay(500);
 
     Serial.println("=== SETUP START ===");
@@ -380,70 +474,6 @@ void setup() {
                       (unsigned)use, (unsigned)tot,
                       (unsigned)(tot > use ? tot - use : 0));
     }
-
-    // ── Memória-riport indulaskor ──────────────────────────────────────────
-    // A szűk keresztmetszet a BELSŐ DRAM (~320 kB), nem a PSRAM (8 MB). Ez a
-    // sor azonnal megmutatja, hogy a PSRAM egyáltalán felállt-e: ha nem, a
-    // JSON-fák és a nagy pufferek visszaesnek a belső heap-re (működik, csak
-    // szűkösebben – ld. PsramJson.h).
-    {
-        const size_t iFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-        const size_t iBlk  = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-        const size_t pTot  = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
-        const size_t pFree = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-
-        Serial.printf("[MEM] Belso DRAM: %u szabad, legnagyobb blokk %u | PSRAM: %u / %u\n",
-                      (unsigned)iFree, (unsigned)iBlk, (unsigned)pFree, (unsigned)pTot);
-
-        if (pTot == 0) {
-            Serial.println("[MEM] FIGYELEM: nincs elerheto PSRAM – minden foglalas a belso DRAM-bol megy");
-        }
-    }
-
-    // ── Összeomlás-morzsa az ELŐZŐ futásból ────────────────────────────────
-    // Az RTC memória túléli a pánik utáni újraindulást, ezért megmondja, hol
-    // járt a snap lejátszó-út, amikor az eszköz összeomlott. Ez a soros
-    // monitor kiváltása: nem kell ott ülni a pánik pillanatában.
-    {
-        const uint32_t mark = player_last_crash_mark();
-        if (mark != 0) {
-            static const char* MARK_NAMES[] = {
-                "-", "player_task belepes", "i2s beallitas", "timer init",
-                "timer start", "timer ISR", "beallitas-valtozas",
-                "chunk-varakozas", "chunk feldolgozas", "i2s iras",
-                "task kilepes", "insert_pcm_chunk", "start_player",
-                "loop: audio", "loop: UI", "net: WS", "net: snap indit",
-                "net: csengetes", "net: OTA", "beacon", "WS uzenet"
-            };
-            const char* name = (mark < (sizeof(MARK_NAMES)/sizeof(MARK_NAMES[0])))
-                             ? MARK_NAMES[mark] : "ismeretlen";
-            Serial.printf("[CRASH] Elozo futas utolso pontja: %s (#%u), %u mp uzemido utan\n",
-                          name, (unsigned)mark, (unsigned)player_last_crash_uptime());
-        }
-    }
-
-    store.begin();
-
-    audioManager.begin(&store);
-
-    /*
-     * I2S arbitration:
-     * helyi/offline csengetés idejére a Snapcast engedje el az I2S-t.
-     */
-    audioManager.setI2SCallbacks(
-        beforeLocalPlayback,
-        afterLocalPlayback
-    );
-
-    /*
-     * Volume‐láncolás:
-     * a manuális hangerő (gombnyomás vagy backend SET_VOLUME parancs) és az
-     * emergency override is azonnal érvényesüljön a Snapcast streamen.
-     * AudioManager az effective volume-ot (override vagy manual) küldi át.
-     */
-    audioManager.setVolumeChangedCallback([](uint8_t effectiveVol) {
-        snapClient.setLocalVolume(effectiveVol);
-    });
 
     uiManager = new UIManager(audioManager, networkManager, bellManager, store);
     uiManager->begin();
@@ -498,6 +528,23 @@ void setup() {
 // --- LOOP (core 1) ---
 
 void loop() {
+    slLoopTick = slLoopTick + 1;
+    slUpdateLogGating();
+
+    // A hálózati szál él-e még? (Provisioning módban nem fut, ott nem nézzük.)
+    static uint32_t seenNetTick = 0;
+    static uint32_t seenNetAtMs = 0;
+    if (!inProvisioningMode) {
+        if (seenNetAtMs == 0 || slNetTick != seenNetTick) {
+            seenNetTick = slNetTick;
+            seenNetAtMs = millis();
+        } else if ((uint32_t)(millis() - seenNetAtMs) > HANG_TIMEOUT_MS) {
+            slHangReboot("TaskNetwork");
+        }
+    } else {
+        seenNetAtMs = 0;
+    }
+
     // Szervizgomb – MINDKÉT módban (normál és provisioning) figyeljük.
     serviceButton.loop();
 
@@ -506,9 +553,7 @@ void loop() {
          * A Snapcast audio külön taskban fut.
          * Itt csak UI és offline AudioManager loop marad.
          */
-        player_mark(13 /* APP_MARK_LOOP_AUDIO */);
         audioManager.loop();
-        player_mark(14 /* APP_MARK_LOOP_UI */);
         uiManager->loop();
     } else {
         uiManager->loop();
