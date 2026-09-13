@@ -303,10 +303,29 @@ void TaskNetwork(void* pvParameters) {
 
         tryStartSnapcastClient();
 
-        if (agent.isPlaybackQuietActive()) {
-            vTaskDelay(100 / portTICK_PERIOD_MS);
-            continue;
-        }
+        /*
+         * A "playback quiet" ablak NEM vakíthatja meg a csengetés-figyelőt.
+         *
+         * Eddig itt egy `continue` állt, ami a ciklus MARADÉKÁT kihagyta –
+         * köztük a `setBackendReachable()`-t és a `bellManager` hívásokat is.
+         * Az ablak PLAY_URL-nél 60 másodperc, és minden újabb PLAY újraindítja:
+         * szóló rádió mellett gyakorlatilag állandó. Mérve ebben a logban:
+         *
+         *   PLAY ...:resume  → quiet 60 s
+         *   a 15:46-os jelzés az ablakon BELÜL lett volna esedékes
+         *   ténylegesen 11,5 másodperccel később szólalt meg, `armed=0`-val –
+         *   pontosan akkor, amikor az ablak lejárt
+         *
+         * A T-60-as felfegyverzés tehát le sem futott. Rosszabb esetben (ha a
+         * rádió-resume-ok láncolódnak) a késés túllépheti a 120 másodperces
+         * pótlási ablakot, és a csengetés VÉGLEG elmarad.
+         *
+         * Az ablak eredeti célja a beacon-forgalom ritkítása – azt a
+         * `DeviceAgent::loop()` maga is elvégzi (ott az első sor egy
+         * `isPlaybackQuietActive()` őr). Ide tehát nem kell. Az OTA-t viszont
+         * továbbra is visszatartjuk lejátszás alatt.
+         */
+        const bool playbackQuiet = agent.isPlaybackQuietActive();
 
         bool snapConnected = snapClient.isConnected();
         bool wsConnected   = wsClient.isConnected();
@@ -366,7 +385,9 @@ void TaskNetwork(void* pvParameters) {
             bellManager.checkBells();
         }
 
-        otaManager.loop();
+        // OTA-t lejátszás alatt nem kezdünk (a csengetés-őr emellett külön is
+        // véd, ld. OtaManager OTA_BELL_GUARD_S).
+        if (!playbackQuiet) otaManager.loop();
 
         vTaskDelay(100 / portTICK_PERIOD_MS);
     }
