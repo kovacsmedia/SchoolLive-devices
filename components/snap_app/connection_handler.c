@@ -24,6 +24,9 @@ static volatile uint32_t s_lastRxMs        = 0;
  * ERR_TIMEOUT-ot ad, hibát nem. Ezért az élőjelet is mérjük. */
 #define SNAP_RX_SILENCE_TIMEOUT_MS 5000U
 
+/* Ennyi teljes némaság után MÁR ÚJRA IS CSATLAKOZUNK (ld. receive_data). */
+#define SNAP_RX_DEAD_MS 8000U
+
 bool connection_is_established(void) {
   if (!s_connEstablished) return false;
   const uint32_t nowMs = (uint32_t)(esp_timer_get_time() / 1000LL);
@@ -310,10 +313,49 @@ static int receive_data(struct netbuf** firstNetBuf, bool isMuted,
         // restart and try to reconnect
         return -1;
       } else if (rc2 == ERR_TIMEOUT) {
+        /*
+         * A TIMEOUT ÖNMAGÁBAN NORMÁLIS: az 1 mp-es (illetve szinkron alatt
+         * 10 ms-os) vevő-időkorlát hajtja a time-sync üzenetek küldését.
+         * EDDIG viszont a ciklus egyszerűen újrapróbált – A VÉGTELENSÉGIG.
+         *
+         * Ha a szerver elnémul, de a TCP formálisan nyitva marad (félig nyitott
+         * socket: backend-újraindítás proxy mögött, vagy elnyelt kapcsolat),
+         * akkor SOHA nem érkezik se ERR_CONN, se hiba – a kliens örökre itt
+         * pörgött. Ennek a látható következménye: a player_task 2 mp után
+         * chunk hiányában kilépett ("stop player done"), az `insert_pcm_chunk`
+         * pedig már nem hívódott meg, tehát a lejátszót SEMMI nem indította
+         * újra. Az eszköz némán maradt újraindításig – se rádió, se csengetés.
+         *
+         * A snapserver üresjáratban is folyamatosan küld, ezért a TELJES
+         * némaságot mérjük: ha ennyi ideig egyetlen bájt sem jött, a kapcsolat
+         * halott, bontunk és újracsatlakozunk.
+         */
+        const uint32_t nowMs = (uint32_t)(esp_timer_get_time() / 1000LL);
+        if ((uint32_t)(nowMs - s_lastRxMs) > SNAP_RX_DEAD_MS) {
+          ESP_LOGW(TAG, "nincs adat %u ms-ig – ujracsatlakozas",
+                   (unsigned)(nowMs - s_lastRxMs));
+          s_connEstablished = false;
+          netconn_close(lwipNetconn);
+          if (*firstNetBuf != NULL) {
+            netbuf_delete(*firstNetBuf);
+            *firstNetBuf = NULL;
+          }
+          return -1;
+        }
         ESP_LOGD(TAG, "netconn rx timeout (%d)", rc2);
       } else {
+        /*
+         * Bármilyen más hiba: a socket használhatatlan. Eddig ez is csak
+         * `continue`-lt ugyanazon a halott netconn-on.
+         */
         s_connEstablished = false;
-        ESP_LOGE(TAG, "netconn err %d", rc2);
+        ESP_LOGE(TAG, "netconn err %d – ujracsatlakozas", rc2);
+        netconn_close(lwipNetconn);
+        if (*firstNetBuf != NULL) {
+          netbuf_delete(*firstNetBuf);
+          *firstNetBuf = NULL;
+        }
+        return -1;
       }
 
       if (*firstNetBuf != NULL) {

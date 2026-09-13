@@ -2690,8 +2690,19 @@ void player_pause(void) {
   const uint32_t waitStart = (uint32_t)(esp_timer_get_time() / 1000ULL);
   while (!s_player_i2s_released) {
     if (((uint32_t)(esp_timer_get_time() / 1000ULL) - waitStart) > 1500) {
-      ESP_LOGW(TAG, "player_pause: a task nem valaszolt 1500 ms alatt – kenyszeritett felfuggesztes");
-      vTaskSuspend(playerTaskHandle);
+      /*
+       * A handle-t ÚJRA meg kell nézni: a player_task időközben magától is
+       * kiléphetett (chunk-hiány miatt), ilyenkor `playerTaskHandle` NULL.
+       * A `vTaskSuspend(NULL)` a FreeRTOS-ban a HÍVÓ taskot függesztené fel –
+       * azaz itt a csengetést indító TaskNetwork-öt, örökre.
+       */
+      TaskHandle_t h = playerTaskHandle;
+      if (h != NULL) {
+        ESP_LOGW(TAG, "player_pause: a task nem valaszolt 1500 ms alatt – kenyszeritett felfuggesztes");
+        vTaskSuspend(h);
+      } else {
+        ESP_LOGW(TAG, "player_pause: a player_task idokozben kilepett");
+      }
       player_release_i2s();
       s_player_i2s_released = true;
       break;
