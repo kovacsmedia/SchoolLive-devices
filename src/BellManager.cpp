@@ -102,6 +102,8 @@ void BellManager::loop() {
     maybeSyncSchedule();
 
     if (_entryCount > 0) checkSchedule();
+
+    flushFullYearIfDue();
 }
 
 // ---------------------------------------------------------------------------
@@ -165,6 +167,9 @@ void BellManager::checkBells() {
     }
 
     if (_entryCount > 0) checkSchedule();
+
+    // A halasztott tanévnyi cache kiírása, ha elült a szerkesztés.
+    flushFullYearIfDue();
 }
 
 // ---------------------------------------------------------------------------
@@ -607,25 +612,88 @@ void BellManager::saveFullYearToNVS(const String& version, const JsonDocument& s
     }
     buf.data()[written] = '\0';
 
+    /*
+     * Innentől NEM írunk azonnal flash-be – ld. BellManager.h. A kész
+     * bájtsort félretesszük, és a `flushFullYearIfDue()` írja ki, ha a
+     * szerkesztés elült. Egy újabb szinkron addig egyszerűen felülírja.
+     */
+    PsramBuffer* pend = new PsramBuffer(written);
+    if (pend == nullptr || !pend->valid()) {
+        delete pend;
+        Serial.println("[BELL] Full-year cache: nincs memoria a halasztott mentesnek – azonnali iras");
+        // Végszükség: inkább egy megakadó másodperc, mint elveszett naptár.
+        File f = LittleFS.open(FY_CACHE_PATH, "w");
+        if (f) { f.write((const uint8_t*)buf.data(), written); f.close(); }
+        File vf = LittleFS.open(FY_VERSION_PATH, "w");
+        if (vf) { vf.print(version); vf.close(); }
+        return;
+    }
+    memcpy(pend->data(), buf.data(), written);
+
+    delete _fyPending;
+    _fyPending        = pend;
+    _fyPendingLen     = written;
+    _fyPendingVersion = version;
+    _fyPendingAtMs    = millis();
+
+    Serial.printf("[BELL] Full-year cache elokeszitve: %u bajt (ver: %s) – kiiras nyugalom utan\n",
+                  (unsigned)written, version.c_str());
+}
+
+/*
+ * A félretett tanévnyi naptár kiírása – darabolva, yield-ekkel.
+ *
+ * Csak akkor ír, ha a legutóbbi szinkron óta eltelt a nyugalmi idő, ÉS éppen
+ * nem szól helyi lejátszás (annak a dekódere ugyanúgy megsínylené a
+ * flash-cache tiltását).
+ */
+void BellManager::flushFullYearIfDue() {
+    if (_fyPending == nullptr) return;
+    if ((millis() - _fyPendingAtMs) < FY_FLUSH_QUIET_MS) return;
+    if (audio.isBusy() || audio.isInCooldown()) return;
+
+    PsramBuffer* pend = _fyPending;
+    const size_t len  = _fyPendingLen;
+    const String ver  = _fyPendingVersion;
+
+    // ELŐBB levesszük a függőből: ha az írás elbukik, ne próbálkozzunk
+    // vég nélkül újra minden körben.
+    _fyPending    = nullptr;
+    _fyPendingLen = 0;
+
     File f = LittleFS.open(FY_CACHE_PATH, "w");
     if (!f) {
         Serial.println("[BELL] Full-year cache: nem nyithato irasra – mentes kihagyva");
+        delete pend;
         return;
     }
-    const size_t w = f.write((const uint8_t*)buf.data(), written);
+
+    // 512 bájtos adagok, köztük yield: a flash cache így nem egyetlen hosszú
+    // blokkra tiltódik le, a lejátszó tud futni és újratölteni a DMA-t.
+    static const size_t CHUNK = 512;
+    size_t w  = 0;
+    bool   ok = true;
+    while (w < len) {
+        const size_t n = (len - w) < CHUNK ? (len - w) : CHUNK;
+        if (f.write((const uint8_t*)pend->data() + w, n) != n) { ok = false; break; }
+        w += n;
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
     f.close();
-    if (w != written) {
+    delete pend;
+
+    if (!ok) {
         Serial.printf("[BELL] Full-year cache: csonka iras (%u / %u) – torlom\n",
-                      (unsigned)w, (unsigned)written);
+                      (unsigned)w, (unsigned)len);
         LittleFS.remove(FY_CACHE_PATH);
         return;
     }
 
     File vf = LittleFS.open(FY_VERSION_PATH, "w");
-    if (vf) { vf.print(version); vf.close(); }
+    if (vf) { vf.print(ver); vf.close(); }
 
     Serial.printf("[BELL] Full-year cache mentve: %u bajt (ver: %s)\n",
-                  (unsigned)written, version.c_str());
+                  (unsigned)len, ver.c_str());
 }
 
 bool BellManager::resolveFullYearForDate(const String& dateStr, bool& outIsHoliday) {

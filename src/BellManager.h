@@ -6,6 +6,7 @@
 #include "AudioManager.h"
 #include "SLNetworkManager.h"
 #include "BackendClient.h"
+#include "PsramJson.h"
 
 // Csengetési módok
 #define BELL_MODE_OFF   0
@@ -197,6 +198,31 @@ private:
 
     // NVS – teljes tanévnyi naptár
     void saveFullYearToNVS(const String& version, const JsonDocument& src);
+
+    /*
+     * A TANÉVNYI CACHE FLASH-ÍRÁSA HALASZTVA ÉS DARABOLVA.
+     *
+     * MIÉRT: a ~8 kB-os LittleFS-írás alatt a flash cache TILTVA van, a
+     * Snapcast lejátszó kódja pedig flash-ből fut – nem tud futni, a DMA
+     * (~43 ms) kiürül, és a kliens kemény újraszinkronba esik. Mérve: egy
+     * csengetésirend-szerkesztés 3,4 másodpercre megakasztotta a rádiót,
+     * végig `RESYNCING HARD 1`-gyel, üres chunk-sorral.
+     *
+     * Két dolgot teszünk:
+     *  • HALASZTÁS + ÖSSZEVONÁS: a szerializálás azonnal megtörténik
+     *    (PSRAM, nem nyúl flash-hez), a kiírás viszont csak akkor, ha a
+     *    szerkesztés elült. Aki egy percen belül ötször módosít, annak most
+     *    egyetlen írás jut öt helyett.
+     *  • DARABOLÁS: a kiírás 512 bájtos adagokban megy, közöttük yield-del,
+     *    így a cache nem egyetlen hosszú blokkra tiltódik le.
+     */
+    PsramBuffer*  _fyPending        = nullptr;
+    size_t        _fyPendingLen     = 0;
+    String        _fyPendingVersion;
+    unsigned long _fyPendingAtMs    = 0;
+    static const unsigned long FY_FLUSH_QUIET_MS = 12000;
+
+    void flushFullYearIfDue();
     // Adott napra (YYYY-MM-DD) feloldja a csengetési rendet a tárolt
     // naptárból: explicit naptár-kivétel (ünnepnap / egyedi sablon) > hétvégi
     // csendes nap (ha nincs kivétel) > default sablon. Sikeres feloldáskor

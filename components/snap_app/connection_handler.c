@@ -1,5 +1,7 @@
 #include "connection_handler.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "lwip/err.h"
@@ -26,6 +28,34 @@ static volatile uint32_t s_lastRxMs        = 0;
 
 /* Ennyi teljes némaság után MÁR ÚJRA IS CSATLAKOZUNK (ld. receive_data). */
 #define SNAP_RX_DEAD_MS 8000U
+
+/*
+ * ÜTEMFÉK AZ ÚJRACSATLAKOZÁS ELŐTT.
+ *
+ * A `receive_data()` -1-es visszatérése a hívót (http_get_task) a
+ * `setup_network()`-re küldi vissza – abban a ciklusban NINCS késleltetés.
+ * Ha a csatlakozás azonnal sikerül, majd a vétel azonnal hibára fut (pl. a
+ * szerver minden kapcsolatot rögtön eldob), a kör ütemfék nélkül pörögne,
+ * megfosztva az IDLE taskot a CPU-tól → 10 másodperc múlva TWDT-pánik.
+ *
+ * Korábban ez nem fordulhatott elő, mert a hibaág a vételi cikluson BELÜL
+ * maradt, ahol a `netconn_recv` időkorlátja (1 s) magától ütemezett. Amikor
+ * (helyesen) valódi újracsatlakozásra váltottunk, ez a fék elveszett –
+ * ezért itt pótoljuk. Növekvő várakozás, 200 ms-tól 2 s-ig.
+ */
+static uint32_t s_restartDelayMs = 200;
+
+static void connection_restart_backoff(void) {
+  vTaskDelay(pdMS_TO_TICKS(s_restartDelayMs));
+
+  s_restartDelayMs *= 2;
+  if (s_restartDelayMs > 2000) s_restartDelayMs = 2000;
+}
+
+/* Sikeres vétel után a fék visszaáll a legrövidebb értékre. */
+static void connection_restart_backoff_reset(void) {
+  s_restartDelayMs = 200;
+}
 
 bool connection_is_established(void) {
   if (!s_connEstablished) return false;
@@ -340,6 +370,7 @@ static int receive_data(struct netbuf** firstNetBuf, bool isMuted,
             netbuf_delete(*firstNetBuf);
             *firstNetBuf = NULL;
           }
+          connection_restart_backoff();
           return -1;
         }
         ESP_LOGD(TAG, "netconn rx timeout (%d)", rc2);
@@ -355,6 +386,7 @@ static int receive_data(struct netbuf** firstNetBuf, bool isMuted,
           netbuf_delete(*firstNetBuf);
           *firstNetBuf = NULL;
         }
+        connection_restart_backoff();
         return -1;
       }
 
@@ -366,6 +398,7 @@ static int receive_data(struct netbuf** firstNetBuf, bool isMuted,
       continue;
     } else {
       s_lastRxMs = (uint32_t)(esp_timer_get_time() / 1000LL);
+      connection_restart_backoff_reset();
       ESP_LOGD(TAG, "netconn rx OK");
     }
     break;

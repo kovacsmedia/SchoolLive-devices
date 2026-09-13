@@ -632,6 +632,29 @@ void loop() {
          */
         audioManager.loop();
         uiManager->loop();
+
+        /*
+         * A loopTask KÖTELEZŐEN adjon vissza vezérlést.
+         *
+         * A loopTask prioritása 1, az IDLE taskoké 0. Ha ez a ciklus soha nem
+         * blokkol, az IDLE1 SOHA nem fut – és pontosan 10 másodperc múlva
+         * eldurran a task watchdog:
+         *
+         *   task_wdt:  - IDLE1 (CPU 1)
+         *   task_wdt: CPU 1: loopTask
+         *   Reset reason: 6   (ESP_RST_TASK_WDT)
+         *
+         * Üresjáratban tényleg semmi nem blokkol: az `audioManager.loop()`
+         * `audio == nullptr` mellett azonnal visszatér, a `uiManager->loop()`
+         * pedig kijelző nélküli változaton a `flush()`-ban lép ki rögtön.
+         * A mérés egyértelmű volt: a setup 2,49 s-nél végzett, a watchdog
+         * 12,49 s-nél ütött – másodpercre a 10 másodperces időkorlát.
+         *
+         * HELYI LEJÁTSZÁS ALATT NEM várakozunk: ott az `i2s_channel_write()`
+         * magától blokkol a DMA-ra, tehát az IDLE amúgy is sorra kerül, egy
+         * beiktatott várakozás viszont az MP3-dekódolást lassítaná.
+         */
+        if (!audioManager.isBusy()) delay(2);
     } else {
         uiManager->loop();
         delay(50);
