@@ -915,6 +915,44 @@ static inline void bellBitSet(uint8_t* bits, int minuteOfDay, bool v) {
 //     játszunk
 //   • ha bizonytalan (kapcsolat él, de PREPARE nem jött) → türelmi idő, utána
 //     mégis helyben játszunk, hogy a csengetés ne maradjon el
+uint8_t BellManager::entriesAtMinute(int bellMin) const {
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < _entryCount; i++) {
+        if (_entries[i].hour * 60 + _entries[i].minute == bellMin) n++;
+    }
+    return n;
+}
+
+uint8_t BellManager::ordinalWithinMinute(uint8_t idx, int bellMin) const {
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < idx && i < _entryCount; i++) {
+        if (_entries[i].hour * 60 + _entries[i].minute == bellMin) n++;
+    }
+    return n;
+}
+
+void BellManager::markEntryHandled(int bellMin) {
+    // Új percet kezdünk kiszolgálni? Akkor nullázzuk a számlálót. Egy elavult
+    // slot így magától elévül – nem tud elnyelni egy másik perc jelzését.
+    if (_sameMinuteMin != bellMin) {
+        _sameMinuteMin  = bellMin;
+        _sameMinuteDone = 0;
+    }
+
+    if (_sameMinuteDone < 255) _sameMinuteDone++;
+
+    const uint8_t total = entriesAtMinute(bellMin);
+    if (_sameMinuteDone >= total) {
+        // Az adott perc ÖSSZES jelzése lement – innentől a perc véglegesen kész.
+        bellBitSet(_bellHandledBits, bellMin, true);
+        saveBellDoneState();
+    } else {
+        Serial.printf("[BELL] %02d:%02d – %u/%u jelzes kesz, jon a kovetkezo\n",
+                      bellMin / 60, bellMin % 60,
+                      (unsigned)_sameMinuteDone, (unsigned)total);
+    }
+}
+
 void BellManager::noteOnlineBell() {
     _lastOnlineBellMs = millis();
 
@@ -937,6 +975,10 @@ void BellManager::noteOnlineBell() {
     for (uint8_t i = 0; i < _entryCount; i++) {
         const int bellMin = _entries[i].hour * 60 + _entries[i].minute;
         if (bellBitGet(_bellHandledBits, bellMin)) continue;
+        // Az adott percből már lement jelzéseket is átugorjuk – különben két
+        // PREPARE ugyanazt a bejegyzést jelölné meg.
+        if (bellMin == _sameMinuteMin &&
+            ordinalWithinMinute(i, bellMin) < _sameMinuteDone) continue;
 
         long dist = nowSec - (long)bellMin * 60;
         if (dist < 0) dist = -dist;
@@ -949,9 +991,8 @@ void BellManager::noteOnlineBell() {
 
     if (bestMin < 0) return;
 
-    bellBitSet(_bellHandledBits, bestMin, true);
-    bellBitSet(_bellArmedBits,   bestMin, false);
-    saveBellDoneState();
+    markEntryHandled(bestMin);
+    bellBitSet(_bellArmedBits, bestMin, false);
 
     Serial.printf("[BELL] %02d:%02d – a backend jatssza le (PREPARE), helyben nem csengetunk\n",
                   bestMin / 60, bestMin % 60);
@@ -966,6 +1007,8 @@ void BellManager::checkSchedule() {
         _bellStateDay = t.tm_yday;
         memset(_bellHandledBits, 0, sizeof(_bellHandledBits));
         memset(_bellArmedBits,   0, sizeof(_bellArmedBits));
+        _sameMinuteMin  = -1;   // ld. BellManager.h – az ordinális slot is nullázódik
+        _sameMinuteDone = 0;
 
         if (firstRun) {
             // BOOT: a RAM üres, de lehet, hogy MA már csengettünk. Az NVS-ből
@@ -988,6 +1031,10 @@ void BellManager::checkSchedule() {
     for (uint8_t i = 0; i < _entryCount; i++) {
         const int  bellMin = _entries[i].hour * 60 + _entries[i].minute;
         if (bellBitGet(_bellHandledBits, bellMin)) continue;
+        // Ugyanarra a percre több jelzés is eshet: a már lementeket átugorjuk,
+        // a következő viszont sorra kerül (ld. markEntryHandled).
+        if (bellMin == _sameMinuteMin &&
+            ordinalWithinMinute(i, bellMin) < _sameMinuteDone) continue;
 
         const long bellSec = (long)bellMin * 60;
         const long dt      = nowSec - bellSec;
@@ -1010,6 +1057,8 @@ void BellManager::checkSchedule() {
         // (vagy sokáig nem volt pontos ideje), NE pótoljuk utólag – egy
         // délután bekapcsolt hangszóró ne csengessen rá a reggeli időpontokra.
         if (dt > BELL_CATCHUP_MAX_S) {
+            // Itt a TELJES percet lezárjuk: ha az első jelzés is túl régi,
+            // a percre eső többit sincs értelme pótolni.
             bellBitSet(_bellHandledBits, bellMin, true);
             bellBitSet(_bellArmedBits,   bellMin, false);
             saveBellDoneState();
@@ -1054,9 +1103,8 @@ void BellManager::checkSchedule() {
 
         if (!path.isEmpty()) audio.playFile(path.c_str());
 
-        bellBitSet(_bellHandledBits, bellMin, true);
-        bellBitSet(_bellArmedBits,   bellMin, false);
-        saveBellDoneState();   // AZONNAL, hogy egy közvetlen újraindulás se ismételje meg
+        markEntryHandled(bellMin);          // ordinális; a perc bitje csak ha mind kész
+        bellBitSet(_bellArmedBits, bellMin, false);
 
         if (_mode == BELL_MODE_TODAY) {
             const int curMin = t.tm_hour * 60 + t.tm_min;

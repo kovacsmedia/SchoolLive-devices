@@ -165,6 +165,39 @@ private:
     // olyankor az indexek elcsúsznának, ami kihagyott vagy duplán lejátszott
     // csengetést okozna. A napon belüli perc viszont stabil azonosító.
     uint8_t       _bellHandledBits[180] = { 0 };  // ma már elintézve (online v. offline)
+
+    /*
+     * TÖBB JELZÉS UGYANARRA A PERCRE.
+     *
+     * A `_bellHandledBits` percenként EGY bit, tehát önmagában csak egy
+     * jelzést engedne percenként – a második némán kimaradna. Márpedig egy
+     * időpontra több jelzés is beállítható (a szerkesztő rá is kérdez), és
+     * mindegyiknek meg KELL szólalnia, egymás után.
+     *
+     * A megoldás ordinális, és NEM a bejegyzések indexére épül (a lista öt
+     * helyen is újraépül szinkronkor, egy elavult index elnyelhetne egy
+     * csengetést). Egyetlen slot elég, mert az azonos percre eső jelzések
+     * másodperceken belül, egymás után mennek le:
+     *
+     *   _sameMinuteMin   – melyik percet szolgáljuk ki éppen (-1 = egyik sem)
+     *   _sameMinuteDone  – abból hány jelzés ment már le
+     *
+     * A perc bitje CSAK akkor áll be, ha az adott perc ÖSSZES jelzése lement –
+     * onnantól a perzisztált állapot is véglegesnek tekinti.
+     *
+     * Hibatűrés: ha bármi félresikerül, a perc bitje nem áll be, a bejegyzést
+     * a következő körökben újrapróbáljuk a 120 mp-es ablakon belül. A hiba
+     * iránya tehát MINDIG a megszólalás felé mutat, nem a csend felé.
+     */
+    int           _sameMinuteMin  = -1;
+    uint8_t       _sameMinuteDone = 0;
+
+    /** Hány bejegyzés esik erre a percre. */
+    uint8_t entriesAtMinute(int bellMin) const;
+    /** Ez a bejegyzés hányadik a saját percén belül (0-tól). */
+    uint8_t ordinalWithinMinute(uint8_t idx, int bellMin) const;
+    /** Egy jelzés elintézve: ordinális léptetés, és ha a perc kész, a bit is. */
+    void    markEntryHandled(int bellMin);
     uint8_t       _bellArmedBits[180]   = { 0 };  // T-60-nál nem volt elérhető a backend
 
     static const long BELL_LEAD_CHECK_S       = 60;    // ennyivel előbb kezdünk figyelni
