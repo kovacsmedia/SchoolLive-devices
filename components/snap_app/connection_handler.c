@@ -1,5 +1,6 @@
 #include "connection_handler.h"
 
+#include "esp_timer.h"
 #include "esp_log.h"
 #include "lwip/err.h"
 #include "lwip/netdb.h"
@@ -13,6 +14,22 @@ extern struct netconn* lwipNetconn;
 
 static const char* TAG = "CONNECTION_HANDLER";
 
+/* Ld. connection_handler.h – a TÉNYLEGES TCP-állapot, nem a task-állapot. */
+static volatile bool     s_connEstablished = false;
+static volatile uint32_t s_lastRxMs        = 0;
+
+/* A snapserver FOLYAMATOSAN küld (üresjáratban is csendet, ~50 chunk/mp).
+ * Néhány másodperc teljes némaság tehát halott utat jelent akkor is, ha a
+ * TCP-socket formálisan nyitva maradt – erre a netconn_recv csak
+ * ERR_TIMEOUT-ot ad, hibát nem. Ezért az élőjelet is mérjük. */
+#define SNAP_RX_SILENCE_TIMEOUT_MS 5000U
+
+bool connection_is_established(void) {
+  if (!s_connEstablished) return false;
+  const uint32_t nowMs = (uint32_t)(esp_timer_get_time() / 1000LL);
+  return (uint32_t)(nowMs - s_lastRxMs) <= SNAP_RX_SILENCE_TIMEOUT_MS;
+}
+
 void setup_network(esp_netif_t** netif) {
   int rc1, rc2 = ERR_OK;
   uint16_t remotePort = 0;
@@ -23,15 +40,35 @@ void setup_network(esp_netif_t** netif) {
       lwipNetconn = NULL;
     }
 
+    s_connEstablished = false;
     ESP_LOGI(TAG, "Wait for network connection");
 #if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
     CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
     esp_netif_t* eth_netif =
         network_get_netif_from_desc(NETWORK_INTERFACE_DESC_ETH);
 #endif
-    esp_netif_t* sta_netif =
-        network_get_netif_from_desc(NETWORK_INTERFACE_DESC_STA);
+    /*
+     * A HANDLE-T MINDEN KÖRBEN ÚJRA FELOLDJUK.
+     *
+     * Eddig egyszer, a ciklus ELŐTT oldottuk fel – és a ciklus akár percekig
+     * fut, amíg a hálózat vissza nem jön. Csakhogy az `SLNetworkManager`
+     * újracsatlakozáskor TELJES WiFi teardown+init-et végez (a logban:
+     * "Deinit lldesc rx mblock" → "wifi_init: ..."), ilyenkor az esp_netif
+     * példány megszűnik és újra létrejön. A ciklusban tárolt mutató tehát
+     * FELSZABADÍTOTT memóriára mutatott, és az `esp_netif_is_netif_up()`
+     * pánikkal elszállt:
+     *
+     *   Guru Meditation Error: Core 1 panic'ed (LoadStoreError)
+     *   #0 esp_netif_is_netif_up  #1 network_is_netif_up
+     *   #2 setup_network  #3 http_get_task
+     *
+     * Az eszköz így MINDEN AP-kimaradásnál újraindult – ami csengetés-kockázat.
+     * Ráadásul NULL-ra sem volt ellenőrzés: ha a STA netif épp nem létezett,
+     * ugyanez történt.
+     */
+    esp_netif_t* sta_netif = NULL;
     while (1) {
+      sta_netif = network_get_netif_from_desc(NETWORK_INTERFACE_DESC_STA);
 #if CONFIG_SNAPCLIENT_USE_INTERNAL_ETHERNET || \
     CONFIG_SNAPCLIENT_USE_SPI_ETHERNET
       bool ethUp = network_is_netif_up(eth_netif);
@@ -43,7 +80,7 @@ void setup_network(esp_netif_t** netif) {
       }
 #endif
 
-      bool staUp = network_is_netif_up(sta_netif);
+      bool staUp = (sta_netif != NULL) && network_is_netif_up(sta_netif);
       if (staUp) {
         *netif = sta_netif;
 
@@ -217,6 +254,7 @@ void setup_network(esp_netif_t** netif) {
 
     rc2 = netconn_connect(lwipNetconn, &remote_ip, remotePort);
     if (rc2 != ERR_OK) {
+      s_connEstablished = false;
       ESP_LOGE(TAG, "can't connect to remote %s:%d, err %d",
                ipaddr_ntoa(&remote_ip), remotePort, rc2);
 
@@ -234,6 +272,8 @@ void setup_network(esp_netif_t** netif) {
     }
 
     ESP_LOGI(TAG, "netconn connected using %s", network_get_ifkey(*netif));
+    s_lastRxMs        = (uint32_t)(esp_timer_get_time() / 1000LL);
+    s_connEstablished = true;
     break;  // SUCCESS
   }
 }
@@ -251,6 +291,7 @@ static int receive_data(struct netbuf** firstNetBuf, bool isMuted,
     if (rc1 != ERR_OK) {
       ESP_LOGE(TAG, "Data error, closing netconn");
 
+      s_connEstablished = false;
       netconn_close(lwipNetconn);
       return -1;
     }
@@ -263,6 +304,7 @@ static int receive_data(struct netbuf** firstNetBuf, bool isMuted,
     int rc2 = netconn_recv(lwipNetconn, firstNetBuf);
     if (rc2 != ERR_OK) {
       if (rc2 == ERR_CONN) {
+        s_connEstablished = false;
         netconn_close(lwipNetconn);
         ESP_LOGD(TAG, "netconn connection closed (%d)", rc2);
         // restart and try to reconnect
@@ -270,6 +312,7 @@ static int receive_data(struct netbuf** firstNetBuf, bool isMuted,
       } else if (rc2 == ERR_TIMEOUT) {
         ESP_LOGD(TAG, "netconn rx timeout (%d)", rc2);
       } else {
+        s_connEstablished = false;
         ESP_LOGE(TAG, "netconn err %d", rc2);
       }
 
@@ -280,6 +323,7 @@ static int receive_data(struct netbuf** firstNetBuf, bool isMuted,
       }
       continue;
     } else {
+      s_lastRxMs = (uint32_t)(esp_timer_get_time() / 1000LL);
       ESP_LOGD(TAG, "netconn rx OK");
     }
     break;

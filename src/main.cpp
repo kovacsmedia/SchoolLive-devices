@@ -345,7 +345,18 @@ void TaskNetwork(void* pvParameters) {
          * A `loop()` HTTP-szinkron ága viszont továbbra is várhat: az drága,
          * és lejátszás közben nem szabad a hálózatot terhelnie.
          */
-        if (!wsConnected && !snapConnected) {
+        /*
+         * OFFLINE = NINCS SNAP ÉS/VAGY NINCS WS — nem az, hogy nincs WiFi.
+         *
+         * A HTTP ütemezés-szinkront futtató `loop()` eddig csak TELJESEN
+         * offline állapotban futott (`!ws && !snap`). Csakhogy a csengetés
+         * szempontjából már az is offline, ha a KETTŐ KÖZÜL BÁRMELYIK hiányzik
+         * (ld. setBackendReachable fent) – ilyenkor a rendet nekünk kell
+         * frissen tartanunk, mert a backend nem tudja lepusholni.
+         */
+        const bool backendReachable = wsConnected && snapConnected;
+
+        if (!backendReachable) {
             if (!audioManager.isBusy() && !audioManager.isInCooldown()) {
                 bellManager.loop();
             } else {

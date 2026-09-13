@@ -180,23 +180,61 @@ void SLNetworkManager::loop() {
     if (isConnected()) handleNTP();
 }
 
+/*
+ * ÚJRACSATLAKOZÁS FOKOZATOSAN – NE BONTSUK LE A STACKET 10 MP-ENKÉNT.
+ *
+ * Eddig minden 10. másodpercben a `connectPersonal()` futott, ami
+ * `WiFi.disconnect(true)`-vel KIKAPCSOLJA a rádiót, majd `WiFi.mode()` +
+ * `WiFi.begin()`-nel újraépíti a teljes WiFi/LWIP stacket (a logban:
+ * "flush txq" → "Deinit lldesc rx mblock" → "pp rom version" → "wifi_init:").
+ * Ennek három mérhető következménye volt:
+ *
+ *   1. Minden FUTÓ TCP-kapcsolódás megszakadt. A snap kliens egy connect
+ *      kísérlete ~19 s – tehát egy 10 s-enkénti lebontás mellett SOHA nem
+ *      tudott befejeződni: "can't connect to remote 62.201.72.120:1800,
+ *      err -13" (ERR_ABRT) a végtelenségig.
+ *   2. Az esp_netif példány megszűnt és újra létrejött – ez volt a
+ *      `setup_network()` lógó mutatós pánikjának a kiváltója is.
+ *   3. A DHCP-től kapott DNS-kiszolgálók a ciklus alatt elveszhettek, így a
+ *      HTTPClient "connection refused"-ot adott, pedig volt IP-cím.
+ *
+ * Mostantól: előbb LÁGY újrapróbálkozás (`WiFi.reconnect()` – csak
+ * disconnect+connect a meglévő stacken), 15 másodpercenként. Csak ha ez
+ * hatszor sem sikerült (~90 s), akkor jön a teljes újraépítés. A 15 s
+ * szándékosan rövidebb, de a kemény újraépítés ritkasága miatt egy ~20 s-os
+ * TCP-kapcsolódás már végig tud futni.
+ */
 void SLNetworkManager::handleWiFi() {
     if (knownNetworks.empty()) return;
 
+    static const unsigned long SOFT_RETRY_MS  = 15000;
+    static const uint8_t       HARD_RESET_AFTER = 6;
+
     if (WiFi.status() != WL_CONNECTED) {
         const unsigned long now = millis();
-        if (now - _lastWifiCheck > 10000) {
-            Serial.println("[WIFI] Disconnected, reconnecting...");
+        if (now - _lastWifiCheck > SOFT_RETRY_MS) {
+            _lastWifiCheck = now;
+
+            if (_wifiSoftRetries < HARD_RESET_AFTER) {
+                _wifiSoftRetries++;
+                Serial.printf("[WIFI] Nincs kapcsolat – ujracsatlakozas (%u/%u)\n",
+                              _wifiSoftRetries, HARD_RESET_AFTER);
+                WiFi.reconnect();
+                return;
+            }
+
+            _wifiSoftRetries = 0;
+            Serial.println("[WIFI] Tartos kapcsolathiany – teljes WiFi ujrainditas");
             WiFiCreds& c = knownNetworks[0];
             if (c.security == "WPA2_ENTERPRISE" && c.user.length() > 0) {
                 connectEnterprise(c.ssid, c.user, c.pass);
             } else {
                 connectPersonal(c.ssid, c.pass);
             }
-            _lastWifiCheck = now;
         }
     } else {
-        _lastWifiCheck = 0; // reset hogy lecsatlakozás után azonnal próbáljon
+        _lastWifiCheck   = 0; // reset hogy lecsatlakozás után azonnal próbáljon
+        _wifiSoftRetries = 0;
     }
 }
 

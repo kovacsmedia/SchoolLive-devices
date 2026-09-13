@@ -36,6 +36,17 @@ typedef struct {
 // Function declarations for connection handling
 void setup_network(esp_netif_t** netif);
 
+/*
+ * Van-e ÉLŐ TCP-kapcsolat a snap szerver felé.
+ *
+ * A `snap_app_is_connected()` eddig a `s_snap_running` flaget adta vissza,
+ * ami csak annyit jelentett: "a snap taskokat elindítottuk". Hálózatvesztéskor
+ * tehát az eszköz PERCEKIG online-nak hitte magát, a BellManager pedig a
+ * backendre várt ahelyett, hogy azonnal helyben csengetett volna – a
+ * csengetés így a türelmi idő miatt késett, rossz esetben elmaradt.
+ */
+bool connection_is_established(void);
+
 int connection_get_byte(connection_t* connection, char* buffer);
 
 #endif  // __CONNECTION_HANDLER_H__

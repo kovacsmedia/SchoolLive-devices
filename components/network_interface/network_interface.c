@@ -63,6 +63,11 @@ const char *network_get_ifkey(esp_netif_t *esp_netif) {
 }
 
 bool network_is_netif_up(esp_netif_t *esp_netif) {
+  // NULL-BIZTOS. A hívók egy része a handle-t a hálózat visszatérésére váró
+  // ciklusban használja, ahol az időközben megszűnhet (WiFi teardown+init).
+  // Az esp_netif_is_netif_up() NULL-ra dereferál és PÁNIKOL – ld.
+  // connection_handler.c setup_network().
+  if (esp_netif == NULL) return false;
   return esp_netif_is_netif_up(esp_netif);
 }
 

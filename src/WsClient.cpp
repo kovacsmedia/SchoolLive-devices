@@ -13,6 +13,13 @@ void WsClient::begin(const String& host, uint16_t port, const String& deviceKey)
     _ws.setExtraHeaders(("x-device-key: " + deviceKey).c_str());
     _ws.setReconnectInterval(_reconnectIntervalMs);
 
+    /*
+     * Heartbeat: 10 mp-enként ping, 3 mp pong-türelem, 2 kihagyás után
+     * bontás. Enélkül egy elhalt TCP-t csak a következő íráskor vettünk
+     * észre (mérve ~70 mp) – addig az eszköz online-nak hitte magát.
+     */
+    _ws.enableHeartbeat(10000, 3000, 2);
+
     _ws.onEvent([this](WStype_t type, uint8_t* payload, size_t length) {
         wsEvent(type, payload, length);
     });
@@ -23,6 +30,20 @@ void WsClient::begin(const String& host, uint16_t port, const String& deviceKey)
 void WsClient::loop() {
     if (!_started) return;
     _ws.loop();
+
+    // Élőjel kiértékelése. Átmenetnél naplózunk, hogy a logból látszódjon,
+    // MIÉRT vált offline-ra a csengetés-logika.
+    if (_connected) {
+        const bool alive =
+            (millis() - _lastRxMs) <= WS_SILENCE_TIMEOUT_MS;
+        if (alive != _linkAlive) {
+            _linkAlive = alive;
+            Serial.printf("[WS] %s (utolso valasz %lu ms)\n",
+                          alive ? "✅ eloejel rendben"
+                                : "⚠️ nincs valasz a szervertol – offline modra valtunk",
+                          (unsigned long)(millis() - _lastRxMs));
+        }
+    }
 
     // A relocate callback-et SZÁNDÉKOSAN itt, a `_ws.loop()` visszatérése UTÁN
     // hívjuk (nem a wsEvent()-en belül) – onnan hívva a callback (ami újra
@@ -48,6 +69,8 @@ void WsClient::wsEvent(WStype_t type, uint8_t* payload, size_t length) {
     switch (type) {
         case WStype_CONNECTED:
             _connected = true;
+            _lastRxMs  = millis();
+            _linkAlive = true;
             _reconnectIntervalMs = 1000UL;
             _ws.setReconnectInterval(_reconnectIntervalMs);
             _consecutiveFailures = 0;
@@ -59,6 +82,7 @@ void WsClient::wsEvent(WStype_t type, uint8_t* payload, size_t length) {
                 Serial.println("[WS] ⚠️ Lecsatlakozva a szerverről");
             }
             _connected = false;
+            _linkAlive = false;
             _disconnectedAtMs = millis();
             // Exponenciális backoff
             _reconnectIntervalMs = min(_reconnectIntervalMs * 2, MAX_RECONNECT_MS);
@@ -72,6 +96,7 @@ void WsClient::wsEvent(WStype_t type, uint8_t* payload, size_t length) {
             break;
 
         case WStype_TEXT:
+            _lastRxMs = millis();
             if (_msgCb && payload && length > 0) {
                 auto handle = [&](JsonDocument& doc) {
                     DeserializationError err =
@@ -105,6 +130,9 @@ void WsClient::wsEvent(WStype_t type, uint8_t* payload, size_t length) {
 
         case WStype_PING:
         case WStype_PONG:
+            // A pong a legfontosabb élőjel: akkor is jön, ha a backendnek
+            // éppen semmi mondanivalója nincs.
+            _lastRxMs = millis();
             break;
 
         default:

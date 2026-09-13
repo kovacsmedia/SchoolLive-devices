@@ -70,6 +70,13 @@ private:
     bool _needsNtpRefresh = false;
     unsigned long _lastWifiCheck = 0;
 
+    /*
+     * Az újracsatlakozás FOKOZATOS. Ld. handleWiFi() – a teljes WiFi-stack
+     * lebontása (`WiFi.disconnect(true)`) 10 másodpercenként megölte a
+     * futó TCP-kapcsolódásokat és az esp_netif példányt is újraépítette.
+     */
+    uint8_t       _wifiSoftRetries = 0;
+
     std::vector<WiFiCreds> knownNetworks;
 
     void loadFromNVS();

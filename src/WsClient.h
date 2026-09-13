@@ -23,7 +23,21 @@ public:
     void begin(const String& host, uint16_t port, const String& deviceKey);
     void loop();
 
-    bool isConnected() const { return _connected; }
+    /*
+     * "ÉL-E A BACKEND FELÉ AZ ÚT" – nem az, hogy a könyvtár mit hisz.
+     *
+     * A `_connected` flaget kizárólag a WebSockets könyvtár CONNECTED/
+     * DISCONNECTED eseményei állították. Ha a WiFi megvan, de a hálózat
+     * mögötte megszűnik (nincs upstream az AP-n), a TCP csendben elhal, és a
+     * könyvtár ezt CSAK a következő írási hibából veszi észre – a mérés
+     * szerint ~70 másodperc múlva. Addig az eszköz ONLINE-nak hitte magát,
+     * a BellManager a backend PREPARE-jére várt, és a csengetés késett.
+     *
+     * Ezért a kapcsolatot ÉLŐJEL alapján is mérjük: ha a szerver felől
+     * WS_SILENCE_TIMEOUT_MS ideig SEMMI nem érkezett (se üzenet, se pong),
+     * az út halott, függetlenül attól, mit mond a könyvtár.
+     */
+    bool isConnected() const { return _connected && _linkAlive; }
     bool sendJson(const JsonDocument& doc);
 
     // Összes bejövő JSON üzenet erre a callback-re kerül
@@ -40,6 +54,13 @@ private:
     String   _deviceKey;
     bool     _connected  = false;
     bool     _started    = false;
+
+    // Élőjel-figyelés (ld. isConnected()). A heartbeat 10 mp-enként pingel,
+    // a BEACON_ACK 30 mp-enként érkezik – 25 mp néma csatorna tehát már
+    // legalább két kimaradt pongot jelent.
+    unsigned long _lastRxMs   = 0;
+    bool          _linkAlive  = false;
+    static const unsigned long WS_SILENCE_TIMEOUT_MS = 25000UL;
 
     // Exponenciális backoff: 1s → 2s → 4s → … → max 10s
     unsigned long _disconnectedAtMs      = 0;

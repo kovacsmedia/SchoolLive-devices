@@ -1731,7 +1731,12 @@ esp_err_t snap_app_set_local_volume(uint8_t volume) {
 }
 
 bool snap_app_is_running(void)   { return s_snap_running; }
-bool snap_app_is_connected(void) { return s_snap_running; /* TODO: TCP state */ }
+bool snap_app_is_connected(void) {
+  // A TÉNYLEGES TCP-állapot kell, nem az, hogy elindultak-e a taskok:
+  // ettől függ, hogy a BellManager a backendre vár-e, vagy azonnal
+  // helyben csenget (ld. connection_handler.h).
+  return s_snap_running && connection_is_established();
+}
 
 void snap_app_set_channel_mode(dsp_channel_mode_t mode) {
 #if CONFIG_USE_DSP_PROCESSOR
