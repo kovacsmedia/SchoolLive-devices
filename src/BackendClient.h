@@ -111,6 +111,16 @@ private:
 
     void waitCooldown();
 
+    // Egy letöltési menet `haveBytes` bájttól folytatva (HTTP Range).
+    // true, ha a fájl a menet végére teljes lett; a `haveBytes` mindig a
+    // lemezen ténylegesen meglévő bájtszámra frissül.
+    bool downloadRange(
+        const String& fullUrl,
+        const String& localPath,
+        size_t expectedBytes,
+        size_t& haveBytes
+    );
+
     bool postJson(
         const String& path,
         const JsonDocument& req,

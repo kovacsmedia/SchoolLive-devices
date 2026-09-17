@@ -158,6 +158,11 @@ bool BackendClient::getJson(
 // downloadFile – hangfájl letöltése LittleFS-re
 // ---------------------------------------------------------------------------
 
+// Hány menetben próbáljuk összeszedni a fájlt, és mennyit várunk két menet
+// között. Gyenge vonalon a letöltés darabokban jön össze (ld. downloadRange).
+static const int          DL_MAX_ATTEMPTS   = 4;
+static const unsigned int DL_RETRY_DELAY_MS = 1500;
+
 bool BackendClient::downloadFile(
     const String& url,
     const String& localPath,
@@ -193,7 +198,18 @@ bool BackendClient::downloadFile(
         }
     }
 
-    waitCooldown();
+    /*
+     * EGY RÉGI, ROSSZ MÉRETŰ PÉLDÁNY NEM FOLYTATHATÓ.
+     *
+     * A fenti ág csak akkor engedett idáig, ha a helyi fájl mérete NEM egyezik
+     * a várttal – az viszont MÁS TARTALOM (a hang cserélve lett a szerveren),
+     * nem egy félbemaradt letöltés. Rátoldani a folytatást kevert, játszhatatlan
+     * fájlt adna. A folytatás ezért kizárólag EZEN a híváson belül érvényes,
+     * ahol tudjuk, hogy a részleges bájtok ugyanerről az URL-ről jöttek.
+     */
+    if (LittleFS.exists(localPath)) {
+        LittleFS.remove(localPath);
+    }
 
     String fullUrl = url;
 
@@ -207,13 +223,82 @@ bool BackendClient::downloadFile(
         Serial.printf("[DL] Resolved relative URL → %s\n", fullUrl.c_str());
     }
 
+    /*
+     * TÖBB PRÓBÁLKOZÁS, FOLYTATÁSSAL.
+     *
+     * MIÉRT: gyenge WiFi mellett (-85 dBm körül) egy 400 kB-os hang egyetlen
+     * TLS-kapcsolaton gyakran NEM ér végig – a stream megáll, a 15 mp-es
+     * várakozás lejár, és eddig ilyenkor a fél fájl a kukába ment. A
+     * következő szinkron megint nulláról indult, megint elakadt: az a hang
+     * SOHA nem került fel az eszközre. Egy néma csengetés viszont nem fordulhat
+     * elő, ezért amit már letöltöttünk, azt megtartjuk, és `Range` fejléccel
+     * onnan folytatjuk. A szerver támogatja (`Accept-Ranges: bytes`), így egy
+     * akadozó vonalon is összeáll a fájl – csak több menetben.
+     */
+    size_t haveBytes = 0;
+    bool   complete  = false;
+
+    for (int attempt = 1; attempt <= DL_MAX_ATTEMPTS && !complete; attempt++) {
+        if (attempt > 1) {
+            Serial.printf("[DL] Ujraprobalkozas %d/%d – eddig %u B van meg\n",
+                          attempt, DL_MAX_ATTEMPTS, (unsigned)haveBytes);
+            delay(DL_RETRY_DELAY_MS);
+        }
+
+        const size_t before = haveBytes;
+
+        complete = downloadRange(fullUrl, localPath, expectedBytes, haveBytes);
+
+        /*
+         * NULLA HALADÁS: a kapcsolat nem áll össze (a szerver nem elérhető, a
+         * WiFi kiesett). Az újrapróbálkozásnak csak akkor van értelme, ha
+         * legalább pár bájt átjött – különben csak a szinkront tartjuk fel.
+         */
+        if (!complete && haveBytes <= before && attempt > 1) {
+            Serial.println("[DL] Nincs haladas – feladjuk");
+            break;
+        }
+    }
+
+    if (!complete) {
+        Serial.printf("[DL] Sikertelen: %s (%u / %u B)\n",
+                      localPath.c_str(), (unsigned)haveBytes, (unsigned)expectedBytes);
+
+        LittleFS.remove(localPath);
+        return false;
+    }
+
+    Serial.printf("[DL] Done: %s (%u bytes)\n", localPath.c_str(), (unsigned)haveBytes);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// downloadRange – EGY letöltési menet, `haveBytes` bájttól folytatva
+//
+// Visszatérés: true, ha a fájl a menet végére teljes lett.
+// A `haveBytes` mindig a lemezen ténylegesen meglévő bájtszámra frissül, akkor
+// is, ha a menet félbeszakadt – erre épül a következő menet folytatása.
+// ---------------------------------------------------------------------------
+
+bool BackendClient::downloadRange(
+    const String& fullUrl,
+    const String& localPath,
+    size_t expectedBytes,
+    size_t& haveBytes
+) {
+    waitCooldown();
+
     WiFiClientSecure client;
     client.setInsecure();
 
     HTTPClient http;
     http.setTimeout(15000);
 
-    Serial.printf("[DL] Downloading %s → %s\n", fullUrl.c_str(), localPath.c_str());
+    if (haveBytes == 0) {
+        Serial.printf("[DL] Downloading %s → %s\n", fullUrl.c_str(), localPath.c_str());
+    } else {
+        Serial.printf("[DL] Folytatas %u B-tol: %s\n", (unsigned)haveBytes, localPath.c_str());
+    }
 
     if (!http.begin(client, fullUrl)) {
         Serial.println("[DL] begin() failed");
@@ -224,17 +309,34 @@ bool BackendClient::downloadFile(
         http.addHeader("x-device-key", _deviceKey);
     }
 
+    if (haveBytes > 0) {
+        http.addHeader("Range", "bytes=" + String((unsigned)haveBytes) + "-");
+    }
+
     int httpCode = http.GET();
 
     Serial.printf("[DL] httpCode: %d\n", httpCode);
 
-    if (httpCode != 200) {
+    /*
+     * 206 = a szerver elfogadta a Range-et, a törzs a folytatás.
+     * 200 Range-kéréssel = a szerver FIGYELMEN KÍVÜL hagyta, és az EGÉSZ fájlt
+     *     küldi – ilyenkor a meglévő részt el kell dobni, különben duplán
+     *     írnánk az elejét.
+     */
+    const bool resuming = (haveBytes > 0 && httpCode == 206);
+
+    if (httpCode != 200 && httpCode != 206) {
         Serial.printf("[DL] Error: %s\n", http.errorToString(httpCode).c_str());
 
         _lastHttpEndMs = millis();
         http.end();
 
         return false;
+    }
+
+    if (haveBytes > 0 && !resuming) {
+        Serial.println("[DL] A szerver nem tamogatja a folytatast – ujrakezdes 0-tol");
+        haveBytes = 0;
     }
 
     WiFiClient* stream = http.getStreamPtr();
@@ -255,16 +357,19 @@ bool BackendClient::downloadFile(
     const size_t fsUsed  = LittleFS.usedBytes();
     const size_t fsFree  = (fsTotal > fsUsed) ? (fsTotal - fsUsed) : 0;
 
-    if (expectedBytes > 0 && fsFree < expectedBytes + 4096) {
+    // Folytatásnál már csak a HÁTRALÉVŐ rész helye kell.
+    const size_t needBytes = (expectedBytes > haveBytes) ? (expectedBytes - haveBytes) : 0;
+
+    if (needBytes > 0 && fsFree < needBytes + 4096) {
         Serial.printf("[DL] ⛔ NINCS ELEG HELY: kell %u B, szabad %u B (osszes %u, hasznalt %u) – %s\n",
-                      (unsigned)expectedBytes, (unsigned)fsFree,
+                      (unsigned)needBytes, (unsigned)fsFree,
                       (unsigned)fsTotal, (unsigned)fsUsed, localPath.c_str());
         _lastHttpEndMs = millis();
         http.end();
         return false;
     }
 
-    File file = LittleFS.open(localPath, "w");
+    File file = LittleFS.open(localPath, resuming ? "a" : "w");
 
     if (!file) {
         Serial.printf("[DL] Cannot open for write: %s (nevhossz=%u, szabad=%u B, osszes=%u B, hasznalt=%u B)\n",
@@ -280,16 +385,28 @@ bool BackendClient::downloadFile(
     }
 
     uint8_t buf[512];
-    size_t totalWritten = 0;
-    int contentLength = http.getSize();
+    size_t  written      = 0;             // EBBEN a menetben írt bájtok
+    int     contentLength = http.getSize();  // a menet törzsének hossza
     unsigned long dlStart = millis();
 
-    while (http.connected() && (contentLength > 0 || contentLength == -1)) {
+    // Miért állt le a ciklus – a naplóban ez különbözteti meg a néma
+    // vonalat (stall) a bontott kapcsolattól.
+    const char* stopReason = "kesz";
+    bool        clean      = true;   // igaz, amíg nem szakadt meg rendellenesen
+
+    while (contentLength != 0) {
+        if (!http.connected() && stream->available() == 0) {
+            stopReason = "kapcsolat bontva";
+            clean      = false;
+            break;
+        }
+
         size_t avail = stream->available();
 
         if (avail == 0) {
             if (millis() - dlStart > 15000) {
-                Serial.println("[DL] Timeout");
+                stopReason = "idotullepes (nem jott adat 15 mp-ig)";
+                clean      = false;
                 break;
             }
 
@@ -298,15 +415,29 @@ bool BackendClient::downloadFile(
         }
 
         size_t toRead = min(avail, sizeof(buf));
-        size_t read = stream->readBytes(buf, toRead);
+        size_t read   = stream->readBytes(buf, toRead);
 
         if (read > 0) {
-            file.write(buf, read);
-            totalWritten += read;
+            /*
+             * AZ ÍRÁS EREDMÉNYÉT MEG KELL NÉZNI. Tele fájlrendszernél a
+             * `write()` kevesebbet ír – eddig ezt is átvitt bájtnak számoltuk,
+             * és a hiba a hálózatra lett fogva.
+             */
+            size_t wrote = file.write(buf, read);
+
+            written    += wrote;
+            haveBytes  += wrote;
+
+            if (wrote != read) {
+                stopReason = "lemezre iras hibaja (megtelt a fajlrendszer?)";
+                clean      = false;
+                break;
+            }
+
             dlStart = millis();
         }
 
-        if (contentLength > 0 && (int)totalWritten >= contentLength) {
+        if (contentLength > 0 && (int)written >= contentLength) {
             break;
         }
     }
@@ -316,20 +447,16 @@ bool BackendClient::downloadFile(
     _lastHttpEndMs = millis();
     http.end();
 
-    Serial.printf("[DL] Done: %s (%d bytes)\n", localPath.c_str(), totalWritten);
+    const bool done = (expectedBytes > 0)
+                        ? (haveBytes == expectedBytes)
+                        : (written > 0 && clean);
 
-    if (expectedBytes > 0 && totalWritten != expectedBytes) {
-        Serial.printf(
-            "[DL] Size mismatch after download: got=%d expected=%d\n",
-            totalWritten,
-            expectedBytes
-        );
-
-        LittleFS.remove(localPath);
-        return false;
+    if (!done) {
+        Serial.printf("[DL] Megszakadt: %u / %u B – %s\n",
+                      (unsigned)haveBytes, (unsigned)expectedBytes, stopReason);
     }
 
-    return totalWritten > 0;
+    return done;
 }
 
 // ---------------------------------------------------------------------------
