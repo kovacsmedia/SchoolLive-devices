@@ -17,7 +17,12 @@
 // BACKEND
 // -----------------------------------------------------------------------------
 
+// A build felülírhatja (-DBACKEND_BASE_URL=...), ld. platformio.ini
+// [env:esp32dev-test]. Az `#ifndef` nélkül a parancssori -D-t ez a sor némán
+// felüldefiniálná, és a teszt-build az ÉLES szerverre menne.
+#ifndef BACKEND_BASE_URL
 #define BACKEND_BASE_URL "https://api.schoollive.hu"
+#endif
 
 // -----------------------------------------------------------------------------
 // HARDVER PINOUT: ESP32-S3 N16R8

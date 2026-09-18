@@ -16,8 +16,8 @@
 // Gyári default csengetőhangok. Ezek a firmware LittleFS képében (data/)
 // szállítódnak, és a szerver `sounds` listája is MINDIG tartalmazza őket –
 // a szinkron-takarítás SOSEM törölheti őket (ld. BellManager.cpp).
-#define BELL_DEFAULT_SIGNAL "/jelzocsengo.mp3"
-#define BELL_DEFAULT_MAIN   "/kibecsengo.mp3"
+#define BELL_DEFAULT_SIGNAL "/assembly-signal-bell.opus"
+#define BELL_DEFAULT_MAIN   "/lesson-signal-bell.opus"
 
 // Csengetés típusa
 enum class BellType : uint8_t {
@@ -30,7 +30,8 @@ struct BellEntry {
     uint8_t  hour;
     uint8_t  minute;
     BellType type;
-    char     soundFile[32];  // pl. "kibecsengo.mp3"
+    char     soundFile[32];  // pl. "lesson-signal-bell.opus" (25+1 bájt – a
+                             // leghosszabb gyári név épp belefér)
 };
 
 #define MAX_BELL_ENTRIES 40

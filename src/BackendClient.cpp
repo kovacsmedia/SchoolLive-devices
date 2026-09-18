@@ -264,6 +264,13 @@ bool BackendClient::downloadFile(
         Serial.printf("[DL] Sikertelen: %s (%u / %u B)\n",
                       localPath.c_str(), (unsigned)haveBytes, (unsigned)expectedBytes);
 
+        /*
+         * A FÉLKÉSZ FÁJLT ELDOBJUK – de csak azt.
+         *
+         * Egy csonka hang kattanva, félbeszakadva szólna, ami rosszabb, mint
+         * a gyári defaultra esni. A teljes, csak "más méretű" fájl ide már nem
+         * jut el (ld. a `done` feltételt a downloadRange-ben).
+         */
         LittleFS.remove(localPath);
         return false;
     }
@@ -447,13 +454,38 @@ bool BackendClient::downloadRange(
     _lastHttpEndMs = millis();
     http.end();
 
-    const bool done = (expectedBytes > 0)
-                        ? (haveBytes == expectedBytes)
-                        : (written > 0 && clean);
+    /*
+     * A SZERVER A MÉRVADÓ, NEM A NYILVÁNTARTOTT MÉRET.
+     *
+     * Eddig `haveBytes == expectedBytes` döntött. Az `expectedBytes` viszont
+     * ADATBÁZIS-METAADAT, ami elavulhat a lemezen lévő fájlhoz képest – és
+     * akkor egy HIBÁTLANUL, teljes egészében letöltött fájlt minősítettünk
+     * hibásnak, majd a hívó törölte. A gyári csengetőhangnál ez pontosan a
+     * tiltott kimenetel: az eszközön nem maradt default hang.
+     *
+     * (Élesben megtörtént: a szerver 107 448 bájtot küldött, az adatbázis
+     * 106 870-et mondott, a letöltés tökéletes volt, mégis kukába ment. A
+     * folytatás-kísérlet ezután 416-ot kapott, hiszen nem volt mit folytatni.)
+     *
+     * Mostantól a HTTP-válasz dönt: ha a törzs végigjött és a kapcsolat
+     * rendben zárult, a fájl teljes. Az eltérő nyilvántartás csak figyelmeztetés.
+     */
+    const bool gotWholeBody = (contentLength > 0)
+                                ? ((int)written >= contentLength)
+                                : (written > 0 && clean);
+    const bool done = clean && gotWholeBody && haveBytes > 0;
+
+    if (done && expectedBytes > 0 && haveBytes != expectedBytes) {
+        Serial.printf("[DL] ⚠ Meret-elteres a nyilvantartashoz kepest: kaptunk %u B, "
+                      "a szerver listaja %u B-t mondott – a FAJL MEGTARTVA\n",
+                      (unsigned)haveBytes, (unsigned)expectedBytes);
+    }
 
     if (!done) {
         Serial.printf("[DL] Megszakadt: %u / %u B – %s\n",
-                      (unsigned)haveBytes, (unsigned)expectedBytes, stopReason);
+                      (unsigned)haveBytes,
+                      (unsigned)(contentLength > 0 ? (size_t)contentLength : expectedBytes),
+                      stopReason);
     }
 
     return done;

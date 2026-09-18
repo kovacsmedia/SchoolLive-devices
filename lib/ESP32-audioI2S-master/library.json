@@ -1,7 +1,7 @@
 {
   "name": "ESP32-audioI2S-master",
   "version": "3.0.8",
-  "description": "Local patched copy for SchoolLive-devices (size-optimized, MP3 only, no SD backends)",
+  "description": "Local patched copy for SchoolLive-devices (size-optimized: MP3 + OPUS, no AAC/FLAC/Vorbis, no SD backends)",
   "frameworks": "arduino",
   "platforms": "espressif32",
   "build": {
@@ -9,7 +9,6 @@
       "+<*>",
       "-<aac_decoder/>",
       "-<flac_decoder/>",
-      "-<opus_decoder/>",
       "-<vorbis_decoder/>"
     ]
   }

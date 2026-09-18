@@ -1,5 +1,9 @@
 // lib/ESP32-audioI2S-master/src/audio_codecs_stubs.cpp
-// Minimal C++ stubs for removed codecs (AAC/FLAC/OPUS/VORBIS).
+// Minimal C++ stubs for removed codecs (AAC/FLAC/VORBIS).
+//
+// AZ OPUS MÁR NEM STUB: a rendszer egységes hangformátuma Opus 96k, és az
+// eszköz a csengetéseket OFFLINE, a saját másolatából játssza – stubbal
+// azok némán elmaradnának. Ld. lib/.../library.json srcFilter.
 //
 // FONTOS: a paramétertípusoknak PONTOSAN egyezniük kell a kodek-header-ekben
 // szereplő deklarációkkal (uint8_t/uint32_t és NEM unsigned char/unsigned int),
@@ -56,25 +60,6 @@ int      FLACDecode(uint8_t* inbuf, int* bytesLeft, short* outbuf) {
 }
 int      FLACGetOutputSamps() { return 0; }
 char*    FLACgetStreamTitle() { return nullptr; }
-
-
-// ---------------- OPUS ----------------
-bool     OPUSDecoder_AllocateBuffers() { return false; }
-void     OPUSDecoder_FreeBuffers() {}
-void     OPUSDecoder_ClearBuffers() {}
-void     OPUSsetDefaults() {}
-int      OPUSDecode(uint8_t* inbuf, int* bytesLeft, short* outbuf) {
-    (void)inbuf; (void)bytesLeft; (void)outbuf;
-    return 0;
-}
-uint8_t  OPUSGetChannels() { return 0; }
-uint32_t OPUSGetSampRate() { return 0; }
-uint8_t  OPUSGetBitsPerSample() { return 0; }
-uint32_t OPUSGetBitRate() { return 0; }
-int      OPUSFindSyncWord(unsigned char* buf, int nBytes) { (void)buf; (void)nBytes; return -1; }
-int      OPUSparseOGG(uint8_t* inbuf, int* bytesLeft) { (void)inbuf; (void)bytesLeft; return 0; }
-int      OPUSGetOutputSamps() { return 0; }
-char*    OPUSgetStreamTitle() { return nullptr; }
 
 
 // ---------------- VORBIS ----------------

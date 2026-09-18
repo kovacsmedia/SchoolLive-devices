@@ -10,31 +10,31 @@
 // Hardcoded fallback
 // ---------------------------------------------------------------------------
 const BellEntry BellManager::HARDCODED_DEFAULT[] = {
-    { 7, 30, BellType::SIGNAL, "jelzocsengo.mp3" },
-    { 7, 55, BellType::SIGNAL, "jelzocsengo.mp3" },
-    { 8,  0, BellType::MAIN,   "kibecsengo.mp3"  },
-    { 8, 45, BellType::MAIN,   "kibecsengo.mp3"  },
-    { 8, 53, BellType::SIGNAL, "jelzocsengo.mp3" },
-    { 8, 55, BellType::MAIN,   "kibecsengo.mp3"  },
-    { 9, 40, BellType::MAIN,   "kibecsengo.mp3"  },
-    { 9, 53, BellType::SIGNAL, "jelzocsengo.mp3" },
-    { 9, 55, BellType::MAIN,   "kibecsengo.mp3"  },
-    {10, 40, BellType::MAIN,   "kibecsengo.mp3"  },
-    {10, 48, BellType::SIGNAL, "jelzocsengo.mp3" },
-    {10, 50, BellType::MAIN,   "kibecsengo.mp3"  },
-    {11, 35, BellType::MAIN,   "kibecsengo.mp3"  },
-    {11, 53, BellType::SIGNAL, "jelzocsengo.mp3" },
-    {11, 55, BellType::MAIN,   "kibecsengo.mp3"  },
-    {12, 40, BellType::MAIN,   "kibecsengo.mp3"  },
-    {12, 48, BellType::SIGNAL, "jelzocsengo.mp3" },
-    {12, 50, BellType::MAIN,   "kibecsengo.mp3"  },
-    {13, 35, BellType::MAIN,   "kibecsengo.mp3"  },
-    {14, 10, BellType::SIGNAL, "jelzocsengo.mp3" },
-    {14, 15, BellType::MAIN,   "kibecsengo.mp3"  },
-    {15,  0, BellType::MAIN,   "kibecsengo.mp3"  },
-    {15, 13, BellType::SIGNAL, "jelzocsengo.mp3" },
-    {15, 15, BellType::MAIN,   "kibecsengo.mp3"  },
-    {16,  0, BellType::MAIN,   "kibecsengo.mp3"  },
+    { 7, 30, BellType::SIGNAL, "assembly-signal-bell.opus" },
+    { 7, 55, BellType::SIGNAL, "assembly-signal-bell.opus" },
+    { 8,  0, BellType::MAIN,   "lesson-signal-bell.opus" },
+    { 8, 45, BellType::MAIN,   "lesson-signal-bell.opus" },
+    { 8, 53, BellType::SIGNAL, "assembly-signal-bell.opus" },
+    { 8, 55, BellType::MAIN,   "lesson-signal-bell.opus" },
+    { 9, 40, BellType::MAIN,   "lesson-signal-bell.opus" },
+    { 9, 53, BellType::SIGNAL, "assembly-signal-bell.opus" },
+    { 9, 55, BellType::MAIN,   "lesson-signal-bell.opus" },
+    {10, 40, BellType::MAIN,   "lesson-signal-bell.opus" },
+    {10, 48, BellType::SIGNAL, "assembly-signal-bell.opus" },
+    {10, 50, BellType::MAIN,   "lesson-signal-bell.opus" },
+    {11, 35, BellType::MAIN,   "lesson-signal-bell.opus" },
+    {11, 53, BellType::SIGNAL, "assembly-signal-bell.opus" },
+    {11, 55, BellType::MAIN,   "lesson-signal-bell.opus" },
+    {12, 40, BellType::MAIN,   "lesson-signal-bell.opus" },
+    {12, 48, BellType::SIGNAL, "assembly-signal-bell.opus" },
+    {12, 50, BellType::MAIN,   "lesson-signal-bell.opus" },
+    {13, 35, BellType::MAIN,   "lesson-signal-bell.opus" },
+    {14, 10, BellType::SIGNAL, "assembly-signal-bell.opus" },
+    {14, 15, BellType::MAIN,   "lesson-signal-bell.opus" },
+    {15,  0, BellType::MAIN,   "lesson-signal-bell.opus" },
+    {15, 13, BellType::SIGNAL, "assembly-signal-bell.opus" },
+    {15, 15, BellType::MAIN,   "lesson-signal-bell.opus" },
+    {16,  0, BellType::MAIN,   "lesson-signal-bell.opus" },
 };
 const uint8_t BellManager::HARDCODED_DEFAULT_COUNT =
     sizeof(BellManager::HARDCODED_DEFAULT) / sizeof(BellManager::HARDCODED_DEFAULT[0]);
@@ -326,7 +326,7 @@ bool BellManager::fetchFullSync() {
                 e.minute = b["minute"] | 0;
                 String t = b["type"]   | "MAIN";
                 e.type   = (t == "SIGNAL") ? BellType::SIGNAL : BellType::MAIN;
-                String sf = b["soundFile"] | "kibecsengo.mp3";
+                String sf = b["soundFile"] | "lesson-signal-bell.opus";
                 strncpy(e.soundFile, sf.c_str(), sizeof(e.soundFile) - 1);
                 e.soundFile[sizeof(e.soundFile) - 1] = '\0';
                 _entryCount++;
@@ -352,7 +352,7 @@ bool BellManager::fetchFullSync() {
             e.minute = b["minute"] | 0;
             String t = b["type"]   | "MAIN";
             e.type   = (t == "SIGNAL") ? BellType::SIGNAL : BellType::MAIN;
-            String sf = b["soundFile"] | "kibecsengo.mp3";
+            String sf = b["soundFile"] | "lesson-signal-bell.opus";
             strncpy(e.soundFile, sf.c_str(), sizeof(e.soundFile) - 1);
             e.soundFile[sizeof(e.soundFile) - 1] = '\0';
             defCount++;
@@ -779,7 +779,7 @@ bool BellManager::resolveFullYearForDate(const String& dateStr, bool& outIsHolid
                 e.minute = b["minute"] | 0;
                 String t = b["type"]   | "MAIN";
                 e.type   = (t == "SIGNAL") ? BellType::SIGNAL : BellType::MAIN;
-                String sf = b["soundFile"] | "kibecsengo.mp3";
+                String sf = b["soundFile"] | "lesson-signal-bell.opus";
                 strncpy(e.soundFile, sf.c_str(), sizeof(e.soundFile) - 1);
                 e.soundFile[sizeof(e.soundFile) - 1] = '\0';
                 _entryCount++;
@@ -822,16 +822,21 @@ String BellManager::resolveLocalSound(const char* soundFile, BellType type) {
     const char* secondary = (type == BellType::SIGNAL) ? BELL_DEFAULT_MAIN : BELL_DEFAULT_SIGNAL;
     if (LittleFS.exists(secondary)) return String(secondary);
 
-    // 4. Végső esély: bármelyik .mp3 a tárhelyen. Inkább szóljon "valami",
-    //    mint hogy egy jelzés teljesen elmaradjon.
+    // 4. Végső esély: BÁRMELYIK lejátszható hang a tárhelyen. Inkább szóljon
+    //    "valami", mint hogy egy jelzés teljesen elmaradjon.
+    //
+    //    A `.opus` felvétele nem kozmetika: az egységes formátumra állás után
+    //    a tárhelyen MÁR NINCS egyetlen .mp3 sem, tehát a csak-.mp3 keresés
+    //    üres kézzel tért volna vissza – pont a legvégső mentőöv szakadt
+    //    volna el. Az .mp3 az átmenet miatt marad elfogadva.
     File root = LittleFS.open("/");
     if (root && root.isDirectory()) {
         File e = root.openNextFile();
         while (e) {
             String n = "/" + String(e.name());
-            bool isMp3 = n.endsWith(".mp3");
+            bool playable = n.endsWith(".opus") || n.endsWith(".mp3");
             e.close();
-            if (isMp3) {
+            if (playable) {
                 Serial.printf("[BELL] VESZHELYZETI hang: %s\n", n.c_str());
                 return n;
             }
@@ -1079,8 +1084,8 @@ void BellManager::checkSchedule() {
         const char* sf = _entries[i].soundFile[0]
                          ? _entries[i].soundFile
                          : (_entries[i].type == BellType::SIGNAL
-                            ? "jelzocsengo.mp3"
-                            : "kibecsengo.mp3");
+                            ? "assembly-signal-bell.opus"
+                            : "lesson-signal-bell.opus");
 
         // Garantáltan létező útvonal – ha a kért hang hiányzik, a gyári
         // defaultra esünk vissza. Csengetés nem maradhat el.
@@ -1212,7 +1217,7 @@ void BellManager::onScheduleSync(const JsonDocument& msg) {
                 e.minute = b["minute"] | 0;
                 String t  = b["type"]  | "MAIN";
                 e.type    = (t == "SIGNAL") ? BellType::SIGNAL : BellType::MAIN;
-                String sf = b["soundFile"] | "kibecsengo.mp3";
+                String sf = b["soundFile"] | "lesson-signal-bell.opus";
                 strncpy(e.soundFile, sf.c_str(), sizeof(e.soundFile) - 1);
                 e.soundFile[sizeof(e.soundFile) - 1] = '\0';
                 _entryCount++;
@@ -1242,7 +1247,7 @@ void BellManager::onScheduleSync(const JsonDocument& msg) {
             e.minute = b["minute"] | 0;
             String t  = b["type"]  | "MAIN";
             e.type    = (t == "SIGNAL") ? BellType::SIGNAL : BellType::MAIN;
-            String sf = b["soundFile"] | "kibecsengo.mp3";
+            String sf = b["soundFile"] | "lesson-signal-bell.opus";
             strncpy(e.soundFile, sf.c_str(), sizeof(e.soundFile) - 1);
             e.soundFile[sizeof(e.soundFile) - 1] = '\0';
             defCount++;
