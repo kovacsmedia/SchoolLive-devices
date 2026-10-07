@@ -107,6 +107,35 @@ public:
     // csak akkor, ha az eszköz ténylegesen offline.
     void checkBells();
 
+    /*
+     * ── HANGLETÖLTÉS, A CSENGETÉS ÚTJÁBÓL KITÉVE ───────────────────────────
+     *
+     * MIÉRT: a szinkron (HTTP és WS egyaránt) EDDIG a saját hívási helyén,
+     * egyben töltötte le az összes hiányzó hangot – a `TaskNetwork`-ön, tehát
+     * UGYANAZON A SZÁLON, amelyik a csengetéseket ellenőrzi (`checkBells`) és
+     * a WebSocketet pörgeti. Egy gyenge vonalon több fájl letöltése percekig
+     * is eltarthat, és ezalatt a `checkBells()` EGYSZER SEM fut: egy akkor
+     * esedékes jelzés késik, és ha a 120 s-es pótlási ablakon (BELL_CATCHUP_
+     * MAX_S) túlcsúszik, VÉGLEG elmarad. Ez közvetlenül a rendszer alapvető
+     * szabályát sérti.
+     *
+     * MEGOLDÁS: a szinkron csak SORBA ÁLLÍT, letölteni nem tölt. A tényleges
+     * letöltést a main loop hívja, körönként LEGFELJEBB EGY fájlt, és csak
+     * akkor, ha nincs se szóló hang, se küszöbön álló csengetés.
+     *
+     * A main loop MINDEN körben hívja, az online/offline ágtól függetlenül –
+     * a sort a WS-push is tölti, nem csak a HTTP-szinkron.
+     *
+     * SZÁLBIZTONSÁG: a sort kizárólag a TaskNetwork érinti (a `wsClient.loop()`,
+     * az `agent.loop()` és a csengetés-ellenőrzés is ott fut, ld. main.cpp),
+     * ezért nem kell zárolás.
+     */
+    void processPendingDownloads();
+
+    /** Hány másodperc múlva jön a ma még hátralévő LEGKÖZELEBBI csengetés?
+     *  -1, ha ma már nincs több. */
+    long secondsUntilNextBell() const;
+
     // "Elérhető-e a backend" – a main loop állítja minden körben.
     // MINDKETTŐ kell hozzá: a WS (a backend folyamat hajtja a mixert) ÉS az
     // élő snapclient-kapcsolat (azon jön a hang). Ld. checkSchedule().
@@ -138,6 +167,37 @@ private:
 
     BellEntry _entries[MAX_BELL_ENTRIES];
     uint8_t   _entryCount    = 0;
+
+    /*
+     * Letöltési sor. Ld. processPendingDownloads().
+     *
+     * MÉRET: a gyakorlatban egy iskolának néhány (mért: 9) csengetőhangja van,
+     * 16 bőven elég. Ha mégis betelne, a maradék KIMARAD – de nem vész el: a
+     * következő szinkron újra felveszi, mert a hiányzó fájlokat minden
+     * alkalommal újraszámoljuk. Inkább egy kör csúszás, mint egy korlátlanul
+     * növő, heap-et faló sor egy 90–120 kB szabad RAM-mal futó eszközön.
+     */
+    struct PendingDownload {
+        String url;
+        String localPath;
+        size_t sizeBytes = 0;
+    };
+    static const uint8_t MAX_PENDING_DOWNLOADS = 16;
+    PendingDownload _pendingDl[MAX_PENDING_DOWNLOADS];
+    uint8_t         _pendingDlCount = 0;
+
+    /** Sorba állít egy letöltést, ha még nincs benne. */
+    void enqueueSoundDownload(const String& url, const String& localPath, size_t sizeBytes);
+
+    /*
+     * Mennyivel a csengetés ELŐTT nem kezdünk új letöltést.
+     *
+     * Egy letöltési menet a legrosszabb esetben DL_MAX_ATTEMPTS × (kapcsolat
+     * + 15 s időtúllépés + újrapróbálkozási szünet), ami bőven félperces
+     * nagyságrend. A 120 másodperces kapu ennél nagyobb tartalékot ad, tehát
+     * a letöltés garantáltan véget ér, mire a jelzés esedékessé válik.
+     */
+    static const long DL_BELL_GUARD_S = 120;
     String    _scheduleSource;
     String    _loadedDate;
 

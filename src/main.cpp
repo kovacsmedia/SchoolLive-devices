@@ -385,6 +385,20 @@ void TaskNetwork(void* pvParameters) {
             bellManager.checkBells();
         }
 
+        /*
+         * HANGLETÖLTÉS – MINDEN KÖRBEN, AZ ONLINE/OFFLINE ÁGTÓL FÜGGETLENÜL.
+         *
+         * A sort a WS-push (DeviceAgent → onScheduleSync) és a HTTP-szinkron
+         * (fetchFullSync) is tölti, tehát a feldolgozásnak sem szabad a
+         * `backendReachable` ágakhoz kötve lennie – különben egy online
+         * eszköz sorba állítaná a hangokat, de sosem töltené le őket.
+         *
+         * Körönként LEGFELJEBB EGY fájl megy le, és csak akkor, ha nincs se
+         * szóló hang, se küszöbön álló csengetés – így a `checkBells()` a
+         * letöltések alatt is minden körben fut. Ld. BellManager.h.
+         */
+        bellManager.processPendingDownloads();
+
         // OTA-t lejátszás alatt nem kezdünk (a csengetés-őr emellett külön is
         // véd, ld. OtaManager OTA_BELL_GUARD_S).
         if (!playbackQuiet) otaManager.loop();

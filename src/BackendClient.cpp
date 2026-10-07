@@ -160,6 +160,21 @@ bool BackendClient::getJson(
 
 // Hány menetben próbáljuk összeszedni a fájlt, és mennyit várunk két menet
 // között. Gyenge vonalon a letöltés darabokban jön össze (ld. downloadRange).
+/*
+ * A beragadás-felügyelet számlálója (main.cpp).
+ *
+ * MIÉRT ITT: a `TaskNetwork` a saját ciklusa elején lépteti a számlálót, de
+ * egy letöltés EZEN BELÜL blokkol. Egy fájl legrosszabb esetben
+ * DL_MAX_ATTEMPTS × 15 s időtúllépés + az újrapróbálkozási szünetek, ami
+ * eléri a HANG_TIMEOUT_MS-t (90 s) – a másik szál ilyenkor ÚJRAINDÍTANÁ az
+ * eszközt egy letöltés közepén, pedig a szál nem ragadt be, csak vár az
+ * adatra. Az OtaManager ugyanezt teszi a maga hosszú letöltésénél.
+ *
+ * Nem gyengíti a felügyeletet: a letöltésnek saját 15 s-es tétlenségi
+ * időkorlátja és kísérlet-korlátja van, tehát nem tud örökre állni.
+ */
+extern void slHeartbeatNet();
+
 static const int          DL_MAX_ATTEMPTS   = 4;
 static const unsigned int DL_RETRY_DELAY_MS = 1500;
 
@@ -402,6 +417,8 @@ bool BackendClient::downloadRange(
     bool        clean      = true;   // igaz, amíg nem szakadt meg rendellenesen
 
     while (contentLength != 0) {
+        slHeartbeatNet();   // a felügyelet lássa, hogy a szál dolgozik
+
         if (!http.connected() && stream->available() == 0) {
             stopReason = "kapcsolat bontva";
             clean      = false;

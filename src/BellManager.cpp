@@ -445,9 +445,8 @@ bool BellManager::fetchFullSync() {
         }
 
         // 3. Letöltés / frissítés
-        int dlOk   = 0;
-        int dlSkip = 0;
-        int dlFail = 0;
+        int dlQueued = 0;
+        int dlSkip   = 0;
         for (JsonObject s : sounds) {
             String filename  = s["filename"]  | "";
             String url       = s["url"]       | "";
@@ -469,20 +468,15 @@ bool BellManager::fetchFullSync() {
                 if (f) f.close();
             }
 
-            Serial.printf("[BELL] Downloading sound: %s (%d bytes)\n",
-                          filename.c_str(), sizeBytes);
-
-            bool ok = backend.downloadFile(url, localPath, sizeBytes);
-            if (ok) {
-                Serial.printf("[BELL] Sound downloaded: %s\n", filename.c_str());
-                dlOk++;
-            } else {
-                Serial.printf("[BELL] Sound FAILED: %s\n", filename.c_str());
-                dlFail++;
-            }
+            /*
+             * NEM ITT TÖLTJÜK LE. Ld. processPendingDownloads(): a letöltés a
+             * csengetés-ellenőrzés útjából kitéve, körönként egy fájl.
+             */
+            enqueueSoundDownload(url, localPath, sizeBytes);
+            dlQueued++;
         }
-        Serial.printf("[BELL] Sounds: %d ok, %d skip, %d fail, %d removed\n",
-                      dlOk, dlSkip, dlFail, dlRemoved);
+        Serial.printf("[BELL] Sounds: %d sorba allitva, %d skip, %d removed\n",
+                      dlQueued, dlSkip, dlRemoved);
     }
 
     return true;
@@ -801,6 +795,107 @@ bool BellManager::resolveFullYearForDate(const String& dateStr, bool& outIsHolid
 void BellManager::loadHardcodedDefault() {
     _entryCount = min((uint8_t)MAX_BELL_ENTRIES, HARDCODED_DEFAULT_COUNT);
     memcpy(_entries, HARDCODED_DEFAULT, _entryCount * sizeof(BellEntry));
+}
+
+// ---------------------------------------------------------------------------
+// Hangletöltés a csengetés útjából kitéve
+// ---------------------------------------------------------------------------
+// Ld. a BellManager.h-ban a processPendingDownloads() indoklását. Röviden: a
+// szinkron csak sorba állít, a letöltést a main loop végzi, körönként egy
+// fájlt – így a `checkBells()` sosem marad ki percekre egy lassú letöltés
+// miatt.
+
+void BellManager::enqueueSoundDownload(const String& url, const String& localPath, size_t sizeBytes) {
+    if (url.isEmpty() || localPath.isEmpty()) return;
+
+    for (uint8_t i = 0; i < _pendingDlCount; i++) {
+        if (_pendingDl[i].localPath == localPath) {
+            // Már sorban áll. A FRISSEBB adatot vesszük át: két szinkron
+            // között a hang cserélődhetett a szerveren (más URL, más méret).
+            _pendingDl[i].url       = url;
+            _pendingDl[i].sizeBytes = sizeBytes;
+            return;
+        }
+    }
+
+    if (_pendingDlCount >= MAX_PENDING_DOWNLOADS) {
+        Serial.printf("[BELL] Letoltesi sor tele – most kimarad: %s "
+                      "(a kovetkezo szinkron ujra felveszi)\n", localPath.c_str());
+        return;
+    }
+
+    _pendingDl[_pendingDlCount].url       = url;
+    _pendingDl[_pendingDlCount].localPath = localPath;
+    _pendingDl[_pendingDlCount].sizeBytes = sizeBytes;
+    _pendingDlCount++;
+}
+
+long BellManager::secondsUntilNextBell() const {
+    if (_mode == BELL_MODE_OFF) return -1;
+    if (_entryCount == 0)       return -1;
+    if (!network.isTimeSynced()) return -1;
+
+    struct tm t = network.getTimeInfo();
+    const long nowSec = (long)t.tm_hour * 3600L + (long)t.tm_min * 60L + (long)t.tm_sec;
+
+    long best = -1;
+    for (uint8_t i = 0; i < _entryCount; i++) {
+        const long bellSec = (long)_entries[i].hour * 3600L + (long)_entries[i].minute * 60L;
+        const long delta   = bellSec - nowSec;
+        if (delta < 0) continue;                       // ma már elmúlt
+        if (best < 0 || delta < best) best = delta;
+    }
+    return best;
+}
+
+void BellManager::processPendingDownloads() {
+    if (_pendingDlCount == 0)   return;
+    if (!network.isConnected()) return;
+
+    /*
+     * 1. AMÍG HANG SZÓL, NEM NYÚLUNK A FLASHHEZ.
+     *
+     * A dekódolás a loopTask-on fut, ez a letöltés a TaskNetwork-ön – tehát
+     * ÁTFEDHETNEK. A LittleFS írása alatt a flash gyorsítótár letiltódik
+     * mindkét magon, ami a lejátszás alatt hallható akadást okozhat. Eddig
+     * ez a védelem hiányzott (a szinkron a saját helyén, feltétel nélkül
+     * töltött).
+     */
+    if (audio.isBusy() || audio.isInCooldown()) return;
+
+    /*
+     * 2. KÜSZÖBÖN ÁLLÓ CSENGETÉS ELŐTT NEM KEZDÜNK BELE.
+     *
+     * Egy menet a legrosszabb esetben félperces nagyságrend; a 120 s-es kapu
+     * tartalékkal garantálja, hogy a letöltés véget ér, mire a jelzés
+     * esedékes. A már elmúlt bejegyzések nem számítanak (ld.
+     * secondsUntilNextBell), tehát a sor nem ragad be egy régi időpont miatt.
+     */
+    const long untilBell = secondsUntilNextBell();
+    if (untilBell >= 0 && untilBell < DL_BELL_GUARD_S) return;
+
+    // 3. EGY fájl ebben a körben – utána visszaadjuk a vezérlést.
+    PendingDownload job = _pendingDl[0];
+    for (uint8_t i = 1; i < _pendingDlCount; i++) _pendingDl[i - 1] = _pendingDl[i];
+    _pendingDlCount--;
+    _pendingDl[_pendingDlCount] = PendingDownload();   // a String-ek elengedése
+
+    Serial.printf("[BELL] Letoltes indul: %s (%u B, %u van meg a sorban)\n",
+                  job.localPath.c_str(), (unsigned)job.sizeBytes, (unsigned)_pendingDlCount);
+
+    // A beragadás-felügyelet lássa, hogy a szál él (ld. main.cpp HANG_TIMEOUT_MS).
+    slHeartbeatNet();
+    const bool ok = backend.downloadFile(job.url, job.localPath, job.sizeBytes);
+    slHeartbeatNet();
+
+    /*
+     * SIKERTELEN LETÖLTÉS: KIESIK A SORBÓL, és NEM tesszük vissza.
+     *
+     * Visszatéve egy tartósan elérhetetlen fájl örökre blokkolná a sort (és
+     * minden körben újrapróbálná). Nem vész el: a következő szinkron úgyis
+     * újra felveszi, mert a fájl továbbra is hiányzik a lemezről.
+     */
+    Serial.printf("[BELL] Letoltes %s: %s\n", ok ? "OK" : "SIKERTELEN", job.localPath.c_str());
 }
 
 // ---------------------------------------------------------------------------
@@ -1383,7 +1478,7 @@ void BellManager::onScheduleSync(const JsonDocument& msg) {
         }
 
         // Letöltés
-        int dlOk = 0, dlSkip = 0, dlFail = 0;
+        int dlQueued = 0, dlSkip = 0;
         for (JsonVariantConst s : sounds) {
             String filename  = s["filename"]  | "";
             String url       = s["url"]       | "";
@@ -1403,25 +1498,11 @@ void BellManager::onScheduleSync(const JsonDocument& msg) {
                 if (f) f.close();
             }
 
-            /*
-             * A BERAGADÁS-FELÜGYELET LÁSSA, HOGY A SZÁL ÉL.
-             *
-             * Ez a letöltés a `TaskNetwork`-ön fut, a WS-üzenet kezelésén
-             * belül – ugyanazon a szálon, amelyik a csengetéseket ellenőrzi.
-             * Egy gyenge vonalon több fájl letöltése bőven átlépheti a
-             * HANG_TIMEOUT_MS-t (90 s), és a felügyelet ilyenkor
-             * ÚJRAINDÍTANÁ az eszközt a letöltés közepén – pedig a szál nem
-             * ragadt be, csak dolgozik. Az OtaManager ugyanezt teszi a maga
-             * hosszú letöltésénél (OtaManager.cpp).
-             */
-            slHeartbeatNet();
-
-            bool ok = backend.downloadFile(url, localPath, sizeBytes);
-            if (ok) dlOk++; else dlFail++;
-
-            slHeartbeatNet();
+            // Ld. fetchFullSync() – sorba állítjuk, nem töltjük le itt.
+            enqueueSoundDownload(url, localPath, sizeBytes);
+            dlQueued++;
         }
-        Serial.printf("[BELL] Hangok: %d ok, %d skip, %d fail\n", dlOk, dlSkip, dlFail);
+        Serial.printf("[BELL] Hangok: %d sorba allitva, %d skip\n", dlQueued, dlSkip);
     }
 
     // Visszajelzés törlése: ha az eszköz mostanáig version-check-et futtatott,
