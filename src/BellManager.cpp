@@ -1,4 +1,8 @@
 #include "BellManager.h"
+
+// A beragadás-felügyelet számlálója (main.cpp) – a hosszú letöltés alatt
+// etetni kell, különben a felügyelet a letöltés közepén újraindít.
+extern void slHeartbeatNet();
 #include "PsramJson.h"
 #include "Config.h"
 #include <Preferences.h>
@@ -1399,8 +1403,23 @@ void BellManager::onScheduleSync(const JsonDocument& msg) {
                 if (f) f.close();
             }
 
+            /*
+             * A BERAGADÁS-FELÜGYELET LÁSSA, HOGY A SZÁL ÉL.
+             *
+             * Ez a letöltés a `TaskNetwork`-ön fut, a WS-üzenet kezelésén
+             * belül – ugyanazon a szálon, amelyik a csengetéseket ellenőrzi.
+             * Egy gyenge vonalon több fájl letöltése bőven átlépheti a
+             * HANG_TIMEOUT_MS-t (90 s), és a felügyelet ilyenkor
+             * ÚJRAINDÍTANÁ az eszközt a letöltés közepén – pedig a szál nem
+             * ragadt be, csak dolgozik. Az OtaManager ugyanezt teszi a maga
+             * hosszú letöltésénél (OtaManager.cpp).
+             */
+            slHeartbeatNet();
+
             bool ok = backend.downloadFile(url, localPath, sizeBytes);
             if (ok) dlOk++; else dlFail++;
+
+            slHeartbeatNet();
         }
         Serial.printf("[BELL] Hangok: %d ok, %d skip, %d fail\n", dlOk, dlSkip, dlFail);
     }
