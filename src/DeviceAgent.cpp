@@ -1,5 +1,6 @@
 #include "DeviceAgent.h"
 #include <esp_system.h>   // esp_reset_reason() – távoli diagnosztika
+#include <esp_heap_caps.h> // heap_caps_get_largest_free_block() – töredezettség-mérés
 #include <LittleFS.h>     // fájlrendszer-telítettség a beaconban
 
 void DeviceAgent::begin(
@@ -266,6 +267,34 @@ void DeviceAgent::sendBeaconIfDue() {
         statusDoc["uptimeSec"]   = (uint32_t)(millis() / 1000UL);
         statusDoc["freeHeap"]    = (uint32_t)ESP.getFreeHeap();
         statusDoc["minFreeHeap"] = (uint32_t)ESP.getMinFreeHeap();
+
+        /*
+         * ── PSRAM: EDDIG VAKON REPÜLTÜNK ───────────────────────────────────
+         *
+         * A fenti két heap-érték a BELSŐ RAM-ot méri. Az S6.00-ban bekapcsolt
+         * Opus-dekóder viszont SZÁNDÉKOSAN a PSRAM-ba allokál
+         * (celt.cpp: `heap_caps_malloc(size, MALLOC_CAP_SPIRAM)` a
+         * BOARD_HAS_PSRAM ág alatt), és a snapcast pufferei is ott élnek.
+         *
+         * Ezért fordulhatott elő, hogy egy napokig romló eszközön a
+         * `minFreeHeap` végig stabil ~116 kB maradt, miközben a csengetés
+         * előbb csonkán szólt, majd teljesen elmaradt: a fogyó erőforrás
+         * egyszerűen nem abban a számban látszott, amit mértünk.
+         *
+         * A `largestFreePsramBlock` külön kell a szabad összeghez képest: a
+         * dekóder EGYBEFÜGGŐ blokkot kér. Ha a szabad méret nagy, de a
+         * legnagyobb blokk kicsi, az TÖREDEZETTSÉG – és az pont úgy viselkedik,
+         * ahogy itt láttuk (előbb csak néha nem sikerül, aztán soha).
+         */
+        const size_t psramTotal = ESP.getPsramSize();
+        if (psramTotal > 0) {
+            statusDoc["psramTotal"]   = (uint32_t)psramTotal;
+            statusDoc["freePsram"]    = (uint32_t)ESP.getFreePsram();
+            statusDoc["minFreePsram"] = (uint32_t)ESP.getMinFreePsram();
+            statusDoc["maxAllocPsram"] = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+        }
+        // A belső RAM legnagyobb egybefüggő blokkja – ugyanaz az érvelés.
+        statusDoc["maxAllocHeap"] = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
 
 
         // Fájlrendszer-kihasználtság: ha megtelik, a csengetőhangok nem

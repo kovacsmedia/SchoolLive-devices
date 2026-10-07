@@ -800,6 +800,60 @@ void BellManager::loadHardcodedDefault() {
 }
 
 // ---------------------------------------------------------------------------
+// soundLooksPlayable – FEJLÉC-ELLENŐRZÉS LEJÁTSZÁS ELŐTT
+// ---------------------------------------------------------------------------
+// MIÉRT KELL: az eszköz eddig KIZÁRÓLAG a FÁJLMÉRET alapján döntötte el, hogy
+// egy letöltött hang ép-e (BackendClient::downloadFile). Egy sérült, de
+// helyes méretű fájl ezért ÖRÖKRE megmaradt: a méret stimmelt, tehát sosem
+// töltötte újra – és mivel a flashben van, az ÚJRAINDÍTÁS SEM SEGÍTETT.
+//
+// A sérült Opust a dekóder nem egyszerűen visszautasítja: félrecsúszott Ogg
+// oldalakon elindul és menet közben kapar ki magának hibás állapotot. Ebből
+// lett a 2026-10-07-i tünetsor – előbb a hang eleje maradt le, majd a
+// csengetés teljesen elmaradt, végül az eszköz pánikba esett, és minden
+// újraindulás után percekkel újra.
+//
+// Olcsó és határozott: a konténer fejlécét nézzük meg, mielőtt a dekóder
+// hozzáérne. Ez nem teljes integritás-ellenőrzés (a fájl közepén lévő
+// sérülést nem fogja meg) – ahhoz a szervernek ellenőrzőösszeget kellene
+// adnia –, de pont azt a hibát kapja el, amit a megszakadt vagy félresikerült
+// letöltés termel: elrontott fájlkezdetet.
+static bool soundLooksPlayable(const String& path) {
+    File f = LittleFS.open(path, "r");
+    if (!f) return false;
+
+    const size_t size = f.size();
+    if (size < 64) { f.close(); return false; }
+
+    uint8_t head[64];
+    const size_t got = f.read(head, sizeof(head));
+    f.close();
+    if (got < sizeof(head)) return false;
+
+    if (path.endsWith(".opus")) {
+        // Ogg oldal: "OggS" a 0. bájton, az azonosító fejléc pedig
+        // "OpusHead"-del kezdődik (szabványos elrendezésben a 28. bájton).
+        if (memcmp(head, "OggS", 4) != 0) return false;
+        for (size_t i = 0; i + 8 <= sizeof(head); i++) {
+            if (memcmp(head + i, "OpusHead", 8) == 0) return true;
+        }
+        return false;
+    }
+
+    if (path.endsWith(".mp3")) {
+        // ID3 tag vagy MPEG keret-szinkron. SZÁNDÉKOSAN megengedő: az .mp3 már
+        // csak az átmenet miatt él, egy fals elutasítás itt néma csengetés.
+        if (memcmp(head, "ID3", 3) == 0) return true;
+        for (size_t i = 0; i + 1 < sizeof(head); i++) {
+            if (head[i] == 0xFF && (head[i + 1] & 0xE0) == 0xE0) return true;
+        }
+        return false;
+    }
+
+    return true;   // ismeretlen kiterjesztés – nem a mi dolgunk eldönteni
+}
+
+// ---------------------------------------------------------------------------
 // resolveLocalSound – "a csengetés sosem maradhat el"
 // ---------------------------------------------------------------------------
 // A `playFile()` csendben visszatér, ha a fájl nincs meg a LittleFS-en, tehát
@@ -810,17 +864,32 @@ String BellManager::resolveLocalSound(const char* soundFile, BellType type) {
     // 1. A kért fájl
     if (soundFile && soundFile[0]) {
         String p = (soundFile[0] == '/') ? String(soundFile) : "/" + String(soundFile);
-        if (LittleFS.exists(p)) return p;
-        Serial.printf("[BELL] HIANYZO hangfajl: %s -> default\n", p.c_str());
+        if (LittleFS.exists(p)) {
+            if (soundLooksPlayable(p)) return p;
+            /*
+             * SÉRÜLT FÁJL: TÖRÖLJÜK, hogy a következő szinkron újratöltse.
+             *
+             * Enélkül a hibás példány örökre megmaradna (a méret-alapú
+             * ellenőrzés átengedi), és minden csengetéskor újratermelné a
+             * hibát. A törlés után a BellManager a gyári defaultra esik
+             * vissza, tehát EZ A CSENGETÉS IS MEGSZÓLAL – csak más hanggal.
+             */
+            Serial.printf("[BELL] ⛔ SERULT hangfajl: %s – torles, ujratoltes a kovetkezo szinkronnal\n", p.c_str());
+            LittleFS.remove(p);
+        } else {
+            Serial.printf("[BELL] HIANYZO hangfajl: %s -> default\n", p.c_str());
+        }
     }
 
     // 2. A típushoz tartozó gyári default
+    //    A gyári hangokat ELLENŐRIZZÜK, de SOHA nem töröljük: a firmware
+    //    LittleFS képéből jönnek, újratölteni nem tudnánk őket.
     const char* primary = (type == BellType::SIGNAL) ? BELL_DEFAULT_SIGNAL : BELL_DEFAULT_MAIN;
-    if (LittleFS.exists(primary)) return String(primary);
+    if (LittleFS.exists(primary) && soundLooksPlayable(String(primary))) return String(primary);
 
     // 3. A másik gyári default
     const char* secondary = (type == BellType::SIGNAL) ? BELL_DEFAULT_MAIN : BELL_DEFAULT_SIGNAL;
-    if (LittleFS.exists(secondary)) return String(secondary);
+    if (LittleFS.exists(secondary) && soundLooksPlayable(String(secondary))) return String(secondary);
 
     // 4. Végső esély: BÁRMELYIK lejátszható hang a tárhelyen. Inkább szóljon
     //    "valami", mint hogy egy jelzés teljesen elmaradjon.
@@ -834,7 +903,8 @@ String BellManager::resolveLocalSound(const char* soundFile, BellType type) {
         File e = root.openNextFile();
         while (e) {
             String n = "/" + String(e.name());
-            bool playable = n.endsWith(".opus") || n.endsWith(".mp3");
+            bool playable = (n.endsWith(".opus") || n.endsWith(".mp3"))
+                            && soundLooksPlayable(n);
             e.close();
             if (playable) {
                 Serial.printf("[BELL] VESZHELYZETI hang: %s\n", n.c_str());
