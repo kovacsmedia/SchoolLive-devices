@@ -286,6 +286,23 @@ void DeviceAgent::sendBeaconIfDue() {
          * legnagyobb blokk kicsi, az TÖREDEZETTSÉG – és az pont úgy viselkedik,
          * ahogy itt láttuk (előbb csak néha nem sikerül, aztán soha).
          */
+        /*
+         * ── WIFI JELSZINT ──────────────────────────────────────────────────
+         *
+         * MIÉRT KELL TÁVOLRÓL: ha egy hangszóró akadozik, az első kérdés
+         * mindig a jelszint – eddig viszont CSAK a soros monitoron és a
+         * kijelzős változat képernyőjén látszott, vagyis a helyszínen. Egy
+         * távoli iskolánál ez kiszállást jelentett.
+         *
+         * Egyben a külső antenna bekötését is ez igazolja: a nyákantennáról
+         * a külsőre váltás jellemzően 5-15 dB-t hoz, és az innen látszik.
+         *
+         * Nagyságrendek: -50 fölött kiváló, -70 még jó, -80 alatt a stream
+         * szakadozni kezd.
+         */
+        const int32_t rssi = _net ? _net->getRSSI() : 0;
+        if (rssi != 0) statusDoc["rssi"] = (int)rssi;
+
         const size_t psramTotal = ESP.getPsramSize();
         if (psramTotal > 0) {
             statusDoc["psramTotal"]   = (uint32_t)psramTotal;
