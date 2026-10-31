@@ -91,6 +91,17 @@ esp_err_t snap_app_resume(void);
 bool snap_app_is_running(void);
 bool snap_app_is_connected(void);
 
+/*
+ * True, ha az utolsó SNAP_STREAM_FLOW_HOLD_MS-en belül érkezett csomag a
+ * snapserverről (és áll a kapcsolat).
+ *
+ * Ez ERŐSEBB bizonyíték, mint a snap_app_is_connected(): az csak a TCP-t
+ * nézi, ami egy halott szerver után is állni látszik. Tétlenkor viszont a
+ * backend SZÁNDÉKOSAN nem küld semmit, ezért ez csak a csengetés közvetlen
+ * közelében értelmezhető – ld. BellManager BELL_STREAM_PROOF_S.
+ */
+bool snap_app_is_stream_flowing(void);
+
 /** Csatorna-mód beállítás futásidőben (hatása a következő PCM chunk-tól). */
 void snap_app_set_channel_mode(dsp_channel_mode_t mode);
 

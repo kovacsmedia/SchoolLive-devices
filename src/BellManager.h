@@ -141,6 +141,17 @@ public:
     // élő snapclient-kapcsolat (azon jön a hang). Ld. checkSchedule().
     void setBackendReachable(bool ok) { _backendReachable = ok; }
 
+    /*
+     * Jönnek-e TÉNYLEGESEN csomagok a snapserverről (ld.
+     * snap_app_is_stream_flowing). A main loop minden körben frissíti.
+     *
+     * Ez nem váltja ki a setBackendReachable()-t, hanem KIEGÉSZÍTI: a
+     * csengetés előtti utolsó BELL_STREAM_PROOF_S másodpercben a folyó stream
+     * is feltétel. Azon kívül nem nézzük, mert a backend tétlenkor
+     * SZÁNDÉKOSAN nem küld semmit (ld. audio-mixer.ts DEEP_IDLE_AFTER_MS).
+     */
+    void setStreamFlowing(bool ok) { _streamFlowing = ok; }
+
     // A DeviceAgent hívja, amikor BELL PREPARE érkezik: bizonyíték arra, hogy
     // az online csengetés-út működik, tehát helyben NEM szabad lejátszani
     // (különben duplán szólna).
@@ -216,6 +227,7 @@ private:
     // ── Offline csengetés állapota (ld. checkSchedule) ─────────────────────
     // A backend elérhetősége (ws && snap), a main loop frissíti.
     bool          _backendReachable   = false;
+    bool          _streamFlowing      = false;
     // Az utolsó BELL PREPARE ideje (millis()); 0 = még nem volt ilyen.
     unsigned long _lastOnlineBellMs   = 0;
     // Melyik naptári napra érvényes a lenti két tömb (tm_yday).
@@ -263,6 +275,20 @@ private:
 
     static const long BELL_LEAD_CHECK_S       = 60;    // ennyivel előbb kezdünk figyelni
     static const long BELL_GRACE_S            = 4;     // ennyit várunk PREPARE-re
+    /*
+     * A csengetés előtti utolsó ennyi másodpercben a FOLYÓ STREAM is feltétel
+     * ahhoz, hogy a backendet elérhetőnek tekintsük.
+     *
+     * MIÉRT: a `snap_app_is_connected()` csak a TCP-állapot, ami egy
+     * összeomlott szerver után is állni látszik (félig nyitott kapcsolat).
+     * Ilyenkor PREPARE sem jön, tehát eddig is csengettünk helyben – csak a
+     * BELL_GRACE_S türelmi idő LETELTE után, 4 másodperc késéssel. A folyó
+     * stream ellenőrzésével ez a késés megszűnik.
+     *
+     * Az 5 s bőven a backend ébresztési előnyén (12 s) BELÜL van, tehát egy
+     * működő rendszerben a stream ilyenkor garantáltan folyik.
+     */
+    static const long BELL_STREAM_PROOF_S     = 5;
     static const unsigned long BELL_ONLINE_EVIDENCE_MS = 15000; // friss PREPARE = él az online út
     static const long BELL_CATCHUP_MAX_S      = 120;   // ennel regebbi csengetest mar NEM potolunk
 

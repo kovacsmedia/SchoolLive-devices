@@ -345,6 +345,14 @@ void TaskNetwork(void* pvParameters) {
         // csengetés SEHOL nem szólalt meg.
         bellManager.setBackendReachable(wsConnected && snapConnected);
 
+        /*
+         * A csengetés előtti pillanatokban nem elég, hogy áll a TCP-socket –
+         * jönnie is kell a csomagoknak. A backend a csengetés előtt 12 s-cel
+         * szándékosan felébreszti a folyamot, épp hogy ez életjel legyen
+         * (ld. bell.scheduler.ts SNAP_WAKE_LEAD_MS).
+         */
+        bellManager.setStreamFlowing(snapClient.isStreamFlowing());
+
         // A csengetés-figyelő MINDIG fut; hogy kell-e helyben lejátszani, azt
         // a BellManager::checkSchedule() dönti el (T-60 mp-es előellenőrzés +
         // BELL PREPARE bizonyíték + türelmi idő). Teljesen offline állapotban

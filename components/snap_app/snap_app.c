@@ -742,12 +742,48 @@ void codec_header_received(char *codecPayload, uint32_t codecPayloadLen,
 // a statikus változót a használat helye előtt kell definiálni.
 static volatile uint32_t s_snap_last_audio_active_ms = 0;
 
+/*
+ * CSOMAGFOLYÁS-FIGYELŐ (nem azonos a fenti aktivitás-figyelővel!)
+ *
+ * `s_snap_last_audio_active_ms` a TARTALMAT figyeli (peak > 200), tehát csend
+ * alatt hamis – a UI villogásához ez a helyes. Itt viszont arra van szükség,
+ * hogy jön-e EGYÁLTALÁN csomag: ez bizonyítja, hogy a szerver→kliens út
+ * működik (a szerverprocessz él, a FIFO-t írja valaki, a kódoló megy, a
+ * hálózat szállít).
+ *
+ * MIÉRT KELL: a `snap_app_is_connected()` csak a TCP-állapotot nézi, és egy
+ * összeomlott szerver után is percekig igaznak látszik (félig nyitott
+ * kapcsolat). A csengetés viszont nem várhat egy ilyen kapcsolatra.
+ *
+ * A backend a csengetés előtt 12 s-cel szándékosan felébreszti a folyamot
+ * (ld. bell.scheduler.ts SNAP_WAKE_LEAD_MS), tehát a csengetés pillanatában a
+ * csomagok folyása MEGBÍZHATÓ életjel. Tétlenkor a folyam szándékosan áll
+ * (audio-mixer.ts DEEP_IDLE_AFTER_MS), ezért ezt a jelzést CSAK a csengetés
+ * közvetlen közelében szabad használni – ld. BellManager BELL_STREAM_PROOF_S.
+ */
+static volatile uint32_t s_snap_last_chunk_ms = 0;
+
+// Ennyi ideig számít "folyónak" a stream az utolsó csomag után. A csomagok
+// 20 ms-onként jönnek, tehát ez bőven elnyel egy pillanatnyi hálózati akadást,
+// és még így is jóval a csengetés előtti 5 s-os ablakon belül van.
+#define SNAP_STREAM_FLOW_HOLD_MS 1500
+
 /**
  *
  */
 void handle_chunk_message(codec_type_t codec, snapcastSetting_t *scSet,
                           pcm_chunk_message_t **pcmData,
                           wire_chunk_message_t *wire_chnk) {
+  /*
+   * A LEGELSŐ dolog: megjött egy csomag.
+   *
+   * SZÁNDÉKOSAN a dekódolás ELŐTT és a kodektől függetlenül, és SZÁNDÉKOSAN
+   * nem a lejátszó állapotától függően: akkor is érvényes életjel, ha a
+   * lejátszó épp szünetel (helyi csengetés veszi az I2S-t) vagy még nem
+   * épült fel. A kérdés nem az, hogy SZÓL-e – hanem hogy JÖN-e.
+   */
+  s_snap_last_chunk_ms = (uint32_t)(esp_timer_get_time() / 1000);
+
   switch (codec) {
     case OPUS: {
       int frame_size = -1;
@@ -1742,6 +1778,18 @@ void snap_app_set_channel_mode(dsp_channel_mode_t mode) {
 #if CONFIG_USE_DSP_PROCESSOR
     dsp_processor_set_channel_mode(mode);
 #endif
+}
+
+bool snap_app_is_stream_flowing(void) {
+  // A TCP-állapot is kell: egy leállított vagy lecsatlakozott kliensnél a
+  // régi időbélyeg nem jelenthet "folyó" streamet.
+  if (!snap_app_is_connected()) return false;
+
+  uint32_t last = s_snap_last_chunk_ms;
+  if (last == 0) return false;
+
+  uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+  return (uint32_t)(now - last) < SNAP_STREAM_FLOW_HOLD_MS;
 }
 
 bool snap_app_is_audio_active(void) {

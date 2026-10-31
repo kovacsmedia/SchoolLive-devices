@@ -94,6 +94,10 @@ bool SnapcastClient::isAudioActive() const {
     return snap_app_is_audio_active();
 }
 
+bool SnapcastClient::isStreamFlowing() const {
+    return snap_app_is_stream_flowing();
+}
+
 void SnapcastClient::setChannelMode(dsp_channel_mode_t mode) {
     snap_app_set_channel_mode(mode);
 }

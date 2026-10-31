@@ -1215,12 +1215,26 @@ void BellManager::checkSchedule() {
 
         // 1) Előzetes ellenőrzés T-60 mp-től, folyamatosan frissítve.
         if (dt >= -BELL_LEAD_CHECK_S && dt < 0) {
-            if (_backendReachable) {
+            /*
+             * A csengetés előtti utolsó BELL_STREAM_PROOF_S másodpercben a
+             * folyó stream is feltétel. Azon kívül nem nézzük: a backend
+             * tétlenkor szándékosan nem küld semmit.
+             *
+             * A `_streamFlowing` hamisra fordulása ÖNMAGÁBAN nem okoz dupla
+             * csengetést: az élesítés csak a BELL_GRACE_S várakozást hagyja
+             * ki, a tényleges elnyomó továbbra is a friss PREPARE
+             * (`onlineBellEvidence`), amit a T-nél ELŐBB vizsgálunk.
+             */
+            const bool nearBell    = (-dt <= BELL_STREAM_PROOF_S);
+            const bool streamProof = nearBell ? _streamFlowing : true;
+
+            if (_backendReachable && streamProof) {
                 bellBitSet(_bellArmedBits, bellMin, false);
             } else if (!bellBitGet(_bellArmedBits, bellMin)) {
                 bellBitSet(_bellArmedBits, bellMin, true);
-                Serial.printf("[BELL] %02d:%02d – a backend nem erheto el (%ld mp-cel elotte) -> offline lejatszasra keszulunk\n",
-                              _entries[i].hour, _entries[i].minute, -dt);
+                Serial.printf("[BELL] %02d:%02d – a backend nem erheto el (%ld mp-cel elotte, ws+snap=%d, folyam=%d) -> offline lejatszasra keszulunk\n",
+                              _entries[i].hour, _entries[i].minute, -dt,
+                              _backendReachable ? 1 : 0, _streamFlowing ? 1 : 0);
             }
             continue;
         }

@@ -46,6 +46,10 @@ public:
     // (a silence-ffmpeg által generált 0 minták esetén false).
     bool isAudioActive() const;
 
+    // True, ha tényleg JÖNNEK a csomagok a snapserverről (nem csak a TCP áll).
+    // A csengetés élesítéséhez ez a bizonyíték, ld. BellManager.
+    bool isStreamFlowing() const;
+
     void setLocalVolume(uint8_t volume);
     void setChannelMode(dsp_channel_mode_t mode);
 
