@@ -53,6 +53,24 @@ public:
   dsp_channel_mode_t getChannelMode() const;
   bool               setChannelMode(dsp_channel_mode_t mode);
 
+  /*
+   * ── Jelszint-helyreállítási jelölő ─────────────────────────────────
+   *
+   * A romlott kapcsolat miatti újraindítás ELŐTTI alapszintet őrzi, mert az
+   * újraindulás után ez nem állapítható meg: az új alapszint maga lesz a
+   * rossz érték, és ahhoz képest nincs mihez viszonyítani.
+   *
+   * Két dolgot old meg egyszerre:
+   *   • újraindulás után el tudjuk dönteni, HASZNÁLT-E a reset;
+   *   • amíg a jelölő áll, NEM indítunk újra megint – különben egy valóban
+   *     rossz helyre telepített eszköz örökké újraindulna.
+   *
+   * 0 = nincs jelölő.
+   */
+  int32_t linkResetBaseline() const;
+  bool    setLinkResetBaseline(int32_t rssi);
+  void    clearLinkResetBaseline();
+
 
 private:
   mutable Preferences _prefs;

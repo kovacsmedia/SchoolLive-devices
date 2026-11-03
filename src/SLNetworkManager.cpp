@@ -267,6 +267,90 @@ bool SLNetworkManager::isConnected() { return WiFi.status() == WL_CONNECTED; }
 bool SLNetworkManager::isTimeSynced() { return _timeSynced; }
 String SLNetworkManager::getIP() { return WiFi.localIP().toString(); }
 int32_t SLNetworkManager::getRSSI() { return WiFi.RSSI(); }
+
+void SLNetworkManager::resetLinkBaseline() {
+    _rssiBaseline  = 0;
+    _rssiSmoothed  = 0;
+    _badSinceMs    = 0;
+    _baselineAtMs  = 0;
+    _linkDegraded  = false;
+}
+
+/*
+ * A KAPCSOLAT MINŐSÉGÉNEK FIGYELÉSE.
+ *
+ * Másodpercenként egy minta elég: a jelszint lassan mozog, és egy
+ * pillanatnyi kiugrás úgysem számít – a döntést a tartósság adja.
+ */
+void SLNetworkManager::updateLinkQuality() {
+    if (!isConnected()) {
+        // Kapcsolat nélkül nincs mit mérni, és az alapszint is érvénytelen:
+        // a következő csatlakozás MÁS AP-hoz vagy más helyre is vihet.
+        resetLinkBaseline();
+        return;
+    }
+
+    const uint32_t now = millis();
+    if (_lastQualityMs != 0 && (uint32_t)(now - _lastQualityMs) < 1000) return;
+    _lastQualityMs = now;
+
+    const int32_t rssi = WiFi.RSSI();
+    // A 0 és a +31 a driver „nincs adat" válasza, nem valódi mérés.
+    if (rssi == 0 || rssi > 0) return;
+
+    /*
+     * Simítás, hogy egyetlen rossz minta ne billentsen át semmit. Lassú
+     * mozgóátlag: a tartós romlást követi, a pillanatnyi tüskét elnyeli.
+     */
+    _rssiSmoothed = (_rssiSmoothed == 0) ? rssi : ((_rssiSmoothed * 3 + rssi) / 4);
+
+    /*
+     * AZ ALAPSZINT a csatlakozás UTÁNI állapot – a felhasználó megfigyelése
+     * szerint ez „általában jó szokott lenni". Nem az első mintát vesszük:
+     * a kapcsolat felállása után pár másodpercig még ugrál. Tíz másodperc
+     * múlva rögzítjük a simított értéket.
+     */
+    if (_rssiBaseline == 0) {
+        if (_baselineAtMs == 0) _baselineAtMs = now;
+        if ((uint32_t)(now - _baselineAtMs) >= 10000) {
+            _rssiBaseline = _rssiSmoothed;
+            Serial.printf("[LINK] alapszint rogzitve: %d dBm\n", (int)_rssiBaseline);
+        }
+        return;
+    }
+
+    /*
+     * ROMLÁS: az alapszinthez képest sokat esett, ÉS abszolút értékben is
+     * használhatatlan. A kettő együtt kell – ld. a küszöbök indoklását a
+     * fejlécben.
+     */
+    const bool bad = (_rssiSmoothed <= _rssiBaseline - LINK_DROP_DB)
+                  && (_rssiSmoothed <= LINK_ABS_FLOOR);
+
+    if (!bad) {
+        if (_linkDegraded) {
+            Serial.printf("[LINK] a jel helyreallt: %d dBm (alapszint %d)\n",
+                          (int)_rssiSmoothed, (int)_rssiBaseline);
+        }
+        _badSinceMs   = 0;
+        _linkDegraded = false;
+        return;
+    }
+
+    if (_badSinceMs == 0) {
+        _badSinceMs = now;
+        Serial.printf("[LINK] gyenge jel: %d dBm (alapszint %d) – figyeljuk\n",
+                      (int)_rssiSmoothed, (int)_rssiBaseline);
+        return;
+    }
+
+    if (!_linkDegraded && (uint32_t)(now - _badSinceMs) >= LINK_HOLD_MS) {
+        _linkDegraded = true;
+        Serial.printf("[LINK] ROMLOTT KAPCSOLAT: %d dBm, alapszint %d, %lu mp-e\n",
+                      (int)_rssiSmoothed, (int)_rssiBaseline,
+                      (unsigned long)((now - _badSinceMs) / 1000));
+    }
+}
 String SLNetworkManager::getCurrentSSID() { return WiFi.SSID(); }
 String SLNetworkManager::getStoredSSID() { return WiFi.SSID(); }
 String SLNetworkManager::getStoredUser() { return ""; }

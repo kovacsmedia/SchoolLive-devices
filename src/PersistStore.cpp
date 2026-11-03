@@ -136,6 +136,18 @@ dsp_channel_mode_t PersistStore::getChannelMode() const {
   return (dsp_channel_mode_t)v;
 }
 
+int32_t PersistStore::linkResetBaseline() const {
+  return (int32_t)_prefs.getInt("linkRstBase", 0);
+}
+
+bool PersistStore::setLinkResetBaseline(int32_t rssi) {
+  return _prefs.putInt("linkRstBase", (int32_t)rssi) > 0;
+}
+
+void PersistStore::clearLinkResetBaseline() {
+  _prefs.remove("linkRstBase");
+}
+
 bool PersistStore::setChannelMode(dsp_channel_mode_t mode) {
   return _prefs.putUChar("chanMode", (uint8_t)mode) > 0;
 }

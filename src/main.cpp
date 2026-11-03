@@ -343,7 +343,21 @@ void TaskNetwork(void* pvParameters) {
         // processz, így egy backend-deploy/összeomlás alatt a snapclient
         // kapcsolat élve maradt, az eszköz "online"-nak hitte magát, és a
         // csengetés SEHOL nem szólalt meg.
-        bellManager.setBackendReachable(wsConnected && snapConnected);
+        /*
+         * ── A ROSSZ MINŐSÉGŰ KAPCSOLAT = NINCS KAPCSOLAT ──────────────
+         *
+         * Ha a jelszint tartósan bezuhant az alapszinthez képest, a stream
+         * akadozik: a csengetés a hangszórón érthetetlen lenne, vagy el sem
+         * jutna idáig. Ilyenkor hiába áll a WS és a snap socket –
+         * HANGLEJÁTSZÁSRA alkalmatlan a vonal, tehát a csengetés
+         * szempontjából OFFLINE-nak kell tekinteni, és helyben kell
+         * csengetni. Jobb a saját hangfájl, mint egy szétesett stream.
+         */
+        networkManager.updateLinkQuality();
+        const bool linkBad = networkManager.isLinkDegraded();
+
+        bellManager.setBackendReachable(wsConnected && snapConnected && !linkBad);
+        agent.setLinkDegraded(linkBad);
 
         /*
          * A csengetés előtti pillanatokban nem elég, hogy áll a TCP-socket –
@@ -406,6 +420,73 @@ void TaskNetwork(void* pvParameters) {
          * letöltések alatt is minden körben fut. Ld. BellManager.h.
          */
         bellManager.processPendingDownloads();
+
+        /*
+         * ── HASZNÁLT-E A LEGUTÓBBI ÚJRAINDÍTÁS? ───────────────────────
+         *
+         * Újraindulás után az ÚJ alapszintet hasonlítjuk a reset ELŐTTIHEZ.
+         * Ha visszajött a jel, töröljük a jelölőt, és az öngyógyítás újra
+         * élesedik. Ha NEM jött vissza, a jelölő MARAD: nem indítunk újra
+         * megint (az nem segítene), viszont jelezzük a hibát – innentől
+         * emberi beavatkozás kell.
+         */
+        {
+            const int32_t mark = store.linkResetBaseline();
+            if (mark != 0 && networkManager.rssiBaseline() != 0) {
+                const bool recovered =
+                    networkManager.rssiBaseline() >= mark - LINK_RECOVERY_TOLERANCE_DB;
+                if (recovered) {
+                    Serial.printf("[LINK] az ujrainditas hasznalt: %d dBm "
+                                  "(reset elott %d)\n",
+                                  (int)networkManager.rssiBaseline(), (int)mark);
+                    store.clearLinkResetBaseline();
+                    agent.setLinkResetFailed(false);
+                } else {
+                    // Egyszer jelentjük, utána a beacon viszi tovább.
+                    if (!agent.isLinkResetFailed()) {
+                        Serial.printf("[LINK] AZ UJRAINDITAS NEM SEGITETT: %d dBm "
+                                      "(reset elott %d) – emberi beavatkozas kell\n",
+                                      (int)networkManager.rssiBaseline(), (int)mark);
+                    }
+                    agent.setLinkResetFailed(true);
+                }
+            }
+        }
+
+        /*
+         * ── ÖNGYÓGYÍTÁS: ÚJRAINDÍTÁS ROMLOTT KAPCSOLATNÁL ─────────────
+         *
+         * A megfigyelt hibánál a soft reset helyreállítja a jelszintet,
+         * tehát az eszköz magától is meg tudja csinálni azt, amit eddig
+         * kézzel kellett.
+         *
+         * AMIKOR NEM SZABAD:
+         *   • lejátszás vagy az azt követő cooldown alatt – elvágnánk a hangot;
+         *   • a csengetés közelében – a néhány másodperces kiesés pont a
+         *     jelzést vinné el, és a helyi csengetés is a betöltött rendhez
+         *     kell hogy hozzáférjen;
+         *   • ha MÁR próbáltuk egyszer és nem segített – különben egy
+         *     tényleg rossz helyre telepített eszköz örökké újraindulna.
+         *     Ezt az NVS-jelölő őrzi, és csak a jel helyreállása törli.
+         */
+        if (linkBad
+            && store.linkResetBaseline() == 0
+            && !audioManager.isBusy()
+            && !audioManager.isInCooldown()) {
+            const long untilBell = bellManager.secondsUntilNextBell();
+            const bool nearBell  = (untilBell >= 0 && untilBell < LINK_RESET_BELL_GUARD_S);
+            if (!nearBell) {
+                Serial.printf("[LINK] ujrainditas romlott kapcsolat miatt "
+                              "(jel %d dBm, alapszint %d)\n",
+                              (int)networkManager.rssiSmoothed(), (int)networkManager.rssiBaseline());
+                // A reset ELŐTTI alapszintet megőrizzük: enélkül újraindulás
+                // után nincs mihez viszonyítani, mert az új alapszint maga
+                // lenne a rossz érték.
+                store.setLinkResetBaseline(networkManager.rssiBaseline());
+                delay(200);          // a soros kiírás menjen ki
+                ESP.restart();
+            }
+        }
 
         // OTA-t lejátszás alatt nem kezdünk (a csengetés-őr emellett külön is
         // véd, ld. OtaManager OTA_BELL_GUARD_S).

@@ -41,6 +41,16 @@ public:
 
     const String& getCurrentPlaybackAction() const { return _currentPlaybackAction; }
 
+    /*
+     * A beaconnal együtt megy fel: romlott-e a kapcsolat minősége, és
+     * segített-e a miatta indított újraindítás. A backend ebből küld
+     * riasztást – a hibát ugyanis az ESZKÖZ látja először, a szerver felől
+     * csak annyi látszik, hogy „online".
+     */
+    void setLinkDegraded(bool v)    { _linkDegraded    = v; }
+    void setLinkResetFailed(bool v) { _linkResetFailed = v; }
+    bool isLinkResetFailed() const  { return _linkResetFailed; }
+
 private:
     SLNetworkManager* _net      = nullptr;
     AudioManager*     _audio    = nullptr;
@@ -52,6 +62,9 @@ private:
     SnapcastClient*   _snap     = nullptr;
     PersistStore*     _store    = nullptr;
     OtaManager*       _ota      = nullptr;
+
+    bool _linkDegraded    = false;
+    bool _linkResetFailed = false;
 
     String _fw            = "dev";
     String _deviceId;

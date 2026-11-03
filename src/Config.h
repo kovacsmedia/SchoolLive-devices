@@ -80,6 +80,23 @@
 // Ennyi nyomva tartás után áll vissza az eszköz aktiválás előtti állapotba.
 #define BTN_FACTORY_RESET_MS 7000UL
 
+/*
+ * ── ROMLOTT WIFI-KAPCSOLAT ÖNGYÓGYÍTÁSA ───────────────────────────────
+ *
+ * Ennyi másodperccel a következő csengetés előtt MÁR NEM indítunk újra.
+ * Az újraindulás + újracsatlakozás nagyságrendileg 10-20 másodperc, a
+ * csengetés pótlási ablaka 120 másodperc – a 180 bőven fedezi mindkettőt,
+ * és közvetlenül egy csengetés UTÁN (amikor a következő jellemzően
+ * negyven perc múlva jön) azonnal szabad az út.
+ */
+#define LINK_RESET_BELL_GUARD_S 180
+
+/*
+ * Ennyi dB tűréssel fogadjuk el, hogy az újraindítás HASZNÁLT: ha az új
+ * alapszint ennél nem rosszabb a reset előttinél, a rádió rendbe jött.
+ */
+#define LINK_RECOVERY_TOLERANCE_DB 15
+
 // -----------------------------------------------------------------------------
 // WIFI
 // -----------------------------------------------------------------------------

@@ -303,6 +303,20 @@ void DeviceAgent::sendBeaconIfDue() {
         const int32_t rssi = _net ? _net->getRSSI() : 0;
         if (rssi != 0) statusDoc["rssi"] = (int)rssi;
 
+        /*
+         * A KAPCSOLAT MINŐSÉGE, nem csak a pillanatnyi jelszint.
+         *
+         * Az `rssi` önmagában pillanatkép; ezek viszont megmondják, hogy az
+         * eszköz SAJÁT ítélete szerint használható-e a vonal hanglejátszásra.
+         * Csak akkor küldjük ki, ha baj van – így a mező megléte maga a jel,
+         * és a beacon se hízik fölöslegesen.
+         */
+        if (_net && _net->rssiBaseline() != 0) {
+            statusDoc["rssiBaseline"] = (int)_net->rssiBaseline();
+        }
+        if (_linkDegraded)    statusDoc["linkDegraded"]    = true;
+        if (_linkResetFailed) statusDoc["linkResetFailed"] = true;
+
         const size_t psramTotal = ESP.getPsramSize();
         if (psramTotal > 0) {
             statusDoc["psramTotal"]   = (uint32_t)psramTotal;
