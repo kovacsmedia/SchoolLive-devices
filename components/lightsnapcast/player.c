@@ -1237,6 +1237,47 @@ static void tg0_timer_init(void) {
 /**
  *
  */
+/**
+ * Chunk-várakozás SZELETELVE, szünetkérésre megszakítva.
+ *
+ * MIÉRT KELL: a `player_pause()` addig várja a kooperatív I2S-elengedést,
+ * amíg a player_task a ciklusa ELEJÉRE ér – ott, és csak ott biztos, hogy
+ * nem vagyunk az I2S driver belsejében. Egy 2000 ms-os blokkoló várakozás
+ * viszont HOSSZABB, mint amennyit a pause vár, tehát a kooperatív út eleve
+ * nem tudott lefutni: minden ilyen esetben a kényszerített felfüggesztés
+ * maradt, ami a taskot a driver belsejében is elkaphatja. Ebből lett a
+ * csengetésekhez kötött Interrupt watchdog.
+ *
+ * A TELJES várakozási idő változatlan – az a chunk-éhezés küszöbe, nem
+ * érinthetjük –, csak szeletekre bontjuk, és a szeletek között megnézzük,
+ * kérte-e valaki a szünetet.
+ *
+ * `*paused` igaz, ha SZÜNETKÉRÉS miatt tértünk vissza. Ezt a hívónak meg
+ * kell különböztetnie az éhezéstől: ilyenkor a ciklus elejére kell menni,
+ * nem a lejátszót leállítani.
+ */
+static BaseType_t player_wait_chunk(QueueHandle_t q, void *out,
+                                    uint32_t totalMs, bool *paused) {
+  const uint32_t SLICE_MS = 100;
+  uint32_t waited = 0;
+
+  if (paused != NULL) *paused = false;
+
+  while (waited < totalMs) {
+    if (s_player_paused) {
+      if (paused != NULL) *paused = true;
+      return pdFAIL;
+    }
+    const uint32_t slice =
+        ((totalMs - waited) < SLICE_MS) ? (totalMs - waited) : SLICE_MS;
+    const BaseType_t r = xQueueReceive(q, out, pdMS_TO_TICKS(slice));
+    if (r != pdFAIL) return r;
+    waited += slice;
+  }
+
+  return pdFAIL;
+}
+
 static void tg0_timer1_start(uint64_t alarm_value) {
   if (gptimer) {
     my_gptimer_stop(gptimer);
@@ -2027,7 +2068,10 @@ static void player_task(void *pvParameters) {
 
     if (chnk == NULL) {
       if (pcmChkQHdl != NULL) {
-        ret = xQueueReceive(pcmChkQHdl, &chnk, pdMS_TO_TICKS(2000));
+        bool pauseRequested = false;
+        ret = player_wait_chunk(pcmChkQHdl, &chnk, 2000, &pauseRequested);
+        // Szünetkérés: a ciklus ELEJÉN van a kooperatív I2S-elengedés.
+        if (pauseRequested) continue;
       } else {
          //ESP_LOGE (TAG, "Couldn't get PCM chunk, pcm queue not created");
 
@@ -2095,9 +2139,18 @@ static void player_task(void *pvParameters) {
           adjust_apll(0);  // reset to normal playback speed
 #endif
           while (1) {
+            /*
+             * Szünetkérés a szinkron KÖZBEN is kiléptet. Enélkül ez a
+             * ciklus a `continue`-val örökké pörgött egy néma folyamon, és
+             * a csengetés I2S-kérése sem tudta kimozdítani.
+             */
+            if (s_player_paused) break;
+
             if (chnk == NULL) {
               if (pcmChkQHdl != NULL) {
-                ret = xQueueReceive(pcmChkQHdl, &chnk, pdMS_TO_TICKS(2000));
+                bool pauseRequested = false;
+                ret = player_wait_chunk(pcmChkQHdl, &chnk, 2000, &pauseRequested);
+                if (pauseRequested) break;
                 // if (ret != pdFAIL) {
                 //   ESP_LOGI(TAG, "got pcm chunk with size %d",
                 //            chnk->fragment->size);
@@ -2161,11 +2214,43 @@ static void player_task(void *pvParameters) {
             }
           }
 
-          // Wait to be notified of a timer interrupt.
-          xTaskNotifyWait(pdFALSE,         // Don't clear bits on entry.
-                          pdFALSE,         // Don't clear bits on exit.
-                          &notifiedValue,  // Stores the notified value.
-                          portMAX_DELAY);
+          /*
+           * Várakozás a szinkron-időzítő megszakítására.
+           *
+           * KORÁBBAN `portMAX_DELAY` volt. Ha a timer bármiért nem sült el
+           * – nem indult, közben leállt, vagy a riasztás a `playerTaskHandle
+           * == NULL` ág miatt eldobódott –, a player_task ÖRÖKRE itt állt.
+           * Onnan a csengetés I2S-kérése sem tudta kimozdítani, mert a
+           * kooperatív elengedés a ciklus elején van; maradt a kényszerített
+           * felfüggesztés, ami a taskot a driver belsejében is elkaphatja.
+           * Ez a csengetésekhez kötött Interrupt watchdog egyik forrása.
+           *
+           * Szeletelve várunk, legfeljebb 3 másodpercet. Ha nem jött meg a
+           * jelzés – vagy közben szünetet kértek –, a ciklus elejére megyünk
+           * és újraszinkronizálunk. Egy elmaradt szinkron rosszabb hang, de
+           * egy beragadt task néma csengetés.
+           */
+          {
+            BaseType_t notified = pdFALSE;
+            for (uint32_t waited = 0; waited < 3000; waited += 100) {
+              if (s_player_paused) break;
+              notified = xTaskNotifyWait(pdFALSE, pdFALSE, &notifiedValue,
+                                         pdMS_TO_TICKS(100));
+              if (notified == pdTRUE) break;
+            }
+            if (notified != pdTRUE) {
+              if (!s_player_paused) {
+                ESP_LOGW(TAG, "sync timer jelzes elmaradt – ujraszinkronizalas");
+              }
+              my_gptimer_stop(gptimer);
+              initialSync = 0;
+              if (chnk != NULL) {
+                free_pcm_chunk(chnk);
+                chnk = NULL;
+              }
+              continue;
+            }
+          }
           // or use simple task delay for this
           // vTaskDelay( pdMS_TO_TICKS(-age / 1000) );
 
@@ -2687,25 +2772,65 @@ void player_pause(void) {
    * megtörténik. Ha mégsem – mert épp egy hosszú blokkoló híváson áll –,
    * kényszerítünk: a csengetés nem maradhat el egy beragadt task miatt.
    */
+  /*
+   * A VÁRAKOZÁS FELSŐ HATÁRA.
+   *
+   * A player_task mostantól legfeljebb ~100 ms-onként ránéz a
+   * szünetkérésre (ld. player_wait_chunk és a szinkron-ág korlátozott
+   * várakozásai), tehát normál esetben ez a ciklus néhány tized másodperc
+   * alatt lefut. A 2,5 másodperc bőséges tartalék, nem tervezett
+   * várakozási idő.
+   */
+  const uint32_t PAUSE_WAIT_MS = 2500;
   const uint32_t waitStart = (uint32_t)(esp_timer_get_time() / 1000ULL);
+
   while (!s_player_i2s_released) {
-    if (((uint32_t)(esp_timer_get_time() / 1000ULL) - waitStart) > 1500) {
+    if (((uint32_t)(esp_timer_get_time() / 1000ULL) - waitStart) > PAUSE_WAIT_MS) {
       /*
        * A handle-t ÚJRA meg kell nézni: a player_task időközben magától is
        * kiléphetett (chunk-hiány miatt), ilyenkor `playerTaskHandle` NULL.
-       * A `vTaskSuspend(NULL)` a FreeRTOS-ban a HÍVÓ taskot függesztené fel –
-       * azaz itt a csengetést indító TaskNetwork-öt, örökre.
        */
       TaskHandle_t h = playerTaskHandle;
-      if (h != NULL) {
-        ESP_LOGW(TAG, "player_pause: a task nem valaszolt 1500 ms alatt – kenyszeritett felfuggesztes");
-        vTaskSuspend(h);
-      } else {
+
+      if (h == NULL) {
+        // A task már nem fut, tehát senki nem lehet a driver belsejében –
+        // innen biztonságos közvetlenül elengedni a csatornát.
         ESP_LOGW(TAG, "player_pause: a player_task idokozben kilepett");
+        player_release_i2s();
+        s_player_i2s_released = true;
+        break;
       }
-      player_release_i2s();
-      s_player_i2s_released = true;
-      break;
+
+      /*
+       * ITT KORÁBBAN `vTaskSuspend(h)` ÁLLT, UTÁNA AZONNAL
+       * `player_release_i2s()`. EZ VOLT A HIBA FORRÁSA.
+       *
+       * A `vTaskSuspend()` tetszőleges utasításnál állítja meg a másik
+       * taskot – akár az ESP-IDF I2S-driverének belsejében, a driver zárja
+       * alatt. A rákövetkező `player_release_i2s()` ugyanabba a driverbe
+       * lép be: a mag megszakítás-tiltás mellett pörög a soha fel nem
+       * szabaduló záron, a FreeRTOS tick megszakítás kiéhezik, és elsül az
+       * Interrupt watchdog. (Egy sima mutex-holtpont a TASK watchdogot
+       * adná, az 10 másodperc; mi 300 ms-os INT_WDT-t kaptunk.)
+       *
+       * Más taskot tehát nem függesztünk fel, és a drivert sem bántjuk
+       * kívülről. Ha a kooperatív elengedés ennyi idő alatt sem történt
+       * meg, a lejátszó menthetetlenül beragadt: ilyenkor TISZTA
+       * újraindítás következik.
+       *
+       * MIÉRT VÁLLALHATÓ: a csengetés nem vész el. Az eszköz a tárolt
+       * rendjéből ~35 másodperc alatt visszatér, a pótlási ablak pedig 120
+       * másodperc (BELL_CATCHUP_MAX_S), tehát a jelzés megszólal – csak
+       * késve. Eddig ugyanez történt, csak pánikkal és magyarázat nélkül;
+       * most naplózva és szándékosan.
+       */
+      ESP_LOGE(TAG,
+               "player_pause: a player_task %u ms alatt sem engedte el az "
+               "I2S-t – tiszta ujrainditas (a csengetes a potlasi ablakban "
+               "megszolal)",
+               (unsigned)PAUSE_WAIT_MS);
+      vTaskDelay(pdMS_TO_TICKS(50));   // hogy a naplósor még kimenjen
+      esp_restart();
     }
     vTaskDelay(pdMS_TO_TICKS(10));
   }
